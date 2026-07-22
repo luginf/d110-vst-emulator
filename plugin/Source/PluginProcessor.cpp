@@ -106,11 +106,11 @@ void D110AudioProcessor::setPcmRomPath(const juce::String &path) {
 }
 
 juce::File D110AudioProcessor::getAutoRomFolder() {
-	auto localAppData = juce::SystemStats::getEnvironmentVariable("LOCALAPPDATA", "");
-	juce::File base = localAppData.isNotEmpty()
-		? juce::File(localAppData).getChildFile("Programs").getChildFile("Common").getChildFile("VST3")
-		: juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory);
-	return base.getChildFile("D-110 ROMs");
+	// Real DAW plugin folder on this machine - see the vst_data_folder_location
+	// memory note: all plugin data (ROMs, NVRAM, etc.) lives under here, not
+	// AppData (that was only ever a leftover from this project's original
+	// CMakeLists template).
+	return juce::File("C:/Program Files/Common Files/VST3/D-110 Data");
 }
 
 bool D110AudioProcessor::tryAutoLoadRoms() {
