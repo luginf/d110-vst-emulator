@@ -1,0 +1,15 @@
+# Build artifacts (CMake, JUCE FetchContent, compiled binaries)
+build/
+out/
+
+# ROM dumps must never be committed - they are copyrighted Roland firmware.
+# (They live outside this repo anyway, but this is a safety net.)
+*.bin
+*.rom
+
+# OS/editor cruft
+.vs/
+.vscode/
+*.user
+Thumbs.db
+.DS_Store
