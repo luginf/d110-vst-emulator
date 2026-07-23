@@ -14,11 +14,22 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(JUCE)
 
 # Build mt32emu as a static library, C++ interface only (matches rom_test setup).
+# PIC is required so this static lib can be linked into the VST3 shared module on Linux.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(BUILD_SHARED_LIBS FALSE CACHE BOOL "" FORCE)
 set(libmt32emu_SHARED FALSE CACHE BOOL "" FORCE)
 set(libmt32emu_C_INTERFACE FALSE CACHE BOOL "" FORCE)
 set(libmt32emu_CPP_INTERFACE TRUE CACHE BOOL "" FORCE)
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../munt/mt32emu" "${CMAKE_CURRENT_BINARY_DIR}/mt32emu_build")
+
+# On Windows, plugins conventionally live in the shared Program Files VST3 folder.
+# Elsewhere, JUCE's own default (~/Library/Audio/Plug-Ins/VST3 on macOS, ~/.vst3 on Linux)
+# is already the right per-user location, so leave VST3_COPY_DIR unset there.
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set(D110_VST3_COPY_DIR_ARGS VST3_COPY_DIR "C:/Program Files/Common Files/VST3")
+else()
+    set(D110_VST3_COPY_DIR_ARGS)
+endif()
 
 juce_add_plugin(D110Emulator
     COMPANY_NAME "DIY"
@@ -28,11 +39,12 @@ juce_add_plugin(D110Emulator
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     COPY_PLUGIN_AFTER_BUILD TRUE
-    VST3_COPY_DIR "C:/Program Files/Common Files/VST3"
+    ${D110_VST3_COPY_DIR_ARGS}
     PLUGIN_MANUFACTURER_CODE Manu
     PLUGIN_CODE Dvst
     FORMATS VST3
-    PRODUCT_NAME "D-110 Emulator"
+    PRODUCT_NAME "D-110_Emulator"
+    PLUGIN_NAME "D-110 Emulator"
 )
 
 target_sources(D110Emulator PRIVATE

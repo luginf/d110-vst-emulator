@@ -290,8 +290,10 @@ void D110AudioProcessorEditor::stubButtonPressed(const juce::String &buttonName)
 }
 
 void D110AudioProcessorEditor::chooseSysexBank() {
+	// Explicit uppercase variants because file glob matching is case-sensitive on Linux
+	// (unlike Windows/macOS); "*.*" is included to also offer an all-files fallback.
 	fileChooser = std::make_unique<juce::FileChooser>(
-		"Select a SysEx bank or MIDI file", juce::File(), "*.syx;*.mid;*.smf");
+		"Select a SysEx bank or MIDI file", juce::File(), "*.syx;*.SYX;*.mid;*.MID;*.smf;*.SMF;*.*");
 	fileChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
 		[this](const juce::FileChooser &fc) {
 			auto file = fc.getResult();
