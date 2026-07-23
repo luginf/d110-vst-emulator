@@ -13,3 +13,6 @@ out/
 *.user
 Thumbs.db
 .DS_Store
+
+# Local release-packaging zip files
+*.zip

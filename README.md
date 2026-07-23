@@ -14,7 +14,7 @@ You need your own dump of the D-110's **Control ROM** and **PCM Wave ROM** - the
 Roland firmware and are **not included** in this repository. Drop them into:
 
 ```
-%LOCALAPPDATA%\Programs\Common\VST3\D-110 ROMs\
+C:\Program Files\Common Files\VST3\D-110 Data\
 ```
 
 and the plugin will detect and load them automatically (by content, not filename) the next time
@@ -39,8 +39,25 @@ cmake -B build -S .
 cmake --build build --config Release
 ```
 
-The built `.vst3` is copied automatically to `%LOCALAPPDATA%\Programs\Common\VST3`.
+The built `.vst3` is copied automatically to `C:\Program Files\Common Files\VST3`.
 
-## License
+## Legal Notice
 
-`mt32emu` (under `munt/`) is LGPL - see `munt/mt32emu/COPYING.LESSER.txt`.
+This is an independent open-source software project. It is not affiliated
+with, endorsed by, sponsored by, or approved by Yamaha Corporation, Roland
+Corporation, Ensoniq Corporation, or any other trademark owner. All
+trademarks remain the property of their respective owners.
+
+No copyrighted Roland firmware, ROM images, or other proprietary binary
+files are included in or distributed with this repository - you must
+obtain and supply your own legally acquired Control ROM and PCM Wave ROM
+dumps (see Requirements above).
+
+This project incorporates third-party open-source code (munt/mt32emu,
+JUCE); all original copyright notices and license headers have been
+preserved. See:
+
+- [LICENSE](LICENSE) - this project's own license (AGPLv3)
+- [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) - full third-party license details
+- [CREDITS.md](CREDITS.md) - acknowledgements
+- [DISCLAIMER.md](DISCLAIMER.md) - the full disclaimer text
