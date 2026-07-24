@@ -856,12 +856,14 @@ bool Synth::open(const ROMImage &controlROMImage, const ROMImage &pcmROMImage, B
 	mt32ram.system.reverbTime = 5; // Confirmed
 	mt32ram.system.reverbLevel = 3; // Confirmed
 	memcpy(mt32ram.system.reserveSettings, &controlROMData[controlROMMap->reserveSettings], 9); // Confirmed
+	// MT-32 factory default: {1, 2, 3, 4, 5, 6, 7, 8, 9} (Part 1 -> MIDI channel 2, a well-known
+	// quirk). An alternative configuration can be selected on real MT-32 hardware by holding
+	// "Master Volume" and pressing "PART button 1"; the channel assignment is then
+	// {0, 1, 2, 3, 4, 5, 6, 7, 9} (Part 1 -> channel 1) - which is the D-110's factory default,
+	// unlike the MT-32's.
+	bool isD110ControlROM = controlROMMap != NULL && strncmp(controlROMMap->shortName, "ctrl_d110", 9) == 0;
 	for (Bit8u i = 0; i < 9; i++) {
-		// This is the default: {1, 2, 3, 4, 5, 6, 7, 8, 9}
-		// An alternative configuration can be selected by holding "Master Volume"
-		// and pressing "PART button 1" on the real MT-32's frontpanel.
-		// The channel assignment is then {0, 1, 2, 3, 4, 5, 6, 7, 9}
-		mt32ram.system.chanAssign[i] = i + 1;
+		mt32ram.system.chanAssign[i] = (isD110ControlROM && i < 8) ? i : i + 1;
 	}
 	if (useSuper) {
 		chanAssignSuper[0] = !mt32ram.system.chanAssign[0];
@@ -1688,8 +1690,6 @@ void Synth::writeMemoryRegion(const MemoryRegion *region, Bit32u addr, Bit32u le
 		break;
 	case MR_Timbres:
 		// Timbres
-		first += 128;
-		last += 128;
 		region->write(first, off, data, len);
 		for (unsigned int i = first; i <= last; i++) {
 #if MT32EMU_MONITOR_TIMBRES >= 1

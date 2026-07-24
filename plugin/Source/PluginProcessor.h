@@ -78,6 +78,15 @@ public:
 	void selectPreviousPart();
 	void stepPatch(int direction); // direction: +1 or -1
 
+	// GROUP/BANK, matching the real D-110's Patch-edit workflow: these rewrite the currently
+	// selected Part's PatchTemp.timbreGroup/timbreNum (which timbre - A/B/Memory/Rhythm bank,
+	// and which slot within it - the patch actually plays), the same live "edit buffer" the real
+	// hardware's GROUP/BANK buttons modify. This is how previously-inaccessible imported timbres
+	// (e.g. ones written into the Memory bank, which no factory Patch references by default)
+	// become audible: browse to them directly instead of only relying on existing Patch mappings.
+	void changeGroup(int direction); // direction: +1 or -1; wraps within 0-3 (A, B, Memory, Rhythm)
+	void changeBank(int direction); // direction: +1 or -1; wraps within 0-63
+
 	juce::AudioProcessorValueTreeState parameters;
 
 private:
@@ -89,6 +98,9 @@ private:
 	// Scans getAutoRomFolder() for a Control ROM and PCM ROM by content (not filename) and
 	// loads them automatically if both are found - so the user doesn't have to pick files by hand.
 	bool tryAutoLoadRoms();
+	// Queues a 1-byte SysEx DT1 write into the given Part's PatchTemp record (fieldOffset 0 =
+	// timbreGroup, 1 = timbreNum - see MemParams::PatchTemp/PatchParam in munt's Structures.h).
+	void sendPatchTempByteWrite(int part, int fieldOffset, MT32Emu::Bit8u value);
 
 	std::unique_ptr<MT32Emu::FileStream> controlRomFile;
 	std::unique_ptr<MT32Emu::FileStream> pcmRomFile;
@@ -121,6 +133,8 @@ private:
 
 	std::atomic<int> selectedPartIndex{0};
 	std::array<int, 8> currentProgramPerPart{};
+	std::array<int, 8> currentTimbreGroupPerPart{};
+	std::array<int, 8> currentTimbreNumPerPart{};
 
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D110AudioProcessor)
 };

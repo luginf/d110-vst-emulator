@@ -407,13 +407,52 @@ void D110AudioProcessor::stepPatch(int direction) {
 	if (newProgram < 0) newProgram += 128;
 	currentProgramPerPart[static_cast<size_t>(part)] = newProgram;
 
-	// Default factory chanAssign maps Part i to MIDI channel nibble i+1 (Part 1 -> channel 2, etc).
-	const int channelNibble = part + 1;
+	// D-110 factory default chanAssign maps Part i directly to MIDI channel nibble i (Part 1 ->
+	// channel 1), unlike the MT-32's Part i -> channel i+1 (see the isD110ControlROM special case
+	// in munt/mt32emu/src/Synth.cpp's Synth::open()).
+	const int channelNibble = part;
 	const MT32Emu::Bit32u message = static_cast<MT32Emu::Bit32u>(0xC0 | channelNibble)
 		| (static_cast<MT32Emu::Bit32u>(newProgram) << 8);
 
 	const juce::ScopedLock sl(engineActionLock);
 	pendingShortMessages.push_back(message);
+}
+
+void D110AudioProcessor::sendPatchTempByteWrite(int part, int fieldOffset, MT32Emu::Bit8u value) {
+	// PatchTemp for Part N (0-7) lives at Roland address 0x030000 + N*0x10, one 8-byte PatchParam
+	// record per part (see PatchTempMemoryRegion in munt/mt32emu/src/MemoryRegion.h); byte 0 of
+	// that record is timbreGroup, byte 1 is timbreNum. Offsets stay well under the 0x80 (7-bit)
+	// boundary for parts 0-7, so plain hex addition of the offset is safe here - no address
+	// nibblization/carry handling needed (contrast the 9th, rhythm-only entry at 0x030080, which
+	// would need it and isn't targeted by this function).
+	const MT32Emu::Bit8u addrHi = 0x03;
+	const MT32Emu::Bit8u addrMid = 0x00;
+	const auto addrLo = static_cast<MT32Emu::Bit8u>(part * 0x10 + fieldOffset);
+
+	std::vector<MT32Emu::Bit8u> message = {0xF0, 0x41, 0x10, 0x16, 0x12, addrHi, addrMid, addrLo, value};
+	unsigned int checksum = 0;
+	for (MT32Emu::Bit8u b : {addrHi, addrMid, addrLo, value}) checksum -= b;
+	message.push_back(static_cast<MT32Emu::Bit8u>(checksum & 0x7fu));
+	message.push_back(0xF7);
+
+	const juce::ScopedLock sl(engineActionLock);
+	pendingSysexImports.push_back(std::move(message));
+}
+
+void D110AudioProcessor::changeGroup(int direction) {
+	const int part = selectedPartIndex.load();
+	int newGroup = (currentTimbreGroupPerPart[static_cast<size_t>(part)] + direction) % 4;
+	if (newGroup < 0) newGroup += 4;
+	currentTimbreGroupPerPart[static_cast<size_t>(part)] = newGroup;
+	sendPatchTempByteWrite(part, 0, static_cast<MT32Emu::Bit8u>(newGroup));
+}
+
+void D110AudioProcessor::changeBank(int direction) {
+	const int part = selectedPartIndex.load();
+	int newNum = (currentTimbreNumPerPart[static_cast<size_t>(part)] + direction) % 64;
+	if (newNum < 0) newNum += 64;
+	currentTimbreNumPerPart[static_cast<size_t>(part)] = newNum;
+	sendPatchTempByteWrite(part, 1, static_cast<MT32Emu::Bit8u>(newNum));
 }
 
 void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {

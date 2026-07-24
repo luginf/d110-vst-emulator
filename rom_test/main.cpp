@@ -2,6 +2,7 @@
 // render the result to a 16-bit stereo WAV file for listening.
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 #include <mt32emu/mt32emu.h>
 
@@ -38,14 +39,37 @@ static uint32_t makeMsg(uint8_t status, uint8_t data1 = 0, uint8_t data2 = 0) {
 	return static_cast<uint32_t>(status) | (static_cast<uint32_t>(data1) << 8) | (static_cast<uint32_t>(data2) << 16);
 }
 
+// Scans raw bytes for concatenated F0...F7 SysEx messages, e.g. the contents of a bare .syx file.
+// Mirrors plugin/Source/PluginProcessor.cpp's extractSysexMessagesFromRawBytes - kept separate
+// here since rom_test doesn't link against JUCE.
+static std::vector<std::vector<uint8_t>> extractSysexMessagesFromRawBytes(const std::vector<uint8_t> &data) {
+	std::vector<std::vector<uint8_t>> messages;
+	size_t i = 0;
+	while (i < data.size()) {
+		if (data[i] == 0xF0) {
+			size_t j = i + 1;
+			while (j < data.size() && data[j] != 0xF7) ++j;
+			if (j < data.size()) {
+				messages.emplace_back(data.begin() + static_cast<long>(i), data.begin() + static_cast<long>(j) + 1);
+				i = j + 1;
+				continue;
+			}
+			break;
+		}
+		++i;
+	}
+	return messages;
+}
+
 int main(int argc, char **argv) {
 	if (argc < 4) {
-		std::fprintf(stderr, "Usage: %s <control_rom> <pcm_rom> <output.wav>\n", argv[0]);
+		std::fprintf(stderr, "Usage: %s <control_rom> <pcm_rom> <output.wav> [bank.syx]\n", argv[0]);
 		return 1;
 	}
 	const char *controlRomPath = argv[1];
 	const char *pcmRomPath = argv[2];
 	const char *outWavPath = argv[3];
+	const char *syxBankPath = argc >= 5 ? argv[4] : nullptr;
 
 	FileStream controlRomFile;
 	if (!controlRomFile.open(controlRomPath)) {
@@ -97,11 +121,66 @@ int main(int argc, char **argv) {
 		}
 	};
 
-	// Default factory chanAssign maps Part 1 to MIDI channel 2 (0-based channel index 1),
-	// not channel 1 - a well-known MT-32/D-110 quirk. Channel nibble 1 below = "MIDI channel 2".
-	const uint8_t channel = 1;
+	// D-110 factory default chanAssign maps Part 1 to MIDI channel 1 (0-based channel index 0)
+	// directly - unlike the MT-32, whose Part 1 defaults to channel 2, a well-known quirk.
+	const uint8_t channel = 0;
 	synth.playMsg(makeMsg(0xC0 | channel, 0)); // Program change, program 0
 	renderSeconds(0.1);
+
+	std::printf("Part 1, Patch 1 instrument before import: %s\n", synth.getPatchName(0));
+
+	if (syxBankPath != nullptr) {
+		FILE *syxFile = std::fopen(syxBankPath, "rb");
+		if (!syxFile) {
+			std::fprintf(stderr, "Failed to open SysEx bank: %s\n", syxBankPath);
+			return 1;
+		}
+		std::fseek(syxFile, 0, SEEK_END);
+		long syxSize = std::ftell(syxFile);
+		std::fseek(syxFile, 0, SEEK_SET);
+		std::vector<uint8_t> syxRaw(static_cast<size_t>(syxSize));
+		size_t bytesRead = std::fread(syxRaw.data(), 1, syxRaw.size(), syxFile);
+		std::fclose(syxFile);
+		syxRaw.resize(bytesRead);
+
+		auto messages = extractSysexMessagesFromRawBytes(syxRaw);
+		std::printf("Found %zu SysEx message(s) in %s\n", messages.size(), syxBankPath);
+
+		for (auto &message : messages) synth.playSysex(message.data(), static_cast<uint32_t>(message.size()));
+		renderSeconds(0.5); // let the synth's MIDI queue actually drain and apply the writes
+
+		// Read back the raw persistent Timbre memory directly (Group A, timbre slot 0, flat
+		// address 131072) bypassing any Patch->Timbre indirection, to check whether the write
+		// itself actually landed regardless of which patch (if any) references that slot.
+		char timbreNameRaw[11] = {};
+		synth.readMemory(131072, 10, reinterpret_cast<Bit8u *>(timbreNameRaw));
+		std::printf("Raw Timbre memory at Group A slot 0 after import: \"%s\"\n", timbreNameRaw);
+
+		// Hypothesis: writeMemoryRegion's MR_Timbres case adds a spurious +128 entry offset that
+		// readMemoryRegion doesn't apply, so a write meant for Group A slot 0 actually lands 128
+		// slots later - at "Memory" group slot 0 (flat addr 131072 + 128*256 = 163840).
+		char timbreNameShifted[11] = {};
+		synth.readMemory(163840, 10, reinterpret_cast<Bit8u *>(timbreNameShifted));
+		std::printf("Raw Timbre memory at Memory-group slot 0 (Group A + 128) after import: \"%s\"\n", timbreNameShifted);
+
+		// Re-select Patch 1 on Part 1 so any change to the timbre memory it references is picked up.
+		synth.playMsg(makeMsg(0xC0 | channel, 0));
+		renderSeconds(0.1);
+
+		std::printf("Part 1, Patch 1 instrument after import:  %s\n", synth.getPatchName(0));
+
+		// Patch 1 might just not be the patch that references the timbre slot(s) we overwrote -
+		// scan all 128 patches on Part 1 to see if any imported name shows up anywhere.
+		std::printf("Scanning all 128 patches for changed instrument names...\n");
+		for (int program = 0; program < 128; program++) {
+			synth.playMsg(makeMsg(0xC0 | channel, static_cast<uint8_t>(program)));
+			renderSeconds(0.02);
+			const char *instr = synth.getPatchName(0);
+			bool looksImported = instr != nullptr && std::strstr(instr, "KURT") != nullptr;
+			if (looksImported) std::printf("  Patch %3d: %s  <-- matches imported bank!\n", program + 1, instr);
+		}
+		std::printf("Scan done.\n");
+	}
 
 	synth.playMsg(makeMsg(0x90 | channel, 60, 64)); // Note on, C4
 	renderSeconds(0.5);

@@ -61,13 +61,15 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &processor
 						   &editCaption, &partCaption, &systemCaption, &enterCaption})
 		addAndMakeVisible(*caption);
 
-	for (const auto &entry : {std::pair<PanelButton *, const char *>(&paramGroupUp, "PARAMETER/GROUP +"),
-							   {&paramGroupDown, "PARAMETER/GROUP -"}, {&paramBankUp, "PARAMETER/BANK +"},
-							   {&paramBankDown, "PARAMETER/BANK -"}}) {
-		juce::String name(entry.second);
-		entry.first->onClick = [this, name] { stubButtonPressed(name); };
-		addAndMakeVisible(*entry.first);
-	}
+	// GROUP/BANK edit the currently selected Part's PatchTemp timbre reference (which bank -
+	// A/B/Memory/Rhythm - and which slot within it), the same "edit buffer" the real hardware's
+	// GROUP/BANK buttons modify - matching the real D-110's Patch-edit workflow.
+	paramGroupUp.onClick = [this] { audioProcessor.changeGroup(1); };
+	paramGroupDown.onClick = [this] { audioProcessor.changeGroup(-1); };
+	paramBankUp.onClick = [this] { audioProcessor.changeBank(1); };
+	paramBankDown.onClick = [this] { audioProcessor.changeBank(-1); };
+	for (auto *button : {&paramGroupUp, &paramGroupDown, &paramBankUp, &paramBankDown})
+		addAndMakeVisible(*button);
 
 	// PART steps which Part is being browsed; VALUE/NUMBER steps that Part's Patch up/down -
 	// matching the real D-110's PART + VALUE/NUMBER patch-browsing workflow.
@@ -101,7 +103,8 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &processor
 	addAndMakeVisible(actionFeedbackLabel);
 
 	midiChannelHintLabel.setText(
-		"Note: by default Part 1 listens on MIDI channel 2 (not 1) - matches real hardware.",
+		"Note: by default Part 1 listens on MIDI channel 1, Part 2 on channel 2, etc - matches "
+		"real D-110 hardware (unlike the MT-32, which starts at channel 2).",
 		juce::dontSendNotification);
 	midiChannelHintLabel.setJustificationType(juce::Justification::topLeft);
 	midiChannelHintLabel.setFont(juce::Font(13.0f, juce::Font::italic));
