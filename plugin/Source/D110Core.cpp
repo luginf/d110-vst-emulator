@@ -322,7 +322,7 @@ public:
 			if (m_regFile && !m_la32Pending && !m_la32NeedClear && !m_stuckIntHigh) {
 				const int reg = D110Core::kWaitIndexReg - D110Core::kRegFileBase;
 				const uint16_t voice = uint16_t(m_regFile[reg] | (m_regFile[reg + 1] << 8));
-				m_la32Status = uint8_t((voice + 1) & 0x1f);
+				m_la32Status = D110Core::encodeLa32Status(core->la32StatusMode(), voice);
 				m_la32Pending = true;
 				// The handler refuses to do anything unless the pin is still high when it
 				// runs, so raise it and hold it until the status has been collected.
@@ -752,6 +752,15 @@ void D110Core::pushMidi(const uint8_t *bytes, int len) {
 		midiInCount.fetch_add(1, std::memory_order_relaxed);
 	}
 	mW.store(w, std::memory_order_release);
+}
+
+uint8_t D110Core::encodeLa32Status(int mode, uint16_t voice) {
+	switch (mode) {
+	case 1: return uint8_t(voice & 0x1f);
+	case 2: return uint8_t(0x80 | (voice & 0x1f));
+	case 3: return uint8_t(0x80 | ((voice + 1) & 0x1f));
+	default: return uint8_t((voice + 1) & 0x1f);
+	}
 }
 
 // ---- capturing MAME's own log --------------------------------------------

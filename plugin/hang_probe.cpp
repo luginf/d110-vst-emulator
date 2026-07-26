@@ -142,6 +142,40 @@ int main() {
 	// The loop waits on a flag only an interrupt handler can set, and MAME drives no
 	// external interrupt on this machine at all. Supply the edge ourselves and see which
 	// rate, if any, lets the firmware finish the wait and get back to the panel.
+	// ---- which status encoding does the firmware accept? -------------------
+	// The handler derives the voice index differently depending on bit 7, and the code
+	// alone does not settle what a given byte means. Enumerate the small space instead of
+	// guessing, and let the panel say which one is right.
+	std::printf("\n=== LA32 status encodings ===\n");
+	for (int mode = 0; mode < 4; ++mode) {
+		proc.setPoweredOn(false);
+		std::this_thread::sleep_for(std::chrono::seconds(2));
+		proc.getCore().setExtIntDivider(0);
+		proc.getCore().setStuckPolicy(D110Core::StuckPolicy::La32Stub);
+		proc.getCore().setLa32StatusMode(mode);
+		proc.setForwardNotesToFirmware(true);
+		proc.setPoweredOn(true);
+		std::this_thread::sleep_for(std::chrono::seconds(9));
+
+		const uint64_t before = proc.getCore().la32Services();
+		bool alive = panelResponds(proc);
+		int survived = 0;
+		for (int i = 0; i < 4 && alive; ++i) {
+			play(proc, 6.0, true);
+			alive = panelResponds(proc);
+			if (alive) survived = (i + 1) * 6;
+		}
+		std::printf("  mode %d (%s) : survived %2ds %s   statuses %llu\n", mode,
+		            mode == 0 ? "v+1, bit7 clear" : mode == 1 ? "v,   bit7 clear"
+		            : mode == 2 ? "v,   bit7 set  " : "v+1, bit7 set  ",
+		            survived, alive ? "*** STILL ALIVE ***" : "then died",
+		            (unsigned long long)(proc.getCore().la32Services() - before));
+		if (alive) {
+			std::printf("\n  *** MODE %d KEEPS THE PANEL ALIVE WHILE PLAYING ***\n", mode);
+			break;
+		}
+	}
+
 	// ---- compare the ways of answering the firmware ------------------------
 	std::printf("\n=== answering the stuck wait: three policies compared ===\n");
 	struct Policy { const char *name; D110Core::StuckPolicy p; };

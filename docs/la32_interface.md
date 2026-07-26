@@ -123,6 +123,48 @@ because the pin is also P2.2, holding or toggling it corrupts a port the firmwar
 and the panel dies within seconds even with no notes playing at all. It has to be raised
 only when there is genuinely something to report.
 
+## What has been built, and what it proved
+
+The handshake itself now runs end to end, and none of it needs MAME patched:
+
+- The status register is supplied by a **runtime read tap** on `0x0C00`, which can be
+  installed on a running machine and may replace the value a read returns.
+- The voice the firmware is waiting on is read out of **CPU register 52**, through the
+  `register_file` share — which must be looked up through the CPU, not the root device.
+  Asking the root returns nothing, silently.
+- EXTINT is raised only while the firmware is demonstrably in the wait loop, and held
+  until the handler has collected the status, because the handler checks the pin first.
+
+Measured: the handler is entered ~12900 times in a 30-second run, the read of `0x0C00` is
+intercepted, and thousands of status bytes are handed over. The mechanism is not in doubt.
+
+**It is still not enough.** The panel stops responding anyway. Four plausible encodings of
+the status byte were enumerated and measured, and all four fail:
+
+| Mode | Status byte | Statuses collected | Result |
+| --- | --- | --- | --- |
+| 0 | `(v+1) & 0x1F`, bit 7 clear | 7130 | panel dies |
+| 1 | `v & 0x1F`, bit 7 clear | 7129 | panel dies |
+| 2 | `0x80 \| (v & 0x1F)` | 8232 | panel dies |
+| 3 | `0x80 \| ((v+1) & 0x1F)` | 255 | panel dies |
+
+Mode 3 is the interesting one: the firmware asked far fewer times, so it did take a
+different path — but it still did not recover.
+
+## What that says about the remaining work
+
+Answering the wait is not the same as satisfying the voice manager. The flag the wait loop
+polls is written at `0x35DF` (`stb a2, f440[62]`), inside chain maintenance that the
+handler only reaches on its *long* path — and which path it takes is decided by
+`rams[0x2DC0 + 2v] == 0x80`. So the firmware expects the chip to be consistent across a
+whole allocation cycle: which voices exist, in what order they complete, and what the
+tables at `0x2DC0`, `0x2E00`, `0x2EC0`, `0x2F80` and the chain at `0x33C0` say about them.
+
+The next step is therefore to trace a **complete note lifecycle** — the writes into
+`0x0C00+` that start a voice, and what the firmware then expects back — rather than to
+answer a single wait in isolation. The tooling for that is in place; the reverse
+engineering is not.
+
 ## Why this is worth doing
 
 Every Roland LA machine in MAME is in the same position — there is no LA32 anywhere in the

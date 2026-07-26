@@ -217,6 +217,19 @@ public:
 	static constexpr int kWaitIndexReg = 0x52;
 	static constexpr int kRegFileBase = 0x18;
 
+	// How to encode the voice number in the status byte. The handler treats bit 7 as an
+	// event class and derives the index differently on each path - with bit 7 clear it
+	// doubles the low bits and subtracts two, with bit 7 set and bit 5 clear it doubles
+	// them and does not - so the meaning of a given byte is not obvious from the code
+	// alone. Rather than guess, the small space is enumerated and measured.
+	//   0  (v+1) & 0x1F        bit 7 clear, index comes out as v
+	//   1  v & 0x1F            bit 7 clear, index comes out as v-1
+	//   2  0x80 | (v & 0x1F)   bit 7 set, bit 5 clear, index v
+	//   3  0x80 | ((v+1)&0x1F) bit 7 set, bit 5 clear, index v+1
+	void setLa32StatusMode(int mode) { la32Mode.store(mode, std::memory_order_release); }
+	int la32StatusMode() const { return la32Mode.load(std::memory_order_acquire); }
+	static uint8_t encodeLa32Status(int mode, uint16_t voice);
+
 	// --- diagnostics: what does the firmware talk to that is not there? --------
 	// The D-110's address map leaves nearly all of the low I/O page unmapped - only the
 	// bank register, the SO register, the two panel scan ports and the LCD are claimed.
@@ -340,6 +353,7 @@ private:
 	std::atomic<uint64_t> stuckCount{0};
 	std::atomic<int> stuckIoc1{-1};
 	std::atomic<uint64_t> la32Count{0}, la32ReadCount{0};
+	std::atomic<int> la32Mode{0};
 
 	std::atomic<bool> logUnmapped{false};
 	mutable std::mutex logMutex;
