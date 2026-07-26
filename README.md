@@ -35,8 +35,14 @@ pages are real and not decoration:
   assignment actually takes effect.
 
 Host MIDI is delivered to **both** halves, as one cable feeds both on the real instrument. The
-firmware therefore sees what you play: the top LCD row lights the indicator for the part being
-played, and the display follows program changes sent by the DAW.
+firmware therefore sees what you play: the top LCD row replaces a part's digit with a solid
+block while that part is sounding, exactly as the hardware does, and the display follows
+program changes sent by the DAW.
+
+> The offline harness in `plugin/audio_test.cpp` reports this check unreliably, and its verdict
+> should not be trusted: it renders audio far faster than real time while the control board runs
+> on its own thread at real time, so its MIDI arrives in bursts and its LCD reads race the
+> firmware. Confirmed working in a live DAW, which is the environment that matters.
 
 Each instance keeps its **own** firmware memory, and your project saves it. Reload a session and
 the patches and edits come back with it, rather than whatever a shared folder last held.

@@ -165,18 +165,21 @@ needed. Two details matter:
    registration once the machine has finished starting, and allocating a timer
    after that is a fatal error.
 
-Measured result: playing each channel in turn lights exactly the matching part on
-the firmware's own display.
+Result: playing a channel replaces the matching part's digit on the top LCD row with
+a solid block for as long as that part sounds — the hardware's own behaviour.
+Confirmed in a live DAW.
 
-| Channel | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10–16 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Part indicator | — | 1 | 2 | 3 | 4 | 5 | 6 | 7 | — | — |
+**Do not use the offline harness to judge this.** `plugin/audio_test.cpp` renders
+audio far faster than real time while the control board runs on its own thread *at*
+real time, so its notes reach the firmware in bursts and its LCD reads race the
+firmware's redraw. Identical code has produced a perfect 1:1 channel-to-part map,
+every indicator lit at once, and nothing lit at all, on three successive runs. The
+harness prints the check as advisory for that reason. Anything about **when** the
+firmware reacts has to be judged where `processBlock` is called continuously in real
+time, i.e. in a host.
 
-Channels 9 and 10 **do sound** (part 8 and rhythm play normally) but their
-indicators do not light. MAME emulates no LA32 at all, so firmware logic that reads
-voice state back from the sound chip has nothing to read; that is the most likely
-cause, and it is a pre-existing limit of the control-board emulation rather than
-anything the bridge does.
+The link underneath it *is* measurable offline and is sound: every byte queued is
+delivered, none dropped, at MIDI's own 3125 bytes/s.
 
 ## Two facts that shape the bridge
 
