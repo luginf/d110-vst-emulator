@@ -152,6 +152,19 @@ target_link_libraries(d110_state_test PRIVATE
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_state_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
 
+# Discovers the LA32's register interface by logging every access to an address the D-110's
+# map leaves unclaimed - which is precisely where the missing sound board would answer.
+add_executable(d110_la32_probe la32_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_la32_probe PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_la32_probe PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_la32_probe PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_la32_probe PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
 # Checks that an imported SysEx bank actually reaches the control board, rather than only
 # the sound engine - where the next RAM mirror silently undid it.
 add_executable(d110_sysex_test sysex_test.cpp

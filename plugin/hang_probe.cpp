@@ -142,6 +142,36 @@ int main() {
 	// The loop waits on a flag only an interrupt handler can set, and MAME drives no
 	// external interrupt on this machine at all. Supply the edge ourselves and see which
 	// rate, if any, lets the firmware finish the wait and get back to the panel.
+	// ---- compare the ways of answering the firmware ------------------------
+	std::printf("\n=== answering the stuck wait: three policies compared ===\n");
+	struct Policy { const char *name; D110Core::StuckPolicy p; };
+	for (const Policy pol : {Policy{"Off        ", D110Core::StuckPolicy::Off},
+	                         Policy{"PokeRam    ", D110Core::StuckPolicy::PokeRam},
+	                         Policy{"PulseExtInt", D110Core::StuckPolicy::PulseExtInt}}) {
+		proc.setPoweredOn(false);
+		std::this_thread::sleep_for(std::chrono::seconds(2));
+		proc.getCore().setStuckPolicy(pol.p);
+		proc.setForwardNotesToFirmware(true);
+		proc.setPoweredOn(true);
+		std::this_thread::sleep_for(std::chrono::seconds(9));
+
+		const bool bootOk = panelResponds(proc);
+		int survivedTo = 0;
+		bool alive = bootOk;
+		for (int i = 0; i < 5 && alive; ++i) {
+			play(proc, 6.0, true);
+			alive = panelResponds(proc);
+			if (alive) survivedTo = (i + 1) * 6;
+		}
+		const int ioc1 = proc.getCore().stuckIoc1Value();
+		std::printf("  %s : boot %s, survived %2ds of chords %s  (interventions %llu, "
+		            "IOC1=%02X -> EXTINT %s)\n",
+		            pol.name, bootOk ? "ok" : "DEAD", survivedTo,
+		            alive ? "*** STILL ALIVE ***" : "then died",
+		            (unsigned long long)proc.getCore().stuckReleases(), ioc1,
+		            ioc1 < 0 ? "not sampled" : ((ioc1 & 0x02) ? "DISABLED by IOC1.1" : "accepted"));
+	}
+
 	// ---- release the wait directly ----------------------------------------
 	// The loop polls a flag in battery RAM that the sound board's interrupt would set.
 	// Set it, but only while the program counter shows the firmware is actually in that
@@ -151,7 +181,7 @@ int main() {
 		proc.setPoweredOn(false);
 		std::this_thread::sleep_for(std::chrono::seconds(2));
 		proc.getCore().setExtIntDivider(0);
-		proc.getCore().setReleaseStuckWait(true);
+		proc.getCore().setStuckPolicy(D110Core::StuckPolicy::PokeRam);
 		proc.setForwardNotesToFirmware(true);
 		proc.setPoweredOn(true);
 		std::this_thread::sleep_for(std::chrono::seconds(9));

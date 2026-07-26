@@ -70,6 +70,7 @@ class D110Osd : public osd_common_t {
 	emu_timer *m_extIntTimer = nullptr;
 	int m_extIntPhase = 0;
 	bool m_extIntLevel = false;
+	bool m_stuckIntHigh = false;
 	uint8_t *m_ram = nullptr;
 	std::array<ioport_field *, D110Core::kNumButtons> m_buttonField{};
 	bool m_resolved = false;
@@ -113,6 +114,15 @@ class D110Osd : public osd_common_t {
 		// The CPU's own serial receiver is the D-110's MIDI IN. The driver drives it the
 		// same way for its built-in test note, so this needs nothing MAME does not expose.
 		m_cpu = root.subdevice<i8x9x_device>("maincpu");
+
+		// Ask MAME to report every access to an address nothing claims, and capture those
+		// reports. The sound board is exactly what is missing from this machine's map, so
+		// its register interface shows up here and nowhere else.
+		if (m_cpu && core->logUnmappedEnabled()) {
+			m_cpu->space(AS_PROGRAM).set_log_unmap(true);
+			m_machine->add_logerror_callback(
+				[core = this->core](const char *line) { core->osdLogLine(line); });
+		}
 
 		m_resolved = true;
 	}
@@ -227,14 +237,45 @@ public:
 		// which is dense enough to see which loop the firmware is sitting in.
 		core->osdSamplePc(pc);
 
-		// Release the wait the missing sound board would have released. Deliberately
-		// conditional on the program counter: if the firmware is anywhere else, nothing
-		// here writes anything.
-		if (m_ram && core->releaseStuckWait()
-		    && (pc == D110Core::kStuckLoopPc || pc == D110Core::kStuckLoopPcAlt)) {
-			for (int i = 0; i < D110Core::kVoiceFlagSpan; ++i)
-				m_ram[D110Core::kVoiceFlagBase + i] |= 0x80;
-			core->osdCountStuckRelease();
+		// Answer the firmware when it is caught waiting for the sound board. Everything
+		// here is conditional on the program counter, so a machine running normally is
+		// never touched.
+		const bool stuck =
+			(pc == D110Core::kStuckLoopPc || pc == D110Core::kStuckLoopPcAlt);
+
+		// The interrupt line must fall again before it can rise a second time, so drop it
+		// on the first tick after it was raised.
+		if (m_stuckIntHigh && !stuck) {
+			m_cpu->set_input_line(i8x9x_device::EXTINT_LINE, CLEAR_LINE);
+			m_stuckIntHigh = false;
+		}
+
+		if (!stuck) return;
+
+		// Record whether the CPU is even willing to accept the external interrupt.
+		core->osdRecordIoc1(int(m_cpu->state_int(i8x9x_device::I8X9X_IOC1)));
+
+		switch (core->stuckPolicy_()) {
+		case D110Core::StuckPolicy::PokeRam:
+			if (m_ram) {
+				for (int i = 0; i < D110Core::kVoiceFlagSpan; ++i)
+					m_ram[D110Core::kVoiceFlagBase + i] |= 0x80;
+				core->osdCountStuckRelease();
+			}
+			break;
+		case D110Core::StuckPolicy::PulseExtInt:
+			if (!m_stuckIntHigh) {
+				m_cpu->set_input_line(i8x9x_device::EXTINT_LINE, ASSERT_LINE);
+				m_stuckIntHigh = true;
+				core->osdCountStuckRelease();
+			} else {
+				// Give it a falling edge between pulses even while still stuck.
+				m_cpu->set_input_line(i8x9x_device::EXTINT_LINE, CLEAR_LINE);
+				m_stuckIntHigh = false;
+			}
+			break;
+		case D110Core::StuckPolicy::Off:
+			break;
 		}
 	}
 
@@ -655,6 +696,22 @@ void D110Core::pushMidi(const uint8_t *bytes, int len) {
 		midiInCount.fetch_add(1, std::memory_order_relaxed);
 	}
 	mW.store(w, std::memory_order_release);
+}
+
+// ---- capturing MAME's own log --------------------------------------------
+
+void D110Core::osdLogLine(const char *line) {
+	if (!logUnmapped.load(std::memory_order_acquire) || line == nullptr) return;
+	std::lock_guard<std::mutex> lock(logMutex);
+	if (logLines.size() >= kMaxLogLines) return; // stop rather than grow without bound
+	logLines.emplace_back(line);
+}
+
+std::vector<std::string> D110Core::takeLogLines() {
+	std::lock_guard<std::mutex> lock(logMutex);
+	std::vector<std::string> out;
+	out.swap(logLines);
+	return out;
 }
 
 // ---- PC sampling ----------------------------------------------------------

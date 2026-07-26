@@ -177,9 +177,40 @@ public:
 	// f440[] alone.
 	static constexpr uint16_t kVoiceFlagBase = 0x3440;
 	static constexpr int kVoiceFlagSpan = 32;
-	void setReleaseStuckWait(bool on) { releaseStuck.store(on, std::memory_order_release); }
-	bool releaseStuckWait() const { return releaseStuck.load(std::memory_order_acquire); }
+	// How to answer the firmware when it is caught waiting.
+	//   Off       - do nothing; the wait never ends and the panel dies.
+	//   PokeRam   - set the flag byte directly. Releases that loop, but bypasses the
+	//               interrupt handler, so everything else the handler would have updated
+	//               stays stale and the hang simply moves to the voice-chain walk.
+	//   PulseExtInt - raise the CPU's external interrupt, which is what the sound board
+	//               does on the hardware, and let the firmware's OWN handler run. Fires
+	//               only while the firmware is demonstrably in the wait loop: driving that
+	//               line continuously kills the panel by itself, because on this CPU the
+	//               EXTINT pin is also port 2 bit 2.
+	enum class StuckPolicy { Off, PokeRam, PulseExtInt };
+	void setStuckPolicy(StuckPolicy p) { stuckPolicy.store(int(p), std::memory_order_release); }
+	StuckPolicy stuckPolicy_() const {
+		return StuckPolicy(stuckPolicy.load(std::memory_order_acquire));
+	}
 	uint64_t stuckReleases() const { return stuckCount.load(std::memory_order_acquire); }
+	// IOC1 as it stood the last time the firmware was caught waiting. Bit 1 of it decides
+	// whether the CPU accepts the external interrupt at all: i8x9x_device sets the pending
+	// flag only `if(!extint && state && !BIT(ioc1, 1))`. If that bit is set, no amount of
+	// driving the line can ever be noticed, and EXTINT is a dead end.
+	int stuckIoc1Value() const { return stuckIoc1.load(std::memory_order_acquire); }
+	void osdRecordIoc1(int v) { stuckIoc1.store(v, std::memory_order_release); }
+
+	// --- diagnostics: what does the firmware talk to that is not there? --------
+	// The D-110's address map leaves nearly all of the low I/O page unmapped - only the
+	// bank register, the SO register, the two panel scan ports and the LCD are claimed.
+	// The sound board lives in the gaps. Turning on unmapped-access logging and capturing
+	// MAME's own log lines shows exactly which addresses the firmware writes and reads
+	// when it plays a note, which IS the LA32's register interface as the firmware sees it.
+	void setLogUnmapped(bool on) { logUnmapped.store(on, std::memory_order_release); }
+	bool logUnmappedEnabled() const { return logUnmapped.load(std::memory_order_acquire); }
+	void osdLogLine(const char *line);
+	// Takes everything captured so far and empties the buffer.
+	std::vector<std::string> takeLogLines();
 
 	// --- diagnostics: where is the CPU actually spending its time? -------------
 	// Samples the program counter densely while the machine runs. When the firmware
@@ -285,8 +316,14 @@ private:
 
 	std::atomic<int> extIntDiv{0};
 	std::atomic<uint64_t> extIntCount{0};
-	std::atomic<bool> releaseStuck{false};
+	std::atomic<int> stuckPolicy{0};
 	std::atomic<uint64_t> stuckCount{0};
+	std::atomic<int> stuckIoc1{-1};
+
+	std::atomic<bool> logUnmapped{false};
+	mutable std::mutex logMutex;
+	std::vector<std::string> logLines;
+	static constexpr size_t kMaxLogLines = 200000;
 
 	// PC histogram: written only by the machine thread, read under the mutex.
 	std::atomic<bool> pcSampling{false};
