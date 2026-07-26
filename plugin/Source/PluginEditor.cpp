@@ -1,301 +1,633 @@
 #include "PluginEditor.h"
+#include <BinaryData.h>
 
-D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &processor)
-	: AudioProcessorEditor(&processor), audioProcessor(processor) {
-	setSize(1650, 434);
+#include <cmath>
+#include <cstring>
 
-	brandLabel.setFont(juce::Font(22.0f, juce::Font::bold));
-	brandLabel.setColour(juce::Label::textColourId, juce::Colours::whitesmoke);
-	addAndMakeVisible(brandLabel);
+namespace {
 
-	modelNumberLabel.setFont(juce::Font(22.0f, juce::Font::bold));
-	modelNumberLabel.setColour(juce::Label::textColourId, juce::Colour(kAccentBlue));
-	addAndMakeVisible(modelNumberLabel);
+// --- geometry, all in the reference photograph's own pixels -------------------
+// Measured by profiling the image rather than by eye; every number below is
+// derived and justified in docs/panel_reference_notes.md.
 
-	modelLabel.setFont(juce::Font(11.0f));
-	modelLabel.setColour(juce::Label::textColourId, juce::Colour(kAccentBlue));
-	addAndMakeVisible(modelLabel);
+// The LCD window, after the asset's opening was reshaped to a real module's
+// 4.11:1 proportions. The live render fills exactly this rectangle.
+constexpr float kLcdX = 604.0f, kLcdY = 95.0f, kLcdW = 247.0f, kLcdH = 60.0f;
 
-	// EXIT/PATCH/.../ENTER captions, PART, PARAMETER, VALUE, MEMORY CARD, MIDI MESSAGE and POWER
-	// are all white on the real unit's panel.
-	for (auto *label : {&phonesLabel, &volumeLabel, &volumeMinLabel, &volumeMaxLabel, &partRockerLabel,
-						 &parameterSharedLabel, &valueTopLabel,
-						 &memoryCardLabel, &midiMessageLabel, &powerLabel}) {
-		label->setFont(juce::Font(10.0f));
-		label->setJustificationType(juce::Justification::centred);
-		label->setColour(juce::Label::textColourId, juce::Colours::whitesmoke);
-		addAndMakeVisible(*label);
+// 16x2 character grid inside that window. Everything here is the real hardware's
+// geometry (photographed in docs/lcd_reference.png) scaled by 247/300 = 0.82333,
+// so the glyphs keep the proportions they have on the actual glass.
+constexpr float kCharX0 = 610.0f;   // left edge of column 0
+constexpr float kCellW = 14.408f;   // 17.5 px on the real module
+constexpr float kLine0Y = 99.1f;    // top of line 1's dot rows
+constexpr float kLineStep = 26.35f; // line 1 -> line 2
+constexpr int kCols = D110Core::kCols;
+constexpr int kLines = D110Core::kLines;
+
+// A character cell fills its width in 6 dot columns (5 dots + 1 gap), so the
+// horizontal pitch follows from the cell. The vertical pitch does NOT follow
+// from the line pitch - a real module leaves a wider gap between rows of
+// characters than between dot rows inside one. It was measured off a full-height
+// glyph instead: R's stem spans 23 px over 7 rows on the reference photo.
+constexpr float kDotW = kCellW / 6.0f;
+constexpr float kDotH = 2.700f;
+constexpr int kDotRows = 7; // the 8th cell row is never used on this display
+
+// Sampled out of docs/lcd_reference.png. This is a POSITIVE display - dark ink on
+// a lit green field - so the glass is filled and only the ink dots are drawn.
+// There is deliberately no unlit dot grid: profiling a blank character cell on the
+// real hardware shows a smooth gradient with no periodicity at the dot pitch, i.e.
+// blank cells are plain glass. No halo either, for the same reason.
+const juce::Colour kGlassOn(0xff3e7515);  // averaged over blank, lit cells
+const juce::Colour kGlassOff(0xff1f3a0b); // backlight off: same hue, clearly dimmer
+const juce::Colour kInk(0xff0a2e05);
+
+// Supersampling factor for the offscreen LCD render.
+constexpr int kLcdSuper = 4;
+
+// How a pressed cap is drawn. The panel is photographed head-on, so a cap
+// travelling into its recess recedes from the viewer: it shrinks slightly towards
+// its own centre and the dark recess shows as a ring all the way around it.
+// Sliding it down the screen instead reads as tipping it, which is not what the
+// control does. These caps are wide and short (63 x 26), so the horizontal shrink
+// is what actually reads - and it has to be generous: at 7.5% the recess ring was
+// barely 2 px a side and the press was invisible at the default window scale, the
+// same mistake that had to be corrected on the TX81Z panel.
+constexpr float kPressShrink = 0.13f;
+constexpr float kPressDrop = 1.8f;
+constexpr float kPowerPressShrink = 0.06f;
+constexpr float kPowerPressDrop = 3.0f;
+
+// POWER: the cap face, and the bezel opening it sinks into.
+constexpr float kPowerX = 1920.0f, kPowerY = 104.0f, kPowerW = 75.0f, kPowerH = 91.0f;
+constexpr float kBezelX = 1913.0f, kBezelY = 96.0f, kBezelW = 85.0f, kBezelH = 106.0f;
+
+// MIDI MESSAGE lamp. The dark slot above POWER runs the full 1915..1997, but only a
+// short element in the MIDDLE of it is the actual lamp - profiling the slot picks it
+// out cleanly as a lighter block at x 1940..1965, y 57..59, while the bright line
+// across the whole width at y 54..55 is a specular reflection off the window's top
+// edge, not the part. Lighting the whole slot would be wrong.
+//
+// It reads unlit in the photograph, so nothing has to be painted out first. Drawn as
+// a plain rectangle - no glow halo.
+constexpr float kLampX = 1940.0f, kLampY = 56.5f, kLampW = 26.0f, kLampH = 3.5f;
+
+// VOLUME knob. The disc's body ends at r 28 and a clean dark gap runs r 29..33
+// before the printed tick ring starts at r 34, so clipping the spin at r 31 takes
+// the whole knob and none of the fixed scale. The knob carries its own printed
+// white pointer, so it rides on the cut-out and needs no synthetic dot drawn over
+// it - but that also means the photograph's own pointer angle has to be subtracted
+// before any rotation is applied.
+//
+// All three angles come from sweeping the panel image around the knob's axis. The
+// scale has 21 printed ticks; the two that matter are the outermost, because the
+// pointer has to land exactly on them at MIN and at MAX. Each was isolated in its
+// own angular window and taken as an intensity-weighted centroid over r 35..42
+// (a single wide sweep merges the last two ticks and biases the answer):
+//
+//     MIN tick  -146.74      MAX tick  +149.96      midpoint  +1.61
+//
+// The midpoint being 1.6 degrees off vertical is under a pixel at this radius, so
+// the knob still reads as pointing straight up at the middle of its travel - which
+// is where it now sits by default, since masterVolume's range was made symmetric
+// about unity gain.
+//
+// The photographed pointer is at -151.14 (centroid over r 13..26), a little past
+// the MIN tick, so that offset has to be subtracted before any rotation is applied.
+constexpr float kKnobCx = 367.5f, kKnobCy = 149.0f;
+constexpr float kKnobSpinR = 31.0f, kKnobHitR = 34.0f;
+constexpr float kKnobMinDeg = -146.74f, kKnobMaxDeg = 149.96f;
+constexpr float kKnobPhotoDeg = -151.14f;
+
+} // namespace
+
+// Left to right, top row then bottom row. Names and scan bits are exactly
+// INPUT_PORTS_START(d110) in MAME's src/mame/roland/roland_d10.cpp.
+const D110Panel::PanelButton D110Panel::kButtons[D110Panel::kNumButtons] = {
+	//   x       y     w     h    name           port  bit
+	{  959.0f,  80.0f, 63.0f, 26.0f, "Exit",        0, 0x80 },
+	{ 1033.0f,  80.0f, 63.0f, 26.0f, "Patch",       0, 0x40 },
+	{ 1107.0f,  80.0f, 63.0f, 26.0f, "Timbre",      0, 0x20 },
+	{ 1180.0f,  80.0f, 63.0f, 26.0f, "Part +",      0, 0x10 },
+	{ 1253.0f,  80.0f, 63.0f, 26.0f, "Group +",     0, 0x08 },
+	{ 1327.0f,  80.0f, 63.0f, 26.0f, "Bank +",      0, 0x04 },
+	{ 1399.0f,  80.0f, 63.0f, 26.0f, "Number +",    0, 0x02 },
+	{ 1473.0f,  80.0f, 63.0f, 26.0f, "Write/Copy",  0, 0x01 },
+
+	{  959.0f, 168.0f, 63.0f, 26.0f, "Edit",        1, 0x80 },
+	{ 1033.0f, 168.0f, 63.0f, 26.0f, "Part",        1, 0x40 },
+	{ 1107.0f, 168.0f, 63.0f, 26.0f, "System",      1, 0x20 },
+	{ 1180.0f, 168.0f, 63.0f, 26.0f, "Part -",      1, 0x10 },
+	{ 1253.0f, 168.0f, 63.0f, 26.0f, "Group -",     1, 0x08 },
+	{ 1327.0f, 168.0f, 63.0f, 26.0f, "Bank -",      1, 0x04 },
+	{ 1399.0f, 168.0f, 63.0f, 26.0f, "Number -",    1, 0x02 },
+	{ 1473.0f, 168.0f, 63.0f, 26.0f, "Enter",       1, 0x01 },
+};
+
+D110Panel::D110Panel(D110AudioProcessor &p)
+	: processor(p)
+{
+	panelImage = juce::ImageCache::getFromMemory(BinaryData::panel_reference_png,
+	                                             BinaryData::panel_reference_pngSize);
+
+	for (const auto &b : kButtons) {
+		const juce::Rectangle<float> face(b.x, b.y, b.w, b.h);
+		capImages.push_back(cutOut(face));
+		recessColours.push_back(recessColourOf(face));
 	}
-	// Only the second word - GROUP, BANK, NUMBER - is blue.
-	for (auto *label : {&paramGroupBottomLabel, &paramBankBottomLabel, &valueBottomLabel}) {
-		label->setFont(juce::Font(10.0f));
-		label->setJustificationType(juce::Justification::centred);
-		label->setColour(juce::Label::textColourId, juce::Colour(kAccentBlue));
-		addAndMakeVisible(*label);
-	}
+	powerCap = cutOut({ kPowerX, kPowerY, kPowerW, kPowerH });
+	powerRecessColour = recessColourOf({ kPowerX, kPowerY, kPowerW, kPowerH });
 
-	volumeKnob.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
-	volumeKnob.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-	volumeKnob.setColour(juce::Slider::rotarySliderFillColourId, juce::Colours::whitesmoke);
-	volumeKnob.setColour(juce::Slider::rotarySliderOutlineColourId, juce::Colour(0xff444448));
-	volumeKnob.setColour(juce::Slider::thumbColourId, juce::Colours::whitesmoke);
-	addAndMakeVisible(volumeKnob);
-	masterVolumeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
-		audioProcessor.parameters, "masterVolume", volumeKnob);
+	volumeDisc = cutOut({ kKnobCx - kKnobSpinR - 1.0f, kKnobCy - kKnobSpinR - 1.0f,
+	                      kKnobSpinR * 2.0f + 3.0f, kKnobSpinR * 2.0f + 3.0f });
 
-	addAndMakeVisible(lcd);
-
-	exitButton.onClick = [this] { audioProcessor.resetDisplayToMainMode(); };
-	addAndMakeVisible(exitButton);
-	addAndMakeVisible(exitCaption);
-
-	for (const auto &entry : {std::pair<PanelButton *, const char *>(&patchButton, "PATCH"),
-							   {&timbreButton, "TIMBRE"}, {&writeCopyButton, "WRITE/COPY"},
-							   {&editButton, "EDIT"}, {&partButton, "PART"}, {&systemButton, "SYSTEM"},
-							   {&enterButton, "ENTER"}}) {
-		juce::String name(entry.second);
-		entry.first->onClick = [this, name] { stubButtonPressed(name); };
-		addAndMakeVisible(*entry.first);
-	}
-	for (auto *caption : {&patchCaption, &timbreCaption, &writeCopyCaption,
-						   &editCaption, &partCaption, &systemCaption, &enterCaption})
-		addAndMakeVisible(*caption);
-
-	for (const auto &entry : {std::pair<PanelButton *, const char *>(&paramGroupUp, "PARAMETER/GROUP +"),
-							   {&paramGroupDown, "PARAMETER/GROUP -"}, {&paramBankUp, "PARAMETER/BANK +"},
-							   {&paramBankDown, "PARAMETER/BANK -"}}) {
-		juce::String name(entry.second);
-		entry.first->onClick = [this, name] { stubButtonPressed(name); };
-		addAndMakeVisible(*entry.first);
-	}
-
-	// PART steps which Part is being browsed; VALUE/NUMBER steps that Part's Patch up/down -
-	// matching the real D-110's PART + VALUE/NUMBER patch-browsing workflow.
-	partUp.onClick = [this] { audioProcessor.selectNextPart(); };
-	partDown.onClick = [this] { audioProcessor.selectPreviousPart(); };
-	valueUp.onClick = [this] { audioProcessor.stepPatch(1); };
-	valueDown.onClick = [this] { audioProcessor.stepPatch(-1); };
-	for (auto *button : {&partUp, &partDown, &valueUp, &valueDown}) addAndMakeVisible(*button);
-
-	addAndMakeVisible(midiLed);
-
-	powerSwitch.setClickingTogglesState(true);
-	powerSwitch.setToggleState(true, juce::dontSendNotification);
-	powerSwitch.onClick = [this] { audioProcessor.setPoweredOn(powerSwitch.getToggleState()); };
-	addAndMakeVisible(powerSwitch);
-
-	utilitiesHeader.setFont(juce::Font(13.0f, juce::Font::bold));
-	utilitiesHeader.setColour(juce::Label::textColourId, juce::Colours::darkgrey);
-	addAndMakeVisible(utilitiesHeader);
-
-	addAndMakeVisible(importBankButton);
-	importBankButton.onClick = [this] { chooseSysexBank(); };
-
-	importStatusLabel.setJustificationType(juce::Justification::topLeft);
-	importStatusLabel.setColour(juce::Label::textColourId, juce::Colours::lightblue);
-	addAndMakeVisible(importStatusLabel);
-
-	actionFeedbackLabel.setJustificationType(juce::Justification::topLeft);
-	actionFeedbackLabel.setColour(juce::Label::textColourId, juce::Colours::grey);
-	actionFeedbackLabel.setFont(juce::Font(12.0f, juce::Font::italic));
-	addAndMakeVisible(actionFeedbackLabel);
-
-	midiChannelHintLabel.setText(
-		"Note: by default Part 1 listens on MIDI channel 2 (not 1) - matches real hardware.",
-		juce::dontSendNotification);
-	midiChannelHintLabel.setJustificationType(juce::Justification::topLeft);
-	midiChannelHintLabel.setFont(juce::Font(13.0f, juce::Font::italic));
-	addAndMakeVisible(midiChannelHintLabel);
-
-	addAndMakeVisible(reverbToggle);
-	reverbAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
-		audioProcessor.parameters, "reverbEnabled", reverbToggle);
-
-	addAndMakeVisible(superModeToggle);
-	superModeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
-		audioProcessor.parameters, "superMode", superModeToggle);
-
-	refreshLcdAndLed();
-	startTimerHz(15);
+	setSize(kRefW, kRefH);
+	startTimerHz(60);
 }
 
-D110AudioProcessorEditor::~D110AudioProcessorEditor() {
-	stopTimer();
+D110Panel::~D110Panel() { stopTimer(); }
+
+juce::Image D110Panel::cutOut(juce::Rectangle<float> area) const
+{
+	return panelImage.getClippedImage(
+		area.getSmallestIntegerContainer().getIntersection(panelImage.getBounds())).createCopy();
 }
 
-void D110AudioProcessorEditor::paint(juce::Graphics &g) {
-	g.fillAll(juce::Colour(0xff202024));
-
-	auto rackArea = getLocalBounds().removeFromTop(kRackHeight);
-	g.setColour(juce::Colour(0xff2b2b30));
-	g.fillRect(rackArea);
-	g.setColour(juce::Colours::black);
-	g.drawLine(0.0f, static_cast<float>(kRackHeight), static_cast<float>(getWidth()),
-			   static_cast<float>(kRackHeight), 2.0f);
-
-	// Headphone jack (decorative - no functional headphone-only output in a plugin).
-	g.setColour(juce::Colour(0xff111114));
-	g.fillEllipse(phonesJackBounds.toFloat());
-	g.setColour(juce::Colour(0xff444448));
-	g.drawEllipse(phonesJackBounds.toFloat(), 2.0f);
-
-	// Memory Card slot (decorative - no real memory card support in the plugin).
-	g.setColour(juce::Colour(0xff111114));
-	g.fillRoundedRectangle(memoryCardSlotBounds.toFloat(), 3.0f);
-	g.setColour(juce::Colour(0xff444448));
-	g.drawRoundedRectangle(memoryCardSlotBounds.toFloat(), 3.0f, 1.0f);
+// The strip immediately above a cap is the black recess it sits in. Its average
+// colour is what shows as a ring around the cap once pressed.
+juce::Colour D110Panel::recessColourOf(juce::Rectangle<float> capFace) const
+{
+	const auto strip = cutOut({ capFace.getX(), capFace.getY() - 4.0f, capFace.getWidth(), 4.0f });
+	juce::int64 r = 0, g = 0, b = 0, n = 0;
+	for (int y = 0; y < strip.getHeight(); ++y)
+		for (int x = 0; x < strip.getWidth(); ++x) {
+			const auto c = strip.getPixelAt(x, y);
+			r += c.getRed(); g += c.getGreen(); b += c.getBlue(); ++n;
+		}
+	if (n == 0)
+		return juce::Colour(0xff0a0a0a);
+	return juce::Colour(juce::uint8(r / n), juce::uint8(g / n), juce::uint8(b / n));
 }
 
-void D110AudioProcessorEditor::resized() {
-	auto area = getLocalBounds();
-	auto rackArea = area.removeFromTop(kRackHeight).reduced(14, 10);
+// Renders the whole display - glass and ink dots - into an offscreen image at
+// kLcdSuper times the panel's own resolution. Rebuilt only when the contents
+// actually change, which is also the only time the panel repaints for the LCD's
+// sake, so this costs nothing per frame.
+void D110Panel::rebuildLcdImage()
+{
+	const int w = int(kLcdW) * kLcdSuper, h = int(kLcdH) * kLcdSuper;
+	if (!lcdImage.isValid() || lcdImage.getWidth() != w || lcdImage.getHeight() != h)
+		lcdImage = juce::Image(juce::Image::RGB, w, h, false);
 
-	// The logo only sits above Phones/Volume in the upper-left corner on the real unit - it does
-	// NOT span the full panel width, and everything else (LCD, buttons, memory card, MIDI/power)
-	// uses the FULL rack height independently of it, starting from the very top of the strip.
-	auto leftColumn = rackArea.removeFromLeft(250);
-	auto logoArea = leftColumn.removeFromTop(56);
-	auto brandRow = logoArea.removeFromTop(30);
-	brandLabel.setBounds(brandRow.removeFromLeft(90));
-	modelNumberLabel.setBounds(brandRow);
-	modelLabel.setBounds(logoArea);
+	juce::Graphics g(lcdImage);
 
-	auto phonesVolumeArea = leftColumn;
-	auto phonesArea = phonesVolumeArea.removeFromLeft(phonesVolumeArea.getWidth() / 2);
-	phonesLabel.setBounds(phonesArea.removeFromTop(16));
-	phonesJackBounds = phonesArea.withSizeKeepingCentre(32, 32);
+	// Powered off, the backlight simply stops: the glass keeps its colour but goes
+	// noticeably dimmer, and nothing is written on it. The same holds in the second or
+	// two after POWER while the machine starts and the firmware has not drawn yet.
+	if (!processor.isPoweredOn() || !lcdLive) {
+		g.fillAll(kGlassOff);
+		return;
+	}
 
-	auto volArea = phonesVolumeArea;
-	volumeLabel.setBounds(volArea.removeFromTop(16));
-	auto volMinMaxArea = volArea.removeFromBottom(14);
-	volumeKnob.setBounds(volArea.withSizeKeepingCentre(58, 58));
-	volumeMinLabel.setBounds(volMinMaxArea.removeFromLeft(volMinMaxArea.getWidth() / 2));
-	volumeMaxLabel.setBounds(volMinMaxArea);
+	g.fillAll(kGlassOn);
 
-	rackArea.removeFromLeft(12);
+	// Panel-space -> offscreen-pixel. Deliberately NOT rounded to whole pixels: the
+	// character cell is 14.4 panel px across 6 dot columns, so snapping makes dot
+	// widths alternate between two values and the glyph strokes come out visibly
+	// ragged. Antialiasing at kLcdSuper and downscaling from there keeps every dot
+	// the same size.
+	auto px = [](float panelX) { return (panelX - kLcdX) * kLcdSuper; };
+	auto py = [](float panelY) { return (panelY - kLcdY) * kLcdSuper; };
+	constexpr float kDotGapX = 1.9f, kDotGapY = 2.1f; // in offscreen pixels
 
-	auto mainRow = rackArea; // full rack height - independent of the logo above Phones/Volume
+	g.setColour(kInk);
+	for (int line = 0; line < kLines; ++line)
+		for (int col = 0; col < kCols; ++col) {
+			// One byte per dot row, straight out of the real MSM6222B: bit 4 is the
+			// leftmost dot. The glyphs are therefore the genuine mask CGROM's, and the
+			// cursor and its blink are the controller's own - nothing here interprets
+			// character codes or consults a font.
+			const juce::uint8 *rows = lcdRows + ((size_t)line * kCols + col) * D110Core::kRowsPerChar;
+			for (int dy = 0; dy < kDotRows; ++dy)
+				for (int dx = 0; dx < 5; ++dx) {
+					if (!((rows[dy] >> (4 - dx)) & 1))
+						continue;
+					const float x0 = px(kCharX0 + col * kCellW + dx * kDotW);
+					const float y0 = py(kLine0Y + line * kLineStep + dy * kDotH);
+					g.fillRect(x0, y0, kDotW * kLcdSuper - kDotGapX, kDotH * kLcdSuper - kDotGapY);
+				}
+		}
+}
 
-	// The real LCD module is a wide, short rectangle (roughly 3:1) - not a near-square panel.
-	auto lcdArea = mainRow.removeFromLeft(380).reduced(0, 25);
-	lcd.setBounds(lcdArea);
+void D110Panel::timerCallback()
+{
+	bool needsRepaint = false;
 
-	mainRow.removeFromLeft(12);
-
-	// The real D-110 has ONE continuous strip of 8 flat buttons on top and 8 on the bottom -
-	// EXIT/PATCH/TIMBRE/[4 up-arrows]/WRITE-COPY, then EDIT/PART/SYSTEM/[4 down-arrows]/ENTER.
-	// Columns 1-3 and 8 caption their own button above (row 1) or below (row 2); the 4 arrow
-	// columns instead share one caption row sandwiched BETWEEN row 1 and row 2 (PART/GROUP/BANK/NUMBER).
-	// The 4 arrow columns need a TWO-line mid caption (e.g. white "PARAMETER" above blue "GROUP"),
-	// except the PART column which only has one word - passed as midBottom with midTop left null.
-	auto layoutColumn = [](juce::Rectangle<int> col, juce::Label *topCaption, juce::Button &topButton,
-							juce::Label *midTop, juce::Label *midBottom, juce::Button &bottomButton,
-							juce::Label *bottomCaption) {
-		col = col.withSizeKeepingCentre(col.getWidth(), 132); // vertically centre the 5-row stack
-		auto topCaptionArea = col.removeFromTop(14);
-		if (topCaption != nullptr) topCaption->setBounds(topCaptionArea);
-		topButton.setBounds(col.removeFromTop(40).reduced(4, 3));
-		auto midArea = col.removeFromTop(24);
-		if (midTop != nullptr) midTop->setBounds(midArea.removeFromTop(12));
-		if (midBottom != nullptr) midBottom->setBounds(midArea);
-		bottomButton.setBounds(col.removeFromTop(40).reduced(4, 3));
-		auto bottomCaptionArea = col.removeFromTop(14);
-		if (bottomCaption != nullptr) bottomCaption->setBounds(bottomCaptionArea);
+	// Every moving part eases towards its real position, so it has a little mass
+	// and settles instead of teleporting.
+	auto ease = [&needsRepaint](ButtonMotion &m) {
+		const float target = (m.held || m.latched) ? 1.0f : 0.0f;
+		if (std::abs(target - m.depth) > 0.002f) {
+			m.depth += (target - m.depth) * 0.30f;
+			needsRepaint = true;
+		} else if (m.depth != target) {
+			m.depth = target;
+			needsRepaint = true;
+		}
 	};
 
-	const int colWidth = 72;
-	const int colGap = 6;
-	auto gridArea = mainRow.removeFromLeft(8 * colWidth + 7 * colGap);
-	auto nextGridColumn = [&] {
-		auto col = gridArea.removeFromLeft(colWidth);
-		gridArea.removeFromLeft(colGap);
-		return col;
-	};
+	const bool power = processor.isPoweredOn();
+	// POWER is the panel's one latching control: it stays pushed in while the unit
+	// is on, and comes back out when switched off.
+	powerMotion.latched = power;
 
-	layoutColumn(nextGridColumn(), &exitCaption, exitButton, nullptr, nullptr, editButton, &editCaption);
-	layoutColumn(nextGridColumn(), &patchCaption, patchButton, nullptr, nullptr, partButton, &partCaption);
-	layoutColumn(nextGridColumn(), &timbreCaption, timbreButton, nullptr, nullptr, systemButton, &systemCaption);
-	layoutColumn(nextGridColumn(), nullptr, partUp, nullptr, &partRockerLabel, partDown, nullptr);
+	for (auto &m : motion)
+		ease(m);
+	ease(powerMotion);
 
-	// GROUP and BANK share a single "PARAMETER" label centred over both of their columns, rather
-	// than repeating it above each one - capture the two column rects to compute that shared span.
-	auto groupCol = nextGridColumn();
-	auto bankCol = nextGridColumn();
-	layoutColumn(groupCol, nullptr, paramGroupUp, nullptr, &paramGroupBottomLabel, paramGroupDown, nullptr);
-	layoutColumn(bankCol, nullptr, paramBankUp, nullptr, &paramBankBottomLabel, paramBankDown, nullptr);
-	{
-		auto sharedArea = groupCol.getUnion(bankCol).withSizeKeepingCentre(groupCol.getWidth() * 2 + colGap, 132);
-		sharedArea.removeFromTop(14 + 40); // skip past the (empty) top-caption row and the up-arrow row
-		parameterSharedLabel.setBounds(sharedArea.removeFromTop(12));
+	const float volume = processor.getMasterVolume();
+	if (volumeDisplayed < 0.0f)
+		volumeDisplayed = volume; // no swing on the first paint
+	if (std::abs(volume - volumeDisplayed) > 0.0005f) {
+		volumeDisplayed += (volume - volumeDisplayed) * 0.16f;
+		needsRepaint = true;
+	} else if (volumeDisplayed != volume) {
+		volumeDisplayed = volume;
+		needsRepaint = true;
 	}
 
-	layoutColumn(nextGridColumn(), nullptr, valueUp, &valueTopLabel, &valueBottomLabel, valueDown, nullptr);
-	layoutColumn(nextGridColumn(), &writeCopyCaption, writeCopyButton, nullptr, nullptr, enterButton, &enterCaption);
+	bool lcdChanged = !lcdInitialised;
 
-	mainRow.removeFromLeft(12);
+	// The display is whatever the emulated MSM6222B is actually showing. While the unit
+	// is off there is no machine running, so the glass just sits dark.
+	if (power) {
+		juce::uint8 rows[D110Core::kLcdBytes];
+		if (processor.getCore().getLcd(rows)) {
+			if (!lcdLive || std::memcmp(rows, lcdRows, sizeof(rows)) != 0) {
+				std::memcpy(lcdRows, rows, sizeof(rows));
+				lcdLive = true;
+				lcdChanged = true;
+			}
+		}
+	} else if (lcdLive) {
+		lcdLive = false;
+		lcdChanged = true;
+	}
 
-	// Memory Card label sits directly above its slot, not floating at the top of the whole column.
-	auto cardArea = mainRow.removeFromLeft(150);
-	auto cardUnit = cardArea.withSizeKeepingCentre(cardArea.getWidth(), 40);
-	memoryCardLabel.setBounds(cardUnit.removeFromTop(16));
-	memoryCardSlotBounds = cardUnit.withSizeKeepingCentre(cardUnit.getWidth() - 10, 20);
+	// The MIDI MESSAGE lamp still follows mt32emu, which is the half that actually sees
+	// the notes. Once the firmware's own SO register drives it, this moves across.
+	const auto snap = processor.getLcdSnapshot();
+	if (snap.midiLedOn != lastSnapshot.midiLedOn) {
+		lastSnapshot = snap;
+		needsRepaint = true;
+	}
 
-	mainRow.removeFromLeft(12);
+	if (power != lastPowerOn) {
+		lastPowerOn = power;
+		lcdChanged = true;
+	}
 
-	auto rightCluster = mainRow;
-	auto midiUnit = rightCluster.removeFromTop(rightCluster.getHeight() / 2).withSizeKeepingCentre(
-		rightCluster.getWidth(), 40);
-	midiMessageLabel.setBounds(midiUnit.removeFromTop(16));
-	midiLed.setBounds(midiUnit.withSizeKeepingCentre(14, 14));
+	if (lcdChanged) {
+		rebuildLcdImage();
+		lcdInitialised = true;
+		needsRepaint = true;
+	}
 
-	auto powerUnit = rightCluster.withSizeKeepingCentre(rightCluster.getWidth(), 56);
-	powerLabel.setBounds(powerUnit.removeFromTop(16));
-	powerSwitch.setBounds(powerUnit.withSizeKeepingCentre(36, 36));
-
-	// --- utilities strip ---
-	auto utilArea = area.reduced(12);
-	utilitiesHeader.setBounds(utilArea.removeFromTop(20));
-	utilArea.removeFromTop(4);
-
-	auto importRow = utilArea.removeFromTop(28);
-	importBankButton.setBounds(importRow.removeFromLeft(220));
-	importRow.removeFromLeft(10);
-	importStatusLabel.setBounds(importRow);
-
-	utilArea.removeFromTop(4);
-	actionFeedbackLabel.setBounds(utilArea.removeFromTop(18));
-
-	utilArea.removeFromTop(6);
-	midiChannelHintLabel.setBounds(utilArea.removeFromTop(20));
-
-	utilArea.removeFromTop(6);
-	reverbToggle.setBounds(utilArea.removeFromTop(24));
-	utilArea.removeFromTop(4);
-	superModeToggle.setBounds(utilArea.removeFromTop(24));
+	if (needsRepaint)
+		repaint(); // whole panel: a clipped repaint would silently drop the lamp
 }
 
-void D110AudioProcessorEditor::timerCallback() {
-	refreshLcdAndLed();
-	importStatusLabel.setText(audioProcessor.getLastImportMessage(), juce::dontSendNotification);
+void D110Panel::paint(juce::Graphics &g)
+{
+	g.drawImageAt(panelImage, 0, 0);
+
+	for (int i = 0; i < kNumButtons; ++i)
+		paintButton(g, i);
+
+	paintPowerSwitch(g);
+	paintVolumeKnob(g);
+	paintMidiLamp(g);
+	paintLcd(g);
 }
 
-void D110AudioProcessorEditor::refreshLcdAndLed() {
-	auto snapshot = audioProcessor.getLcdSnapshot();
-	lcd.setSnapshot(snapshot);
-	midiLed.setOn(snapshot.midiLedOn);
+// Where a cap's photographed image is drawn for a given press depth: shrunk about
+// its own centre, so it recedes into the panel rather than sliding down it, and
+// seated a fraction lower.
+juce::Rectangle<float> D110Panel::pressedRect(juce::Rectangle<float> face, float depth,
+                                              float shrink, float drop)
+{
+	const float s = 1.0f - shrink * depth;
+	return face.withSizeKeepingCentre(face.getWidth() * s, face.getHeight() * s)
+	           .translated(0.0f, drop * depth);
 }
 
-void D110AudioProcessorEditor::stubButtonPressed(const juce::String &buttonName) {
-	actionFeedbackLabel.setText(buttonName + ": not implemented yet", juce::dontSendNotification);
+// Draws a cap at `dst` over its own footprint `face`, with the recess showing as a
+// ring around it and the bezel shadowing its upper edge.
+void D110Panel::paintPressedCap(juce::Graphics &g, const juce::Image &cap, juce::Colour recess,
+                                juce::Rectangle<float> face, juce::Rectangle<float> dst, float depth)
+{
+	g.setColour(recess);
+	g.fillRect(face);
+
+	// Placed by transform rather than by drawImage's integer rectangle: these caps are
+	// only 26 px tall, so a 7.5% shrink is under 2 px and rounding it away would leave
+	// the press with no visible travel at all.
+	g.drawImageTransformed(cap, juce::AffineTransform::scale(dst.getWidth() / float(cap.getWidth()),
+	                                                        dst.getHeight() / float(cap.getHeight()))
+	                                .translated(dst.getX(), dst.getY()));
+
+	// Less light reaches a cap once it is down in its recess, and the bezel throws
+	// a shadow across its top edge.
+	g.setColour(juce::Colours::black.withAlpha(0.18f * depth));
+	g.fillRect(dst);
+
+	juce::ColourGradient shade(juce::Colours::black.withAlpha(0.55f * depth), dst.getX(), dst.getY(),
+	                           juce::Colours::transparentBlack, dst.getX(), dst.getY() + dst.getHeight() * 0.45f, false);
+	g.setGradientFill(shade);
+	g.fillRect(dst.withHeight(dst.getHeight() * 0.45f));
 }
 
-void D110AudioProcessorEditor::chooseSysexBank() {
-	fileChooser = std::make_unique<juce::FileChooser>(
-		"Select a SysEx bank or MIDI file", juce::File(), "*.syx;*.mid;*.smf");
-	fileChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-		[this](const juce::FileChooser &fc) {
-			auto file = fc.getResult();
-			if (file == juce::File()) return;
-			audioProcessor.importSysexBank(file);
+void D110Panel::paintButton(juce::Graphics &g, int index) const
+{
+	const float depth = motion[index].depth;
+	if (depth < 0.02f)
+		return; // untouched: the photograph already shows the cap correctly
+
+	const auto &b = kButtons[index];
+	const juce::Rectangle<float> face(b.x, b.y, b.w, b.h);
+	paintPressedCap(g, capImages[size_t(index)], recessColours[size_t(index)], face,
+	                pressedRect(face, depth, kPressShrink, kPressDrop), depth);
+}
+
+void D110Panel::paintPowerSwitch(juce::Graphics &g) const
+{
+	if (powerMotion.depth < 0.02f)
+		return;
+
+	const juce::Rectangle<float> face(kPowerX, kPowerY, kPowerW, kPowerH);
+	paintPressedCap(g, powerCap, powerRecessColour, face,
+	                pressedRect(face, powerMotion.depth, kPowerPressShrink, kPowerPressDrop),
+	                powerMotion.depth);
+}
+
+void D110Panel::paintVolumeKnob(juce::Graphics &g) const
+{
+	const float value = juce::jlimit(0.0f, 1.0f, volumeDisplayed < 0.0f ? processor.getMasterVolume()
+	                                                                    : volumeDisplayed);
+	// The cut-out already carries the photograph's own pointer angle, so only the
+	// difference between where the pointer should be and where it was shot is applied.
+	const float deg = kKnobMinDeg + (kKnobMaxDeg - kKnobMinDeg) * value - kKnobPhotoDeg;
+	if (std::abs(deg) < 0.05f)
+		return; // at rest: the photograph is already correct
+
+	juce::Graphics::ScopedSaveState ss(g);
+	juce::Path clip;
+	clip.addEllipse(kKnobCx - kKnobSpinR, kKnobCy - kKnobSpinR, kKnobSpinR * 2.0f, kKnobSpinR * 2.0f);
+	g.reduceClipRegion(clip);
+
+	// The cut-out was taken from the panel at this origin, so put it back exactly
+	// there and spin about the true centre.
+	const float ox = std::floor(kKnobCx - kKnobSpinR - 1.0f);
+	const float oy = std::floor(kKnobCy - kKnobSpinR - 1.0f);
+	g.drawImageTransformed(volumeDisc, juce::AffineTransform::translation(ox, oy)
+	                                       .rotated(juce::degreesToRadians(deg), kKnobCx, kKnobCy));
+}
+
+void D110Panel::paintMidiLamp(juce::Graphics &g) const
+{
+	// A plain rectangular lens. The photographed lamp is unlit, so the unlit state
+	// needs nothing drawn at all.
+	//
+	// What lights it, from munt's Display::checkDisplayStateUpdated(): a MIDI message
+	// having been played since the last reset - an 80 ms blink, BLINK_TIME_MILLIS -
+	// OR any of the eight VOICE parts currently sounding ("the LED represents activity
+	// of the voice parts only", so the Rhythm part does not light it). On the real
+	// hardware the firmware drives it directly: bit 0 of the SO register at 0x0200,
+	// per so_w() in MAME's roland_d10.cpp - which is what this will be rebound to once
+	// the firmware is running, and which will also settle whether it flashes at
+	// power-on.
+	if (!processor.isPoweredOn() || !lastSnapshot.midiLedOn)
+		return;
+
+	const juce::Rectangle<float> lens(kLampX, kLampY, kLampW, kLampH);
+	g.setColour(juce::Colour(0xffe0472a));
+	g.fillRect(lens);
+	g.setColour(juce::Colour(0xffffc9b0).withAlpha(0.75f));
+	g.fillRect(lens.reduced(1.0f, 1.0f));
+}
+
+void D110Panel::paintLcd(juce::Graphics &g) const
+{
+	// Blank the window first and unconditionally: the photograph was taken of a
+	// unit with its own glass showing, and anything less than a guaranteed opaque
+	// cover here lets that ghost through under the live render.
+	g.setColour(processor.isPoweredOn() ? kGlassOn : kGlassOff);
+	g.fillRect(kLcdX, kLcdY, kLcdW, kLcdH);
+
+	if (lcdImage.isValid())
+		g.drawImage(lcdImage, int(kLcdX), int(kLcdY), int(kLcdW), int(kLcdH),
+		            0, 0, lcdImage.getWidth(), lcdImage.getHeight(), false);
+}
+
+int D110Panel::buttonAt(juce::Point<float> p) const
+{
+	if (juce::Rectangle<float>(kBezelX, kBezelY, kBezelW, kBezelH).contains(p))
+		return kPowerIndex;
+
+	for (int i = 0; i < kNumButtons; ++i)
+		if (juce::Rectangle<float>(kButtons[i].x, kButtons[i].y, kButtons[i].w, kButtons[i].h).contains(p))
+			return i;
+
+	return -1;
+}
+
+// Every button now closes its real switch in the firmware's 2x8 scan matrix, so the
+// menus, the patch and timbre editors and the Write/Copy confirmations are the
+// Roland firmware's own - not anything reimplemented here. kButtons carries each
+// button's port and mask straight from INPUT_PORTS_START(d110); D110Core wants the
+// bit NUMBER, so the mask is converted here.
+void D110Panel::setButtonState(int index, bool down)
+{
+	if (index < 0 || index >= kNumButtons) return;
+	if (!processor.getCore().isRunning()) return; // nothing to press while the unit is off
+	const auto &b = kButtons[index];
+	int bit = 0;
+	while (bit < 7 && !((b.scanBit >> bit) & 1)) ++bit;
+	processor.getCore().setButton(D110Core::buttonIndex(b.scanPort, bit), down);
+}
+
+void D110Panel::mouseDown(const juce::MouseEvent &e)
+{
+	// Emulator settings live on a right-click, keeping the photographed panel free
+	// of controls the hardware does not have.
+	if (e.mods.isPopupMenu()) {
+		showOptionsMenu();
+		return;
+	}
+
+	const auto p = e.position;
+	const int idx = buttonAt(p);
+
+	if (idx == kPowerIndex) {
+		processor.togglePower();
+		if (!processor.isPoweredOn())
+			for (auto &m : motion) { m.held = false; m.latched = false; }
+		return;
+	}
+
+	if (idx >= 0) {
+		auto &m = motion[size_t(idx)];
+
+		// A plain click is always momentary, and always releases a cap that was latched.
+		// Latching is deliberate only: it needs a modifier. It used to be a double-click,
+		// which meant ordinary quick clicking latched buttons by accident and left them
+		// stuck down - and worse, a single click on a latched cap did nothing, so there
+		// was no obvious way out.
+		if (e.mods.isCtrlDown() || e.mods.isAltDown()) {
+			m.latched = !m.latched;
+			m.held = false;
+			setButtonState(idx, m.latched);
+			return;
+		}
+
+		if (m.latched) {
+			m.latched = false;
+			m.held = false;
+			setButtonState(idx, false);
+			return;
+		}
+
+		m.held = true;
+		setButtonState(idx, true);
+		return;
+	}
+
+	if (p.getDistanceFrom({ kKnobCx, kKnobCy }) <= kKnobHitR) {
+		drag = Drag::volume;
+		dragStart = p;
+		dragStartValue = processor.getMasterVolume();
+	}
+}
+
+void D110Panel::mouseDrag(const juce::MouseEvent &e)
+{
+	if (drag != Drag::volume)
+		return;
+	processor.setMasterVolume(dragStartValue + (dragStart.y - e.position.y) / 120.0f);
+}
+
+void D110Panel::mouseUp(const juce::MouseEvent &)
+{
+	// A latched cap keeps its own `latched` flag, so clearing `held` here leaves the
+	// switch closed - which is the whole point of latching, since real D-110 procedures
+	// need two buttons at once and one mouse cannot do that.
+	for (int i = 0; i < kNumButtons; ++i) {
+		if (!motion[size_t(i)].held) continue;
+		motion[size_t(i)].held = false;
+		if (!motion[size_t(i)].latched) setButtonState(i, false);
+	}
+	drag = Drag::none;
+}
+
+// Deliberately empty. Latching a button lives on ctrl/alt-click (see mouseDown):
+// hanging it off a double-click meant that clicking a button twice in quick
+// succession - which is exactly how anyone steps a value - silently latched it down.
+void D110Panel::mouseDoubleClick(const juce::MouseEvent &) {}
+
+void D110Panel::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w)
+{
+	if (e.position.getDistanceFrom({ kKnobCx, kKnobCy }) <= kKnobHitR)
+		processor.setMasterVolume(processor.getMasterVolume() + w.deltaY * 0.5f);
+}
+
+void D110Panel::showOptionsMenu()
+{
+	auto *reverb = processor.parameters.getParameter("reverbEnabled");
+	auto *superMode = processor.parameters.getParameter("superMode");
+	const bool reverbOn = reverb != nullptr && reverb->getValue() > 0.5f;
+	const bool superOn = superMode != nullptr && superMode->getValue() > 0.5f;
+
+	juce::PopupMenu m;
+	m.addItem(1, "Import SysEx/MIDI Bank...");
+	m.addItem(4, "Factory Reset (rebuild patch memory from ROM)",
+	          processor.getCore().isRunning() && !processor.getCore().isResetting());
+	m.addSeparator();
+	m.addItem(2, "Reverb", true, reverbOn);
+	m.addItem(3, "Super Mode (unofficial, extra polyphony)", true, superOn);
+	m.addSeparator();
+
+	if (processor.isSynthReady()) {
+		m.addItem(100, "Control ROM: " + processor.getControlRomDescription(), false, false);
+		m.addItem(101, "PCM ROM: " + processor.getPcmRomDescription(), false, false);
+	} else {
+		auto error = processor.getLastError();
+		m.addItem(100, error.isNotEmpty() ? error : juce::String("No ROMs loaded"), false, false);
+	}
+	m.addItem(102, processor.getCore().isRunning()
+	                   ? juce::String("Control board: D-110 firmware running")
+	                   : juce::String("Control board: stopped (switch POWER on)"),
+	          false, false);
+	if (processor.getLastImportMessage().isNotEmpty())
+		m.addItem(103, processor.getLastImportMessage(), false, false);
+	m.addItem(104, "Part 1 listens on MIDI channel 2, as on real hardware", false, false);
+
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
+		[this, reverb, superMode, reverbOn, superOn](int result) {
+			switch (result) {
+			case 1:
+				fileChooser = std::make_unique<juce::FileChooser>(
+					"Select a SysEx bank or MIDI file", juce::File(), "*.syx;*.mid;*.smf");
+				fileChooser->launchAsync(
+					juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+					[this](const juce::FileChooser &fc) {
+						const auto file = fc.getResult();
+						if (file != juce::File())
+							processor.importSysexBank(file);
+					});
+				break;
+			case 2:
+				if (reverb != nullptr) {
+					reverb->beginChangeGesture();
+					reverb->setValueNotifyingHost(reverbOn ? 0.0f : 1.0f);
+					reverb->endChangeGesture();
+				}
+				break;
+			case 4:
+				processor.getCore().factoryReset();
+				break;
+			case 3:
+				if (superMode != nullptr) {
+					superMode->beginChangeGesture();
+					superMode->setValueNotifyingHost(superOn ? 0.0f : 1.0f);
+					superMode->endChangeGesture();
+				}
+				break;
+			default:
+				break;
+			}
 		});
+}
+
+// ---------------------------------------------------------------------------
+
+D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
+	: juce::AudioProcessorEditor(&p), panel(p)
+{
+	addAndMakeVisible(panel);
+
+	constrainer.setFixedAspectRatio(double(D110Panel::kRefW) / double(D110Panel::kRefH));
+	constrainer.setSizeLimits(900, 108, D110Panel::kRefW, D110Panel::kRefH);
+	setConstrainer(&constrainer);
+
+	setResizable(true, true);
+	setSize(1500, 181);
+}
+
+void D110AudioProcessorEditor::paint(juce::Graphics &g) { g.fillAll(juce::Colours::black); }
+
+void D110AudioProcessorEditor::resized()
+{
+	const float s = float(getWidth()) / float(D110Panel::kRefW);
+	panel.setBounds(0, 0, D110Panel::kRefW, D110Panel::kRefH);
+	panel.setTransform(juce::AffineTransform::scale(s));
 }

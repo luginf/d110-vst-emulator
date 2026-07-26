@@ -51,9 +51,13 @@ static std::vector<std::vector<MT32Emu::Bit8u>> extractSysexMessagesFromMidiFile
 static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout() {
 	std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
 
+	// 0..2 rather than 0..1.5 so that unity gain - the default - is the exact middle of the range,
+	// and therefore sits dead centre on the panel knob's printed scale (which the reference photo
+	// shows is centred on straight-up to within 0.03 degrees). The default loudness is unchanged;
+	// the knob simply now points at 12 o'clock at rest instead of leaning right.
 	params.push_back(std::make_unique<juce::AudioParameterFloat>(
 		juce::ParameterID{"masterVolume", 1}, "Master Volume",
-		juce::NormalisableRange<float>(0.0f, 1.5f), 1.0f));
+		juce::NormalisableRange<float>(0.0f, 2.0f), 1.0f));
 
 	params.push_back(std::make_unique<juce::AudioParameterBool>(
 		juce::ParameterID{"reverbEnabled", 1}, "Reverb", true));
@@ -96,13 +100,76 @@ void D110AudioProcessor::closeSynth() {
 }
 
 void D110AudioProcessor::setControlRomPath(const juce::String &path) {
+	if (!juce::File(path).loadFileAsData(controlRomData)) {
+		lastError = "Could not read control ROM file: " + path;
+		return;
+	}
 	controlRomPath = path;
 	openSynthIfReady();
 }
 
 void D110AudioProcessor::setPcmRomPath(const juce::String &path) {
+	if (!juce::File(path).loadFileAsData(pcmRomData)) {
+		lastError = "Could not read PCM ROM file: " + path;
+		return;
+	}
 	pcmRomPath = path;
 	openSynthIfReady();
+}
+
+void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
+	if (poweredOn.load() == shouldBePoweredOn) return;
+	poweredOn = shouldBePoweredOn;
+
+	// Booting is the real thing: the machine starts here and the firmware comes up on the
+	// panel's own display in real time, not fast-forwarded.
+	if (shouldBePoweredOn) {
+		const auto nvram = getNvramFolder();
+		nvram.createDirectory();
+		core.start(getMameRomPath().toStdString(), nvram.getFullPathName().toStdString());
+	} else {
+		core.stop();
+	}
+}
+
+juce::File D110AudioProcessor::getNvramFolder() {
+	return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+		.getChildFile("D-110 Emulator")
+		.getChildFile("nvram");
+}
+
+// The ROM files sit loose in the plugin's data folder, the same as every other synth in
+// this series. The emulated control board, though, insists on MAME's own convention: a
+// romset is either `d110.zip` or a directory literally named `d110`. Rather than push
+// that layout onto the data folder, the plugin quietly mirrors the ROMs into a private
+// working folder shaped the way the machine wants. Nothing about the data folder
+// changes, and the copy is about 1.2 MB.
+juce::String D110AudioProcessor::getMameRomPath() {
+	const auto root = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+		.getChildFile("D-110 Emulator").getChildFile("romset");
+	const auto setDir = root.getChildFile("d110");
+	setDir.createDirectory();
+
+	// Only the sizes a D-110 chip can actually have, so nothing unrelated in the data
+	// folder gets dragged along. Sub-folders are searched too, in case the user unpacked
+	// the archive rather than emptying it out.
+	auto isChipSize = [](juce::int64 n) {
+		return n == 4096 || n == 32768 || n == 131072 || n == 524288;
+	};
+
+	const auto source = getAutoRomFolder();
+	if (source.isDirectory())
+		for (const auto &entry : juce::RangedDirectoryIterator(source, true, "*", juce::File::findFiles)) {
+			const auto file = entry.getFile();
+			if (!isChipSize(file.getSize())) continue;
+			const auto target = setDir.getChildFile(file.getFileName());
+			// Refresh only when it actually differs, so start-up is not a needless copy.
+			if (!target.existsAsFile() || target.getSize() != file.getSize()
+			    || target.getLastModificationTime() < file.getLastModificationTime())
+				file.copyFileTo(target);
+		}
+
+	return root.getFullPathName();
 }
 
 juce::File D110AudioProcessor::getAutoRomFolder() {
@@ -113,37 +180,133 @@ juce::File D110AudioProcessor::getAutoRomFolder() {
 	return juce::File("C:/Program Files/Common Files/VST3/D-110 Data");
 }
 
+bool D110AudioProcessor::identifyRomData(const juce::MemoryBlock &data,
+                                         MT32Emu::ROMInfo::Type &typeOut) const {
+	if (data.getSize() == 0) return false;
+	MT32Emu::ArrayFile probe(static_cast<const MT32Emu::Bit8u *>(data.getData()), data.getSize());
+	const MT32Emu::ROMImage *image = MT32Emu::ROMImage::makeROMImage(&probe);
+	const MT32Emu::ROMInfo *info = image->getROMInfo();
+	const bool recognised = info != nullptr;
+	if (recognised) typeOut = info->type;
+	MT32Emu::ROMImage::freeROMImage(image);
+	return recognised;
+}
+
 bool D110AudioProcessor::tryAutoLoadRoms() {
 	auto folder = getAutoRomFolder();
 	if (!folder.isDirectory()) return false;
 
-	juce::String foundControl, foundPcm;
-	for (const auto &entry : juce::RangedDirectoryIterator(folder, false, "*", juce::File::findFiles)) {
+	// Recursive: an unpacked MAME romset sits in a sub-folder named after the set
+	// (d110/), which is the layout the plugin's data folder normally has.
+	for (const auto &entry : juce::RangedDirectoryIterator(folder, true, "*", juce::File::findFiles)) {
 		auto file = entry.getFile();
-		MT32Emu::FileStream probe;
-		if (!probe.open(file.getFullPathName().toRawUTF8())) continue;
+		juce::MemoryBlock data;
+		if (!file.loadFileAsData(data)) continue;
 
-		const MT32Emu::ROMImage *image = MT32Emu::ROMImage::makeROMImage(&probe);
-		const MT32Emu::ROMInfo *info = image->getROMInfo();
-		if (info != nullptr) {
-			if (info->type == MT32Emu::ROMInfo::Control && foundControl.isEmpty())
-				foundControl = file.getFullPathName();
-			else if (info->type == MT32Emu::ROMInfo::PCM && foundPcm.isEmpty())
-				foundPcm = file.getFullPathName();
+		MT32Emu::ROMInfo::Type type;
+		if (!identifyRomData(data, type)) continue;
+
+		if (type == MT32Emu::ROMInfo::Control && controlRomData.getSize() == 0) {
+			controlRomData = std::move(data);
+			controlRomPath = file.getFullPathName();
+		} else if (type == MT32Emu::ROMInfo::PCM && pcmRomData.getSize() == 0) {
+			pcmRomData = std::move(data);
+			pcmRomPath = file.getFullPathName();
 		}
-		MT32Emu::ROMImage::freeROMImage(image);
-		probe.close();
 	}
 
-	if (foundControl.isEmpty() || foundPcm.isEmpty()) return false;
+	// Nothing recognised as a whole image? The folder may still hold a MAME romset,
+	// whose per-chip dumps have to be joined before mt32emu will know them.
+	if (controlRomData.getSize() == 0 || pcmRomData.getSize() == 0)
+		tryAssembleRomsFromChipDumps(folder);
 
-	controlRomPath = foundControl;
-	pcmRomPath = foundPcm;
+	if (controlRomData.getSize() == 0 || pcmRomData.getSize() == 0) return false;
 	return openSynthIfReady();
 }
 
+// A MAME d110 romset holds the D-110's chips separately, exactly as they sit on the
+// board, while mt32emu wants the two images the board presents to the CPU. The joins
+// below were verified byte for byte against the ROMs this plugin was already using:
+//
+//   Control = firmware (IC19, 32K) ++ presets (IC12, 128K)   -> SHA1 8d549f33...
+//   PCM     = wave IC8 (512K)      ++ wave IC7 (512K)        -> SHA1 8eb2e385...
+//
+// Note the PCM order - IC8 first, then IC7. The other way round is not what mt32emu
+// recognises. Chips are matched on content, so their filenames do not matter, and
+// they may be loose in the folder or still inside the romset's .zip.
+bool D110AudioProcessor::tryAssembleRomsFromChipDumps(const juce::File &folder) {
+	struct Chip { const char *sha1; size_t size; };
+	static const Chip kFirmwareV110 = { "28635510f30d6c1fb88e00da03e5b4e045c380cb", 32768 };
+	static const Chip kFirmwareV106 = { "73b155fb0a8adc2362e73cb0803dafba9ccfb508", 32768 };
+	static const Chip kPresets      = { "05587a0542b01625dcde37de5bb339880e47eb93", 131072 };
+	static const Chip kWaveIc7      = { "6760d14900161b8715c2bfd4ebe997877087c90c", 524288 };
+	static const Chip kWaveIc8      = { "9c59f50518a070461b2ec6cb4e43ee7cc1e905b6", 524288 };
+
+	juce::MemoryBlock firmwareV110, firmwareV106, presets, waveIc7, waveIc8;
+
+	auto consider = [&](const juce::MemoryBlock &data) {
+		// mt32emu already carries a SHA1 implementation, so the chips are identified
+		// with that rather than by adding another one here.
+		MT32Emu::ArrayFile probe(static_cast<const MT32Emu::Bit8u *>(data.getData()), data.getSize());
+		const juce::String digest(probe.getSHA1());
+		auto take = [&](const Chip &chip, juce::MemoryBlock &into) {
+			if (into.getSize() == 0 && data.getSize() == chip.size && digest == chip.sha1)
+				into = data;
+		};
+		take(kFirmwareV110, firmwareV110);
+		take(kFirmwareV106, firmwareV106);
+		take(kPresets, presets);
+		take(kWaveIc7, waveIc7);
+		take(kWaveIc8, waveIc8);
+	};
+
+	for (const auto &entry : juce::RangedDirectoryIterator(folder, true, "*", juce::File::findFiles)) {
+		const auto file = entry.getFile();
+
+		if (file.hasFileExtension("zip")) {
+			juce::ZipFile zip(file);
+			for (int i = 0; i < zip.getNumEntries(); ++i) {
+				std::unique_ptr<juce::InputStream> stream(zip.createStreamForEntry(i));
+				if (stream == nullptr) continue;
+				juce::MemoryBlock data;
+				stream->readIntoMemoryBlock(data);
+				consider(data);
+			}
+			continue;
+		}
+
+		juce::MemoryBlock data;
+		if (file.loadFileAsData(data)) consider(data);
+	}
+
+	// v1.10 is the later firmware, so prefer it when both are present.
+	const juce::MemoryBlock &firmware = firmwareV110.getSize() != 0 ? firmwareV110 : firmwareV106;
+
+	if (controlRomData.getSize() == 0 && firmware.getSize() != 0 && presets.getSize() != 0) {
+		juce::MemoryBlock joined(firmware);
+		joined.append(presets.getData(), presets.getSize());
+		MT32Emu::ROMInfo::Type type;
+		if (identifyRomData(joined, type) && type == MT32Emu::ROMInfo::Control) {
+			controlRomData = std::move(joined);
+			controlRomPath = "(assembled from MAME chip dumps: firmware + presets)";
+		}
+	}
+
+	if (pcmRomData.getSize() == 0 && waveIc7.getSize() != 0 && waveIc8.getSize() != 0) {
+		juce::MemoryBlock joined(waveIc8);
+		joined.append(waveIc7.getData(), waveIc7.getSize());
+		MT32Emu::ROMInfo::Type type;
+		if (identifyRomData(joined, type) && type == MT32Emu::ROMInfo::PCM) {
+			pcmRomData = std::move(joined);
+			pcmRomPath = "(assembled from MAME chip dumps: wave IC8 + IC7)";
+		}
+	}
+
+	return controlRomData.getSize() != 0 && pcmRomData.getSize() != 0;
+}
+
 bool D110AudioProcessor::openSynthIfReady() {
-	if (controlRomPath.isEmpty() || pcmRomPath.isEmpty()) {
+	if (controlRomData.getSize() == 0 || pcmRomData.getSize() == 0) {
 		lastError = "Waiting for both Control ROM and PCM ROM to be selected.";
 		return false;
 	}
@@ -151,16 +314,13 @@ bool D110AudioProcessor::openSynthIfReady() {
 	closeSynth();
 	lastError.clear();
 
-	auto newControlFile = std::make_unique<MT32Emu::FileStream>();
-	if (!newControlFile->open(controlRomPath.toRawUTF8())) {
-		lastError = "Could not open control ROM file: " + controlRomPath;
-		return false;
-	}
-	auto newPcmFile = std::make_unique<MT32Emu::FileStream>();
-	if (!newPcmFile->open(pcmRomPath.toRawUTF8())) {
-		lastError = "Could not open PCM ROM file: " + pcmRomPath;
-		return false;
-	}
+	// The ROM bytes are held in memory rather than read through a FileStream, because a
+	// Control or PCM image may have been assembled from a MAME romset's separate chip
+	// dumps and so never exists as a file on disk in the form mt32emu wants.
+	auto newControlFile = std::make_unique<MT32Emu::ArrayFile>(
+		static_cast<const MT32Emu::Bit8u *>(controlRomData.getData()), controlRomData.getSize());
+	auto newPcmFile = std::make_unique<MT32Emu::ArrayFile>(
+		static_cast<const MT32Emu::Bit8u *>(pcmRomData.getData()), pcmRomData.getSize());
 
 	const MT32Emu::ROMImage *newControlImage = MT32Emu::ROMImage::makeROMImage(newControlFile.get());
 	const MT32Emu::ROMImage *newPcmImage = MT32Emu::ROMImage::makeROMImage(newPcmFile.get());
@@ -258,6 +418,16 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 	for (auto message : pendingShortMessagesToSend)
 		synth->playMsg(message);
 
+	// The bridge: whenever the control board's own parameter memory changes - because a
+	// button was pressed on the panel - the core hands us the Roland exclusive message
+	// the hardware would have used, and the LA engine takes it natively. This is what
+	// makes an edit made on the panel audible.
+	{
+		MT32Emu::Bit8u sysex[D110Core::kMaxSysexBytes];
+		while (const int len = core.popSysex(sysex))
+			synth->playSysex(sysex, static_cast<MT32Emu::Bit32u>(len));
+	}
+
 	if (static_cast<int>(interleavedScratch.size()) < numSamples * 2)
 		interleavedScratch.resize(static_cast<size_t>(numSamples) * 2);
 
@@ -330,10 +500,21 @@ juce::AudioProcessorEditor *D110AudioProcessor::createEditor() {
 
 D110AudioProcessor::LcdSnapshot D110AudioProcessor::getLcdSnapshot() const {
 	LcdSnapshot snapshot;
-	snapshot.selectedPartNumber = selectedPartIndex.load() + 1;
+
+	// Both rows start as spaces, so anything shorter than 16 characters is padded rather than
+	// leaving whatever the previous, longer message put there.
+	for (int line = 0; line < LcdSnapshot::kLines; ++line)
+		for (int col = 0; col < LcdSnapshot::kCols; ++col)
+			snapshot.text[line][col] = ' ';
+
+	auto write = [&snapshot](int line, int col, const char *s) {
+		for (int i = 0; s[i] != '\0' && col + i < LcdSnapshot::kCols; ++i)
+			snapshot.text[line][col + i] = static_cast<juce::uint8>(s[i]);
+	};
 
 	if (!synth) {
-		snapshot.patchLine = "(no ROMs loaded)";
+		write(0, 0, "D-110  No ROMs");
+		write(1, 0, "loaded");
 		return snapshot;
 	}
 
@@ -342,18 +523,41 @@ D110AudioProcessor::LcdSnapshot D110AudioProcessor::getLcdSnapshot() const {
 	// its internal buffer can leave stale bytes behind between different message lengths.
 	char unusedBuffer[21] = {};
 	snapshot.midiLedOn = synth->getDisplayState(unusedBuffer, false);
-	snapshot.partStatesBitmask = synth->getPartStates();
 
-	// Row 1 already says which Part is selected, so row 2 doesn't repeat "PartN" - that would be
-	// the same duplication the real LCD doesn't have. We show the patch number we track ourselves
-	// (honest, since we don't know the real unit's exact bank-letter addressing scheme) plus name.
+	// Row 1, exactly as the real unit draws it (see docs/lcd_reference.png): the eight Part slots
+	// and the Rhythm slot, then the mode word. A Part that currently has a partial playing in a
+	// non-releasing phase has its number REPLACED by the full-block character - the hardware's own
+	// convention, documented in munt's Display.cpp, not a dimmed digit.
+	const MT32Emu::Bit32u partStates = synth->getPartStates();
+	for (int i = 0; i < 8; ++i)
+		snapshot.text[0][i] = (partStates & (1u << i)) ? LcdSnapshot::kActivePartBlock
+		                                               : static_cast<juce::uint8>('1' + i);
+	snapshot.text[0][8] = (partStates & (1u << 8)) ? LcdSnapshot::kActivePartBlock
+	                                               : static_cast<juce::uint8>('R');
+	write(0, 10, "RomPly");
+
+	// Row 2: "<part>:<patch name>", again matching the photographed screen.
 	const int part = selectedPartIndex.load();
-	const char *name = synth->getPatchName(static_cast<MT32Emu::Bit8u>(part));
-	const int program = currentProgramPerPart[static_cast<size_t>(part)];
-	snapshot.patchLine = "Patch " + juce::String(program + 1).paddedLeft('0', 3) + ": "
-		+ (name != nullptr ? juce::String(name).trim() : juce::String("(unknown)"));
+	snapshot.text[1][0] = static_cast<juce::uint8>('1' + part);
+	snapshot.text[1][1] = ':';
+	if (const char *name = synth->getPatchName(static_cast<MT32Emu::Bit8u>(part)))
+		write(1, 2, juce::String(name).trim().toRawUTF8());
 
 	return snapshot;
+}
+
+float D110AudioProcessor::getMasterVolume() const {
+	if (auto *p = parameters.getParameter("masterVolume"))
+		return p->getValue();
+	return 1.0f;
+}
+
+void D110AudioProcessor::setMasterVolume(float newValue) {
+	if (auto *p = parameters.getParameter("masterVolume")) {
+		p->beginChangeGesture();
+		p->setValueNotifyingHost(juce::jlimit(0.0f, 1.0f, newValue));
+		p->endChangeGesture();
+	}
 }
 
 void D110AudioProcessor::resetDisplayToMainMode() {

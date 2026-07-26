@@ -16,3 +16,13 @@ Thumbs.db
 
 # Local release-packaging zip files
 *.zip
+
+# Scanned Roland manuals used as measurement references. They are Roland's
+# copyright, so they stay local - docs/sysex_address_map.md records where to get
+# them and what was taken from them.
+docs/manuals/
+
+# MAME writes its own config/nvram next to whatever binary ran it.
+plugin/Source/cfg/
+cfg/
+nvram/

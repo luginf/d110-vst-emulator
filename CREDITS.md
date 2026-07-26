@@ -12,6 +12,11 @@ In particular:
   top of.
 - **davidhsilaban** - for the D-110-specific fork of munt this project
   vendors and builds against.
+- **The MAME team**, and in particular **Olivier Galibert** and
+  **Jonathan Gevaryahu** - for `roland_d10.cpp` and the `msm6222b` LCD
+  controller. Their driver is what lets this plugin run the D-110's real
+  Roland firmware, so that the menus, the display and all sixteen
+  front-panel buttons are the hardware's own rather than a reimplementation.
 - **The JUCE / Raw Material Software team**, for the JUCE framework this
   plugin is built on.
 

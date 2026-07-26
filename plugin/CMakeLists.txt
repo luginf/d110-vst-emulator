@@ -1,8 +1,15 @@
 cmake_minimum_required(VERSION 3.22)
-project(D110Emulator VERSION 0.1.0)
+project(D110Emulator VERSION 0.7.0)
 
-set(CMAKE_CXX_STANDARD 17)
+# C++20 because MAME's headers need it.
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# CRITICAL: MAME's Release libs are built against the static runtime, so everything
+# here - JUCE and mt32emu included - must use /MT too or the link mixes runtimes.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/mame.cmake")
 
 include(FetchContent)
 FetchContent_Declare(
@@ -20,6 +27,10 @@ set(libmt32emu_C_INTERFACE FALSE CACHE BOOL "" FORCE)
 set(libmt32emu_CPP_INTERFACE TRUE CACHE BOOL "" FORCE)
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../munt/mt32emu" "${CMAKE_CURRENT_BINARY_DIR}/mt32emu_build")
 
+# The front panel IS the reference photograph - see docs/panel_reference_notes.md.
+juce_add_binary_data(D110PanelData
+    SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../docs/panel_reference.png")
+
 juce_add_plugin(D110Emulator
     COMPANY_NAME "DIY"
     IS_SYNTH TRUE
@@ -31,14 +42,19 @@ juce_add_plugin(D110Emulator
     VST3_COPY_DIR "C:/Program Files/Common Files/VST3"
     PLUGIN_MANUFACTURER_CODE Manu
     PLUGIN_CODE Dvst
-    FORMATS VST3
+    FORMATS VST3 Standalone
     PRODUCT_NAME "D-110 Emulator"
 )
 
 target_sources(D110Emulator PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
+    Source/D110Core.cpp
+    "${MAME_DRIVLIST}"
 )
+
+target_include_directories(D110Emulator PRIVATE ${MAME_INCLUDES})
+target_compile_definitions(D110Emulator PRIVATE ${MAME_DEFS})
 
 target_compile_definitions(D110Emulator PUBLIC
     JUCE_WEB_BROWSER=0
@@ -48,12 +64,57 @@ target_compile_definitions(D110Emulator PUBLIC
 )
 
 target_link_libraries(D110Emulator PRIVATE
+    D110PanelData
+    ${MAME_LIBS} ${MAME_SYS_LIBS}
     MT32Emu::mt32emu
     juce::juce_audio_utils
     juce::juce_audio_processors
 )
 
+# MAME's own emulator_info definitions collide with ours by design, and its libs are
+# built with a different debug-info setting than JUCE's.
+foreach(_fmt VST3 Standalone)
+    if(TARGET D110Emulator_${_fmt})
+        target_link_options(D110Emulator_${_fmt} PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+    endif()
+endforeach()
+
 target_link_libraries(D110Emulator PUBLIC
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags
 )
+
+# ---------------------------------------------------------------------------
+# Console check of the D110Core lifecycle: boots the real firmware in-process and
+# prints the MSM6222B's own dot matrix while pressing front-panel buttons. Proves
+# the wrap independently of the plugin.
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Offline audio check: instantiates the real processor, powers it on, plays a note
+# and measures the output. No DAW, no audio device. Also the harness for proving
+# that a panel edit becomes audible once the RAM bridge is in.
+# ---------------------------------------------------------------------------
+add_executable(d110_audio_test audio_test.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_audio_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_audio_test PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_audio_test PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_audio_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Maps the firmware's battery RAM onto Roland's SysEx addresses by experiment: presses
+# panel buttons and reports which bytes moved. See docs/sysex_address_map.md.
+add_executable(d110_bridge_probe bridge_probe.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_bridge_probe PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_bridge_probe PRIVATE ${MAME_DEFS})
+target_link_libraries(d110_bridge_probe PRIVATE ${MAME_LIBS} ${MAME_SYS_LIBS})
+target_link_options(d110_bridge_probe PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+add_executable(d110_core_test core_test.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_core_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_core_test PRIVATE ${MAME_DEFS})
+target_link_libraries(d110_core_test PRIVATE ${MAME_LIBS} ${MAME_SYS_LIBS})
+target_link_options(d110_core_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
