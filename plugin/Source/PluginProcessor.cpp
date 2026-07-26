@@ -97,6 +97,7 @@ D110AudioProcessor::D110AudioProcessor()
 }
 
 D110AudioProcessor::~D110AudioProcessor() {
+	if (templateThread.joinable()) templateThread.join();
 	releaseInstanceId(instanceId.toDashedString());
 	closeSynth();
 }
@@ -147,12 +148,15 @@ void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
 
 		// A brand-new instance has no firmware memory at all, and a D-110 with blank
 		// battery RAM boots to an empty patch - it reads as broken rather than as new.
-		// Each instance now having its OWN memory makes this the normal case rather than
-		// a once-per-install oddity, so do what the manual tells an owner to do with a
-		// fresh unit: the documented cold start, performed automatically. Only when there
-		// is genuinely nothing to lose - a restored project brings its own memory, and it
-		// is written out before this point.
-		const bool virgin = !nvram.getChildFile("d110").getChildFile("rams").existsAsFile();
+		// Since every instance has its own memory, that is now the normal case.
+		//
+		// The cold start takes about ten seconds and restarts the machine, so running it
+		// on every fresh instance would mean watching the unit initialise every single
+		// time it is loaded - which is exactly what a real D-110 does NOT do. So do it
+		// ONCE, keep the result as a template, and seed every later instance from that
+		// copy instead. Loading the plugin then comes up in working order immediately.
+		bool virgin = !nvram.getChildFile("d110").getChildFile("rams").existsAsFile();
+		if (virgin && seedFromTemplate()) virgin = false;
 
 		if (!core.start(getMameRomPath().toStdString(), nvram.getFullPathName().toStdString())) {
 			// Another instance already holds the emulated control board. Stay off rather
@@ -163,21 +167,100 @@ void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
 			return;
 		}
 		powerBlocked = false;
-		if (virgin) core.factoryReset();
+		if (virgin) {
+			// No template yet - this is the first time this machine has ever been used.
+			// Do the documented cold start and keep what it produces, so no later
+			// instance has to sit through it.
+			core.factoryReset();
+			captureTemplateWhenReady();
+		}
 	} else {
+		if (templateThread.joinable()) templateThread.join();
 		core.stop();
 	}
 	poweredOn = shouldBePoweredOn;
 }
 
+// The firmware's memory lives beside the ROMs, in the plugin's own data folder, exactly as
+// it does for the other synths in this series - MU-100R keeps `mame_nvram\mu100r\nvram`,
+// QS300 keeps `mame_nvram\qs300\ram`, and so on. Same shape here, so the D-110's battery
+// RAM is simply `D-110 Data\mame_nvram\d110\rams`.
+//
+// That folder is normally writable without elevation, but it sits under Program Files and
+// on another machine it may not be. Falling back to app data keeps the plugin working
+// rather than silently losing every edit; the right-click menu reports which is in use.
 juce::File D110AudioProcessor::getNvramRoot() {
+	const auto preferred = getAutoRomFolder().getChildFile("mame_nvram");
+	static const bool writable = [preferred] {
+		preferred.createDirectory();
+		const auto probe = preferred.getChildFile(".write-test");
+		if (!probe.replaceWithText("x")) return false;
+		probe.deleteFile();
+		return true;
+	}();
+	if (writable) return preferred;
+
 	return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
 		.getChildFile("D-110 Emulator")
 		.getChildFile("nvram");
 }
 
+bool D110AudioProcessor::nvramIsBesideRoms() {
+	return getNvramRoot().isAChildOf(getAutoRomFolder());
+}
+
+// Each instance's own working memory. Kept under `instances/` so it cannot be mistaken for
+// the instrument's own memory sitting next to it.
 juce::File D110AudioProcessor::getNvramFolder() const {
-	return getNvramRoot().getChildFile(instanceId.toDashedString());
+	return getNvramRoot().getChildFile("instances").getChildFile(instanceId.toDashedString());
+}
+
+// The instrument's own memory: one initialised copy made the first time this plugin is ever
+// used, and reused as the starting point for every instance afterwards. It is what stops
+// the unit initialising itself on every load, and its path is deliberately the one MAME
+// itself would have written - the same layout the other synths in this series use.
+juce::File D110AudioProcessor::getTemplateFolder() {
+	return getNvramRoot().getChildFile("d110");
+}
+
+bool D110AudioProcessor::seedFromTemplate() const {
+	const auto tpl = getTemplateFolder();
+	const auto rams = tpl.getChildFile("rams");
+	if (!rams.existsAsFile()) return false;
+
+	const auto dest = getNvramFolder().getChildFile("d110");
+	dest.createDirectory();
+	if (!rams.copyFileTo(dest.getChildFile("rams"))) return false;
+	const auto memcs = tpl.getChildFile("memcs");
+	if (memcs.existsAsFile()) memcs.copyFileTo(dest.getChildFile("memcs"));
+	return true;
+}
+
+void D110AudioProcessor::captureTemplateWhenReady() {
+	if (templateThread.joinable()) templateThread.join();
+	templateThread = std::thread([this] {
+		// Wait out the cold start, then take the image from the core rather than from
+		// disk: MAME only writes its NVRAM file when the machine exits, so the file is
+		// still the pre-reset one at this point.
+		while (core.isResetting())
+			std::this_thread::sleep_for(std::chrono::milliseconds(200));
+		std::this_thread::sleep_for(std::chrono::seconds(2));
+
+		std::vector<juce::uint8> ram(D110Core::kRamSize, 0);
+		if (!core.isRunning() || !core.getRam(ram.data())) return;
+
+		// Only keep it if the firmware really did initialise. A blank image is mostly
+		// zeroes; saving one would poison every future instance with the very emptiness
+		// this is meant to avoid.
+		size_t nonZero = 0;
+		for (juce::uint8 b : ram)
+			if (b) ++nonZero;
+		if (nonZero < D110Core::kRamSize / 8) return;
+
+		const auto tpl = getTemplateFolder();
+		tpl.createDirectory();
+		tpl.getChildFile("rams").replaceWithData(ram.data(), ram.size());
+	});
 }
 
 // MAME keeps each nvram_device in its own file under <nvram_directory>/<machine>/, so the

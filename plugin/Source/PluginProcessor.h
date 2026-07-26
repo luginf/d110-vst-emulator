@@ -5,6 +5,7 @@
 #include "D110Core.h"
 #include <array>
 #include <memory>
+#include <thread>
 
 class D110AudioProcessor : public juce::AudioProcessor {
 public:
@@ -112,6 +113,9 @@ public:
 	// id, and getStateInformation carries its contents in the project file.
 	static juce::File getNvramRoot();
 	juce::File getNvramFolder() const;
+	// False when the data folder turned out not to be writable and app data is being used
+	// instead, so the panel's menu can say so rather than leave it a mystery.
+	static bool nvramIsBesideRoms();
 
 	// Set when a power-on was refused because another instance already holds the emulated
 	// machine. Only one can run per process - see D110Core::start.
@@ -209,6 +213,14 @@ private:
 	// to pick up next time it starts, and reads it back out again.
 	void writeNvramFiles(const juce::MemoryBlock &rams, const juce::MemoryBlock &memcs) const;
 	juce::MemoryBlock readNvramFile(const juce::String &name) const;
+
+	// One initialised copy of the firmware's memory, kept from the first cold start ever
+	// performed and used to seed every instance created afterwards. Without it a new
+	// instance would have to sit through the ten-second initialisation on every load.
+	static juce::File getTemplateFolder();
+	bool seedFromTemplate() const;
+	void captureTemplateWhenReady();
+	std::thread templateThread;
 
 	std::atomic<int> selectedPartIndex{0};
 	std::array<int, 8> currentProgramPerPart{};

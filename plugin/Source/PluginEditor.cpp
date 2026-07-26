@@ -577,6 +577,10 @@ void D110Panel::showOptionsMenu()
 	if (processor.getLastImportMessage().isNotEmpty())
 		m.addItem(103, processor.getLastImportMessage(), false, false);
 	m.addItem(104, "Part 1 listens on MIDI channel 2, as on real hardware", false, false);
+	m.addItem(105, D110AudioProcessor::nvramIsBesideRoms()
+	                   ? juce::String("Firmware memory: in the D-110 Data folder")
+	                   : juce::String("Firmware memory: in app data (data folder not writable)"),
+	          false, false);
 
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
 		[this, reverb, superMode, reverbOn, superOn](int result) {
