@@ -31,6 +31,31 @@ ROM's, restored by the firmware itself, which is why they are the real ones.
 This page is global only. **The per-part MIDI channel is not here** — it lives under
 PART SET, reached with the **PART** button.
 
+## PATCH EDIT page — and the D-110's entire effects section
+
+The whole of it. A D-110 has **one effect: a built-in digital reverb**. No chorus, no EQ,
+no separate delay — delay is one of the reverb types. Patch Edit has exactly four
+parameters, and three of them are the reverb:
+
+| Parameter | Factory value | Range |
+| --- | --- | --- |
+| Name | `Patch   01` | 10 characters |
+| Reverb Type | `5` | `1`–`8`, then `OFF` |
+| Reverb Time | `5` | `1`–`8` (delay time when the type is a delay) |
+| Reverb Level | `4` | `0`–`7` (0 = no reverb) |
+
+The range was not taken from a manual — it was stepped through on the panel, one press at
+a time, and read back off the display.
+
+**Reverb is stored per patch**, which is where the D-110 differs structurally from the
+MT-32: on the MT-32 reverb lives in the System area, and that is the area the sound engine
+models. The D-110 keeps it in Patch Memory (`06 00 00`), a region munt has no concept of.
+
+There is also a **Reverb Switch per part**, in the Timbre Temporary block. That one *is*
+mirrored, so switching reverb off for an individual part does reach the sound engine — it
+is the global type/time/level that cannot cross. See
+[`sysex_address_map.md`](sysex_address_map.md).
+
 ## PART SET page, per part
 
 | Part | Output Level | Pan | Key Range L | Key Range U | **MIDI Channel** | Partial Reserve |

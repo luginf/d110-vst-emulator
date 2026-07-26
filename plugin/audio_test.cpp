@@ -351,6 +351,31 @@ int main() {
 			press(1, 3, 8); // Group - x8
 			press(0, 4, 1); // Part +
 		}
+		// The D-110's reverb is a PATCH parameter, not a system one - unlike the MT-32,
+		// whose reverb sits in the System area the sound engine does model. Walk Patch
+		// Edit to see exactly what the instrument offers.
+		std::printf("\n--- PATCH EDIT page, after a factory reset ---\n");
+		press(0, 7, 2); // Exit, Exit
+		press(0, 6, 1); // Patch
+		press(1, 7, 1); // Edit
+		for (int group = 0; group < 4; ++group) {
+			std::printf("    %s\n", lcdText(proc).c_str());
+			press(0, 3, 1); // Group +
+		}
+
+		// Step Reverb Type through its whole range, so the instrument itself says how many
+		// types it has. The sound engine models the MT-32's four; if the D-110 offers more,
+		// that is exactly why its reverb cannot simply be mirrored across.
+		std::printf("\n--- Reverb Type, every value the D-110 offers ---\n");
+		press(0, 7, 2);
+		press(0, 6, 1); // Patch
+		press(1, 7, 1); // Edit
+		press(0, 3, 1); // Group + -> Reverb Type
+		press(1, 1, 12); // Number - x12, down to the bottom of the range
+		for (int step = 0; step < 11; ++step) {
+			std::printf("    %s\n", lcdText(proc).c_str());
+			press(0, 1, 1); // Number +
+		}
 		press(0, 7, 2); // back to Patch Play
 	}
 

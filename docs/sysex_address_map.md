@@ -132,7 +132,7 @@ But three fields must **not** be sent to the engine:
 | Offset | Field | Reads | Why it is excluded |
 | --- | --- | --- | --- |
 | 0 | `masterTune` | `0x4A` | The panel shows 442, while Roland's documented 0–127 → 432.1–457.6 Hz mapping makes `0x4A` ≈ 447. The two scales disagree, so mirroring it would detune everything against the display. |
-| 1–3 | reverb mode/time/level | `04 04 04` | `reverbMode` 4 is outside the 0–3 this engine accepts; the D-110's reverb does not line up with the MT-32's. |
+| 1–3 | reverb type/time/level | `04 04 04` | **The D-110 has more reverb types than the engine can represent.** Stepped through on the panel, its Reverb Type runs `1…8` plus `OFF`; mt32emu models the MT-32's four modes only (`reverbMode` 0–3: room, hall, plate, tap delay). The stored `04` is the D-110's Type 5 — a perfectly valid setting with no MT-32 equivalent. See below. |
 | 22 | `masterVol` | `00` | **The D-110's volume is a physical knob**, so the firmware never fills this byte in. Sending it set the engine's master volume to zero and dropped the whole instrument by about 30 dB — which is how this was found. |
 
 So only the verified middle is mirrored:
