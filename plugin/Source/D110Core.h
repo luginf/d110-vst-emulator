@@ -187,7 +187,12 @@ public:
 	//               only while the firmware is demonstrably in the wait loop: driving that
 	//               line continuously kills the panel by itself, because on this CPU the
 	//               EXTINT pin is also port 2 bit 2.
-	enum class StuckPolicy { Off, PokeRam, PulseExtInt };
+	//   La32Stub  - the real answer. Supplies the bookkeeping half of the sound board:
+	//               when the firmware is waiting on a voice, raise the interrupt AND hand
+	//               its handler the status byte it reads from 0x0C00, encoding the very
+	//               voice it is waiting for. The handler then does its own work, which is
+	//               what the two cruder policies skipped. See docs/la32_interface.md.
+	enum class StuckPolicy { Off, PokeRam, PulseExtInt, La32Stub };
 	void setStuckPolicy(StuckPolicy p) { stuckPolicy.store(int(p), std::memory_order_release); }
 	StuckPolicy stuckPolicy_() const {
 		return StuckPolicy(stuckPolicy.load(std::memory_order_acquire));
@@ -199,6 +204,18 @@ public:
 	// driving the line can ever be noticed, and EXTINT is a dead end.
 	int stuckIoc1Value() const { return stuckIoc1.load(std::memory_order_acquire); }
 	void osdRecordIoc1(int v) { stuckIoc1.store(v, std::memory_order_release); }
+	// How many times the stub has handed the firmware's handler a status byte.
+	uint64_t la32Services() const { return la32Count.load(std::memory_order_acquire); }
+	void osdCountLa32Service() { la32Count.fetch_add(1, std::memory_order_relaxed); }
+	// Every read of the status register that reached the tap, whether or not there was
+	// anything to hand over. Distinguishes "the tap is not installed" from "the firmware
+	// never got as far as reading".
+	uint64_t la32Reads() const { return la32ReadCount.load(std::memory_order_acquire); }
+	void osdCountLa32Read() { la32ReadCount.fetch_add(1, std::memory_order_relaxed); }
+	// The CPU register holding the voice index the wait loop is indexing with: `ldbze 54,
+	// f440[52]` uses word register 52, and the register file share starts at 0x18.
+	static constexpr int kWaitIndexReg = 0x52;
+	static constexpr int kRegFileBase = 0x18;
 
 	// --- diagnostics: what does the firmware talk to that is not there? --------
 	// The D-110's address map leaves nearly all of the low I/O page unmapped - only the
@@ -223,6 +240,9 @@ public:
 	struct PcHit { uint16_t pc; uint64_t hits; };
 	std::vector<PcHit> topPcs(int count) const;
 	uint64_t pcSampleTotal() const { return pcTotal.load(std::memory_order_acquire); }
+	// Samples that landed anywhere in [lo, hi]. Used to answer a plain question: is the
+	// interrupt handler being entered at all?
+	uint64_t pcHitsInRange(uint16_t lo, uint16_t hi) const;
 	void osdSamplePc(uint16_t pc);
 	void osdCountExtInt() { extIntCount.fetch_add(1, std::memory_order_relaxed); }
 	void osdCountStuckRelease() { stuckCount.fetch_add(1, std::memory_order_relaxed); }
@@ -319,6 +339,7 @@ private:
 	std::atomic<int> stuckPolicy{0};
 	std::atomic<uint64_t> stuckCount{0};
 	std::atomic<int> stuckIoc1{-1};
+	std::atomic<uint64_t> la32Count{0}, la32ReadCount{0};
 
 	std::atomic<bool> logUnmapped{false};
 	mutable std::mutex logMutex;

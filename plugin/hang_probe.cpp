@@ -147,7 +147,8 @@ int main() {
 	struct Policy { const char *name; D110Core::StuckPolicy p; };
 	for (const Policy pol : {Policy{"Off        ", D110Core::StuckPolicy::Off},
 	                         Policy{"PokeRam    ", D110Core::StuckPolicy::PokeRam},
-	                         Policy{"PulseExtInt", D110Core::StuckPolicy::PulseExtInt}}) {
+	                         Policy{"PulseExtInt", D110Core::StuckPolicy::PulseExtInt},
+	                         Policy{"La32Stub   ", D110Core::StuckPolicy::La32Stub}}) {
 		proc.setPoweredOn(false);
 		std::this_thread::sleep_for(std::chrono::seconds(2));
 		proc.getCore().setStuckPolicy(pol.p);
@@ -156,6 +157,8 @@ int main() {
 		std::this_thread::sleep_for(std::chrono::seconds(9));
 
 		const bool bootOk = panelResponds(proc);
+		proc.getCore().resetPcHistogram();
+		const uint64_t servicesBefore = proc.getCore().la32Services();
 		int survivedTo = 0;
 		bool alive = bootOk;
 		for (int i = 0; i < 5 && alive; ++i) {
@@ -170,6 +173,14 @@ int main() {
 		            alive ? "*** STILL ALIVE ***" : "then died",
 		            (unsigned long long)proc.getCore().stuckReleases(), ioc1,
 		            ioc1 < 0 ? "not sampled" : ((ioc1 & 0x02) ? "DISABLED by IOC1.1" : "accepted"));
+		// Is the EXTINT handler at 0x3138 even being entered? If it is not, the interrupt
+		// is not being taken. If it is but no status byte was collected, it is bailing out
+		// at 0x313D because the pin was no longer high when it ran.
+		std::printf("                  handler 3138-3195 entered %llu, reads of 0C00 seen "
+		            "%llu, status handed over %llu\n",
+		            (unsigned long long)proc.getCore().pcHitsInRange(0x3138, 0x3195),
+		            (unsigned long long)proc.getCore().la32Reads(),
+		            (unsigned long long)(proc.getCore().la32Services() - servicesBefore));
 	}
 
 	// ---- release the wait directly ----------------------------------------

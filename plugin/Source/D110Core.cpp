@@ -71,6 +71,11 @@ class D110Osd : public osd_common_t {
 	int m_extIntPhase = 0;
 	bool m_extIntLevel = false;
 	bool m_stuckIntHigh = false;
+	uint8_t *m_regFile = nullptr;
+	memory_passthrough_handler m_la32Tap;
+	bool m_la32Pending = false;   // a status byte is waiting to be collected
+	bool m_la32NeedClear = false; // the handler has taken it; drop the line
+	uint8_t m_la32Status = 0xff;
 	uint8_t *m_ram = nullptr;
 	std::array<ioport_field *, D110Core::kNumButtons> m_buttonField{};
 	bool m_resolved = false;
@@ -114,6 +119,39 @@ class D110Osd : public osd_common_t {
 		// The CPU's own serial receiver is the D-110's MIDI IN. The driver drives it the
 		// same way for its built-in test note, so this needs nothing MAME does not expose.
 		m_cpu = root.subdevice<i8x9x_device>("maincpu");
+
+		// The CPU's own register file, so the voice index the wait loop is using can be
+		// read straight out of register 52. internal_regs maps 0x18-0xff as this share -
+		// and it belongs to the CPU, not to the root device, so it has to be looked up
+		// THROUGH the CPU. Asking root for it silently returns nothing, which is what left
+		// the stub's branch never running at all.
+		if (m_cpu)
+			if (memory_share *regs = m_cpu->memshare("register_file"))
+				m_regFile = static_cast<uint8_t *>(regs->ptr());
+
+		// The sound board's status register. A read tap rather than a handler because it
+		// can be installed on a running machine and sits on top of whatever the address
+		// map does or does not provide - and unlike a plain observer, a tap may replace
+		// the value that the read returns, which is the whole point here.
+		if (m_cpu) {
+			m_la32Tap = m_cpu->space(AS_PROGRAM).install_read_tap(
+				0x0c00, 0x0c01, "d110_la32_status",
+				[this](offs_t, u16 &data, u16 mem_mask) {
+					// Counted unconditionally, so "the tap never fired" can be told apart
+					// from "the tap fired but had nothing to give".
+					core->osdCountLa32Read();
+					if (!m_la32Pending) return;
+					if (mem_mask & 0x00ff)
+						data = u16((data & 0xff00) | m_la32Status);
+					else if (mem_mask & 0xff00)
+						data = u16((data & 0x00ff) | (u16(m_la32Status) << 8));
+					else
+						return;
+					m_la32Pending = false;
+					m_la32NeedClear = true; // drop the interrupt line on the next tick
+					core->osdCountLa32Service();
+				});
+		}
 
 		// Ask MAME to report every access to an address nothing claims, and capture those
 		// reports. The sound board is exactly what is missing from this machine's map, so
@@ -243,11 +281,12 @@ public:
 		const bool stuck =
 			(pc == D110Core::kStuckLoopPc || pc == D110Core::kStuckLoopPcAlt);
 
-		// The interrupt line must fall again before it can rise a second time, so drop it
-		// on the first tick after it was raised.
-		if (m_stuckIntHigh && !stuck) {
+		// Once the handler has collected the status byte, drop the line so it can rise
+		// again for the next voice. Also drop it if the firmware has left the wait.
+		if (m_stuckIntHigh && (m_la32NeedClear || !stuck)) {
 			m_cpu->set_input_line(i8x9x_device::EXTINT_LINE, CLEAR_LINE);
 			m_stuckIntHigh = false;
+			m_la32NeedClear = false;
 		}
 
 		if (!stuck) return;
@@ -272,6 +311,23 @@ public:
 				// Give it a falling edge between pulses even while still stuck.
 				m_cpu->set_input_line(i8x9x_device::EXTINT_LINE, CLEAR_LINE);
 				m_stuckIntHigh = false;
+			}
+			break;
+		case D110Core::StuckPolicy::La32Stub:
+			// Behave as the sound board would: announce that the very voice being waited
+			// on has finished, and let the firmware's own handler do the rest. The status
+			// byte's low five bits are the voice number PLUS ONE - the handler doubles
+			// them and subtracts two - and bit 7 must be clear, since set means there is
+			// nothing to report.
+			if (m_regFile && !m_la32Pending && !m_la32NeedClear && !m_stuckIntHigh) {
+				const int reg = D110Core::kWaitIndexReg - D110Core::kRegFileBase;
+				const uint16_t voice = uint16_t(m_regFile[reg] | (m_regFile[reg + 1] << 8));
+				m_la32Status = uint8_t((voice + 1) & 0x1f);
+				m_la32Pending = true;
+				// The handler refuses to do anything unless the pin is still high when it
+				// runs, so raise it and hold it until the status has been collected.
+				m_cpu->set_input_line(i8x9x_device::EXTINT_LINE, ASSERT_LINE);
+				m_stuckIntHigh = true;
 			}
 			break;
 		case D110Core::StuckPolicy::Off:
@@ -728,6 +784,14 @@ void D110Core::resetPcHistogram() {
 	std::lock_guard<std::mutex> lock(pcMutex);
 	pcHist.assign(0x10000, 0);
 	pcTotal.store(0, std::memory_order_release);
+}
+
+uint64_t D110Core::pcHitsInRange(uint16_t lo, uint16_t hi) const {
+	std::lock_guard<std::mutex> lock(pcMutex);
+	if (pcHist.empty()) return 0;
+	uint64_t total = 0;
+	for (int i = lo; i <= int(hi) && i < int(pcHist.size()); ++i) total += pcHist[(size_t)i];
+	return total;
 }
 
 std::vector<D110Core::PcHit> D110Core::topPcs(int count) const {
