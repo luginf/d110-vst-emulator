@@ -107,10 +107,9 @@ public:
 	// Where the firmware's battery RAM and memory card persist. Must be writable, so it is
 	// under the user's app data rather than beside the ROMs in Program Files.
 	//
-	// PER INSTANCE, not shared: the firmware's patch and timbre memory IS the instrument's
-	// sound, so two plugins in one project each need their own, and a project has to be
-	// able to recall the one it was saved with. The folder is named after this instance's
-	// id, and getStateInformation carries its contents in the project file.
+	// ONE memory, shared and permanent, exactly as the instrument has one set of batteries.
+	// It survives the host being closed, so the unit is found as it was left; a project
+	// additionally carries its own copy, which is restored over this when it loads.
 	static juce::File getNvramRoot();
 	juce::File getNvramFolder() const;
 	// False when the data folder turned out not to be writable and app data is being used
@@ -217,30 +216,15 @@ private:
 
 	D110Core core;
 
-	// Identifies this instance's private firmware memory, and is itself saved in the
-	// project so a reloaded session finds the same folder again. A copy-pasted plugin
-	// restores the same id, so claimInstanceId() hands out a fresh one on collision.
-	juce::Uuid instanceId;
 	bool powerBlocked = false;
-
-	// Every id currently in use in this process, so two live instances can never be handed
-	// the same firmware-memory folder. Claiming is what a restoring instance does; the
-	// constructor registers the fresh id it minted, and the destructor gives it back.
-	static bool claimInstanceId(const juce::String &id);
-	static void releaseInstanceId(const juce::String &id);
 
 	// Writes the saved firmware memory into this instance's folder, ready for the machine
 	// to pick up next time it starts, and reads it back out again.
 	void writeNvramFiles(const juce::MemoryBlock &rams, const juce::MemoryBlock &memcs) const;
 	juce::MemoryBlock readNvramFile(const juce::String &name) const;
 
-	// One initialised copy of the firmware's memory, kept from the first cold start ever
-	// performed and used to seed every instance created afterwards. Without it a new
-	// instance would have to sit through the ten-second initialisation on every load.
-	static juce::File getTemplateFolder();
-	bool seedFromTemplate() const;
-	void captureTemplateWhenReady();
-	std::thread templateThread;
+	// Where MAME keeps `rams` and `memcs` - one folder, shared, persistent.
+	static juce::File getMachineNvramFolder();
 
 	std::atomic<int> selectedPartIndex{0};
 	std::array<int, 8> currentProgramPerPart{};

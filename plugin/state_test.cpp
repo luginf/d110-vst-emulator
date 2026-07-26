@@ -98,18 +98,57 @@ int main() {
 		proc.releaseResources();
 	}
 
-	// ---- 3. two instances at once -------------------------------------------
+	// ---- 3. the host was closed and reopened --------------------------------
+	// The reported fault: quit Ableton, load the plugin again, everything back to
+	// defaults. A plugin loaded fresh gets NO saved state, so it must find the memory
+	// exactly as the last instance left it - which means one shared file, not a folder
+	// per instance.
+	{
+		int edited = -1;
+		{
+			D110AudioProcessor first;
+			first.prepareToPlay(kSampleRate, kBlock);
+			bootAndSettle(first);
+			press(first, 0, 7, 2); // Exit, Exit
+			press(first, 0, 5, 1); // Timbre
+			press(first, 1, 7, 1); // Edit
+			press(first, 0, 3, 2); // Group + x2 -> Fine Tune
+			press(first, 0, 1, 9); // Number + x9
+			std::this_thread::sleep_for(std::chrono::seconds(1));
+			edited = readFineTune(first);
+			std::printf("\nbefore closing the host : Fine Tune %d\n", edited);
+			first.setPoweredOn(false); // this is what flushes MAME's NVRAM to disk
+			first.releaseResources();
+		}
+
+		// A completely new processor, with no state restored into it at all.
+		{
+			D110AudioProcessor second;
+			second.prepareToPlay(kSampleRate, kBlock);
+			std::printf("nvram folder            : %s\n",
+			            second.getNvramFolder().getFullPathName().toRawUTF8());
+			bootAndSettle(second);
+			const int recalled = readFineTune(second);
+			std::printf("after reopening it      : Fine Tune %d\n", recalled);
+			std::printf("%s\n", recalled == edited
+			                        ? "*** THE MEMORY SURVIVED THE HOST CLOSING ***"
+			                        : "LOST - a freshly loaded plugin is not finding it");
+			second.setPoweredOn(false);
+			second.releaseResources();
+		}
+	}
+
+	// ---- 4. two instances at once -------------------------------------------
 	{
 		D110AudioProcessor first, second;
 		first.prepareToPlay(kSampleRate, kBlock);
 		second.prepareToPlay(kSampleRate, kBlock);
 
-		std::printf("\nseparate firmware memory:\n  first  %s\n  second %s\n  %s\n",
-		            first.getNvramFolder().getFileName().toRawUTF8(),
-		            second.getNvramFolder().getFileName().toRawUTF8(),
-		            first.getNvramFolder() != second.getNvramFolder()
-		                ? "*** distinct, as they must be ***"
-		                : "SHARED - they would overwrite each other");
+		// Shared on purpose now: only one may be switched on at a time, so there is
+		// nothing to collide, and one memory is what makes the state survive at all.
+		std::printf("\nfirmware memory is shared: %s\n",
+		            first.getNvramFolder() == second.getNvramFolder() ? "yes, as intended"
+		                                                             : "NO - unexpected");
 
 		first.setPoweredOn(true);
 		std::this_thread::sleep_for(std::chrono::seconds(6));

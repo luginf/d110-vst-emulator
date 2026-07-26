@@ -72,23 +72,6 @@ static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
 	return {params.begin(), params.end()};
 }
 
-// Instance ids in use right now. Guarded because a host may build and tear down plugin
-// instances from more than one thread.
-static juce::CriticalSection gInstanceIdLock;
-static juce::StringArray gInstanceIdsInUse;
-
-bool D110AudioProcessor::claimInstanceId(const juce::String &id) {
-	const juce::ScopedLock sl(gInstanceIdLock);
-	if (gInstanceIdsInUse.contains(id)) return false;
-	gInstanceIdsInUse.add(id);
-	return true;
-}
-
-void D110AudioProcessor::releaseInstanceId(const juce::String &id) {
-	const juce::ScopedLock sl(gInstanceIdLock);
-	gInstanceIdsInUse.removeString(id);
-}
-
 D110AudioProcessor::D110AudioProcessor()
 	: AudioProcessor(BusesProperties().withOutput("Output", juce::AudioChannelSet::stereo(), true)),
 	  parameters(*this, nullptr, "PARAMS", createParameterLayout()) {
@@ -96,13 +79,10 @@ D110AudioProcessor::D110AudioProcessor()
 	reverbEnabledParam = parameters.getRawParameterValue("reverbEnabled");
 	superModeParam = parameters.getRawParameterValue("superMode");
 
-	claimInstanceId(instanceId.toDashedString());
 	tryAutoLoadRoms();
 }
 
 D110AudioProcessor::~D110AudioProcessor() {
-	if (templateThread.joinable()) templateThread.join();
-	releaseInstanceId(instanceId.toDashedString());
 	closeSynth();
 }
 
@@ -150,17 +130,12 @@ void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
 		const auto nvram = getNvramFolder();
 		nvram.getChildFile("d110").createDirectory();
 
-		// A brand-new instance has no firmware memory at all, and a D-110 with blank
-		// battery RAM boots to an empty patch - it reads as broken rather than as new.
-		// Since every instance has its own memory, that is now the normal case.
-		//
-		// The cold start takes about ten seconds and restarts the machine, so running it
-		// on every fresh instance would mean watching the unit initialise every single
-		// time it is loaded - which is exactly what a real D-110 does NOT do. So do it
-		// ONCE, keep the result as a template, and seed every later instance from that
-		// copy instead. Loading the plugin then comes up in working order immediately.
-		bool virgin = !nvram.getChildFile("d110").getChildFile("rams").existsAsFile();
-		if (virgin && seedFromTemplate()) virgin = false;
+		// The very first time this plugin is ever used there is no memory at all, and a
+		// D-110 with blank battery RAM boots to an empty patch - it reads as broken rather
+		// than as new. So perform the documented cold start, once. After that the file is
+		// there and every later run, in this host session or any other, picks up exactly
+		// where the last one left off.
+		const bool virgin = !getMachineNvramFolder().getChildFile("rams").existsAsFile();
 
 		if (!core.start(getMameRomPath().toStdString(), nvram.getFullPathName().toStdString())) {
 			// Another instance already holds the emulated control board. Stay off rather
@@ -171,15 +146,10 @@ void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
 			return;
 		}
 		powerBlocked = false;
-		if (virgin) {
-			// No template yet - this is the first time this machine has ever been used.
-			// Do the documented cold start and keep what it produces, so no later
-			// instance has to sit through it.
-			core.factoryReset();
-			captureTemplateWhenReady();
-		}
+		if (virgin) core.factoryReset();
 	} else {
-		if (templateThread.joinable()) templateThread.join();
+		// Stopping is what makes MAME write its NVRAM out, so this is where the state
+		// actually reaches disk and survives the host being closed.
 		core.stop();
 	}
 	poweredOn = shouldBePoweredOn;
@@ -213,65 +183,29 @@ bool D110AudioProcessor::nvramIsBesideRoms() {
 	return getNvramRoot().isAChildOf(getAutoRomFolder());
 }
 
-// Each instance's own working memory. Kept under `instances/` so it cannot be mistaken for
-// the instrument's own memory sitting next to it.
+// ONE memory, shared by every instance and persistent for good - the same arrangement as
+// every other synth in this series, and the same as the instrument itself, which has one
+// set of batteries and remembers what you left in it.
+//
+// It used to be one folder per instance, keyed by a fresh id. That was wrong twice over:
+// a plugin loaded anew got a new id and therefore the factory state, so quitting the host
+// and coming back lost everything, and the ids piled up as abandoned folders. Nothing was
+// gained by it either, because only one instance can be switched on at a time anyway.
 juce::File D110AudioProcessor::getNvramFolder() const {
-	return getNvramRoot().getChildFile("instances").getChildFile(instanceId.toDashedString());
+	return getNvramRoot();
 }
 
-// The instrument's own memory: one initialised copy made the first time this plugin is ever
-// used, and reused as the starting point for every instance afterwards. It is what stops
-// the unit initialising itself on every load, and its path is deliberately the one MAME
-// itself would have written - the same layout the other synths in this series use.
-juce::File D110AudioProcessor::getTemplateFolder() {
+// Where MAME actually puts the two files, and therefore where a restored project's memory
+// has to be written for the machine to pick it up.
+juce::File D110AudioProcessor::getMachineNvramFolder() {
 	return getNvramRoot().getChildFile("d110");
-}
-
-bool D110AudioProcessor::seedFromTemplate() const {
-	const auto tpl = getTemplateFolder();
-	const auto rams = tpl.getChildFile("rams");
-	if (!rams.existsAsFile()) return false;
-
-	const auto dest = getNvramFolder().getChildFile("d110");
-	dest.createDirectory();
-	if (!rams.copyFileTo(dest.getChildFile("rams"))) return false;
-	const auto memcs = tpl.getChildFile("memcs");
-	if (memcs.existsAsFile()) memcs.copyFileTo(dest.getChildFile("memcs"));
-	return true;
-}
-
-void D110AudioProcessor::captureTemplateWhenReady() {
-	if (templateThread.joinable()) templateThread.join();
-	templateThread = std::thread([this] {
-		// Wait out the cold start, then take the image from the core rather than from
-		// disk: MAME only writes its NVRAM file when the machine exits, so the file is
-		// still the pre-reset one at this point.
-		while (core.isResetting())
-			std::this_thread::sleep_for(std::chrono::milliseconds(200));
-		std::this_thread::sleep_for(std::chrono::seconds(2));
-
-		std::vector<juce::uint8> ram(D110Core::kRamSize, 0);
-		if (!core.isRunning() || !core.getRam(ram.data())) return;
-
-		// Only keep it if the firmware really did initialise. A blank image is mostly
-		// zeroes; saving one would poison every future instance with the very emptiness
-		// this is meant to avoid.
-		size_t nonZero = 0;
-		for (juce::uint8 b : ram)
-			if (b) ++nonZero;
-		if (nonZero < D110Core::kRamSize / 8) return;
-
-		const auto tpl = getTemplateFolder();
-		tpl.createDirectory();
-		tpl.getChildFile("rams").replaceWithData(ram.data(), ram.size());
-	});
 }
 
 // MAME keeps each nvram_device in its own file under <nvram_directory>/<machine>/, so the
 // D-110's battery RAM is "rams" and its memory card is "memcs", both raw 32 KB images.
 void D110AudioProcessor::writeNvramFiles(const juce::MemoryBlock &rams,
                                          const juce::MemoryBlock &memcs) const {
-	const auto dir = getNvramFolder().getChildFile("d110");
+	const auto dir = getMachineNvramFolder();
 	dir.createDirectory();
 	if (rams.getSize() > 0) dir.getChildFile("rams").replaceWithData(rams.getData(), rams.getSize());
 	if (memcs.getSize() > 0) dir.getChildFile("memcs").replaceWithData(memcs.getData(), memcs.getSize());
@@ -279,7 +213,7 @@ void D110AudioProcessor::writeNvramFiles(const juce::MemoryBlock &rams,
 
 juce::MemoryBlock D110AudioProcessor::readNvramFile(const juce::String &name) const {
 	juce::MemoryBlock block;
-	const auto file = getNvramFolder().getChildFile("d110").getChildFile(name);
+	const auto file = getMachineNvramFolder().getChildFile(name);
 	if (file.existsAsFile()) file.loadFileAsData(block);
 	return block;
 }
@@ -839,7 +773,6 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	std::unique_ptr<juce::XmlElement> xml(state.createXml());
 	xml->setAttribute("controlRomPath", controlRomPath);
 	xml->setAttribute("pcmRomPath", pcmRomPath);
-	xml->setAttribute("instanceId", instanceId.toDashedString());
 	xml->setAttribute("forwardNotes", forwardNotes.load());
 
 	// The firmware's own memory - its patches, its timbres, its edits - so that a project
@@ -879,22 +812,16 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 		openSynthIfReady();
 	}
 
-	// Take back the folder this project was saved with - unless another live instance is
-	// already using it, which is what happens when a plugin is copied and pasted rather
-	// than newly added. In that case keep the fresh id minted in the constructor, so the
-	// copy starts as a copy instead of fighting the original over one folder.
 	forwardNotes = xml->getBoolAttribute("forwardNotes", false);
 
-	const auto savedId = xml->getStringAttribute("instanceId");
-	if (savedId.isNotEmpty() && savedId != instanceId.toDashedString()
-	    && claimInstanceId(savedId)) {
-		releaseInstanceId(instanceId.toDashedString());
-		instanceId = juce::Uuid(savedId);
-	}
-
-	// Land the saved firmware memory in this instance's folder now, while the machine is
-	// certainly not running - the plugin always comes up powered off, and MAME reads these
-	// files once at start. Hitting POWER then boots the project's own instrument.
+	// Put the project's own firmware memory back, while the machine is certainly not
+	// running - the plugin always comes up powered off, and MAME reads these files once at
+	// start. Hitting POWER then boots the instrument the project was saved with.
+	//
+	// This overwrites the shared memory, and that is the intent: there is one instrument,
+	// so loading a project sets it to what that project had, exactly as loading a bank into
+	// the hardware would. A plugin loaded WITHOUT a project touches none of this and simply
+	// finds the memory as it was last left.
 	const auto rams = unpackBlock(xml->getStringAttribute("nvramRams"));
 	const auto memcs = unpackBlock(xml->getStringAttribute("nvramMemcs"));
 	if (rams.getSize() > 0 || memcs.getSize() > 0)
