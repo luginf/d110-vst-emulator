@@ -116,6 +116,46 @@ int main() {
 		proc.releaseResources();
 	}
 
+	// ---- 3. does a plain POWER cycle keep what was changed? ----------------
+	// Reported: select another part, switch off, switch on, and it is back to defaults.
+	// MAME only writes its NVRAM out when the machine exits, so this is exactly the path
+	// that has to work.
+	{
+		D110AudioProcessor proc;
+		proc.prepareToPlay(kSampleRate, kBlock);
+		proc.setPoweredOn(true);
+		std::this_thread::sleep_for(std::chrono::seconds(7));
+
+		auto press = [&proc](int port, int bit, int times) {
+			for (int i = 0; i < times; ++i) tap(proc, port, bit);
+		};
+		press(0, 7, 2); // Exit, Exit
+		press(0, 5, 1); // Timbre
+		press(1, 7, 1); // Edit
+		press(0, 3, 2); // Group + x2 -> Fine Tune
+		press(0, 1, 13); // Number + x13
+		press(0, 7, 2); // Exit back to Patch Play
+		press(0, 4, 3); // Part + x3 - select a different part
+		std::this_thread::sleep_for(std::chrono::seconds(1));
+
+		const int before = fineTune(proc);
+		std::printf("\nbefore the power cycle : Fine Tune %d\n", before);
+
+		proc.setPoweredOn(false);
+		std::this_thread::sleep_for(std::chrono::seconds(2));
+		proc.setPoweredOn(true);
+		std::this_thread::sleep_for(std::chrono::seconds(8));
+
+		const int after = fineTune(proc);
+		std::printf("after the power cycle  : Fine Tune %d\n", after);
+		std::printf("%s\n", after == before
+		                        ? "*** THE POWER CYCLE KEPT THE EDIT ***"
+		                        : "LOST - the firmware's memory is not surviving a power cycle");
+
+		proc.setPoweredOn(false);
+		proc.releaseResources();
+	}
+
 	std::printf("\ndone\n");
 	return 0;
 }

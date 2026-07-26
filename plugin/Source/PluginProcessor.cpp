@@ -55,9 +55,13 @@ static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
 	// and therefore sits dead centre on the panel knob's printed scale (which the reference photo
 	// shows is centred on straight-up to within 0.03 degrees). The default loudness is unchanged;
 	// the knob simply now points at 12 o'clock at rest instead of leaning right.
+	// Full clockwise is unity gain, and that is where the knob starts - a rack module is
+	// normally run with its volume wide open and the level set downstream. The range used
+	// to run to 2.0 so that unity sat at the knob's printed centre, but then "wide open"
+	// meant +6 dB and clipped the moment a full patch was played.
 	params.push_back(std::make_unique<juce::AudioParameterFloat>(
 		juce::ParameterID{"masterVolume", 1}, "Master Volume",
-		juce::NormalisableRange<float>(0.0f, 2.0f), 1.0f));
+		juce::NormalisableRange<float>(0.0f, 1.0f), 1.0f));
 
 	params.push_back(std::make_unique<juce::AudioParameterBool>(
 		juce::ParameterID{"reverbEnabled", 1}, "Reverb", true));
@@ -655,6 +659,10 @@ void D110AudioProcessor::forwardMidiToFirmware(const juce::MidiMessage &message)
 	if (size <= 0) return;
 	if (raw[0] == 0xF8 || raw[0] == 0xFE) return;
 
+	if (!forwardNotes.load(std::memory_order_relaxed)
+	    && (message.isNoteOnOrOff() || message.isAftertouch() || message.isChannelPressure()))
+		return;
+
 	core.pushMidi(static_cast<const juce::uint8 *>(raw), size);
 }
 
@@ -818,6 +826,7 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	xml->setAttribute("controlRomPath", controlRomPath);
 	xml->setAttribute("pcmRomPath", pcmRomPath);
 	xml->setAttribute("instanceId", instanceId.toDashedString());
+	xml->setAttribute("forwardNotes", forwardNotes.load());
 
 	// The firmware's own memory - its patches, its timbres, its edits - so that a project
 	// recalls the sounds it was saved with instead of whatever the shared folder happens
@@ -860,6 +869,8 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 	// already using it, which is what happens when a plugin is copied and pasted rather
 	// than newly added. In that case keep the fresh id minted in the constructor, so the
 	// copy starts as a copy instead of fighting the original over one folder.
+	forwardNotes = xml->getBoolAttribute("forwardNotes", false);
+
 	const auto savedId = xml->getStringAttribute("instanceId");
 	if (savedId.isNotEmpty() && savedId != instanceId.toDashedString()
 	    && claimInstanceId(savedId)) {

@@ -559,6 +559,8 @@ void D110Panel::showOptionsMenu()
 	m.addSeparator();
 	m.addItem(2, "Reverb", true, reverbOn);
 	m.addItem(3, "Super Mode (unofficial, extra polyphony)", true, superOn);
+	m.addItem(5, "Show part activity on the LCD (panel stops responding while playing)",
+	          true, processor.getForwardNotesToFirmware());
 	m.addSeparator();
 
 	if (processor.isSynthReady()) {
@@ -610,6 +612,21 @@ void D110Panel::showOptionsMenu()
 					reverb->endChangeGesture();
 				}
 				break;
+			case 5: {
+				const bool turningOn = !processor.getForwardNotesToFirmware();
+				processor.setForwardNotesToFirmware(turningOn);
+				// Say what it costs before it costs it, rather than leaving the user to
+				// discover a dead panel and assume the plugin has crashed.
+				if (turningOn)
+					juce::NativeMessageBox::showMessageBoxAsync(
+						juce::MessageBoxIconType::WarningIcon, "D-110 Emulator",
+						"The top row will now light the part being played.\n\n"
+						"The cost: MAME emulates no LA32, so once notes reach the firmware "
+						"it stops scanning the front panel within a few seconds. The sound "
+						"keeps playing, but the buttons and display stop responding until "
+						"you switch POWER off and on.");
+				break;
+			}
 			case 3:
 				if (superMode != nullptr) {
 					superMode->beginChangeGesture();

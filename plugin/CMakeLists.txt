@@ -152,6 +152,19 @@ target_link_libraries(d110_state_test PRIVATE
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_state_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
 
+# Isolates why the control board stops responding after some seconds of playing: runs the
+# firmware for a minute with and without host MIDI, pressing a button throughout.
+add_executable(d110_longrun_test longrun_test.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_longrun_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_longrun_test PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_longrun_test PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_longrun_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
 # Records what really happens when two machines run in one process, which is what a DAW
 # does as soon as a second instance of the plugin is loaded. Diagnostic, not a fix.
 add_executable(d110_two_instance_test two_instance_test.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")

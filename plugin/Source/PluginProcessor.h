@@ -152,6 +152,26 @@ private:
 	// Hands a host MIDI message to the emulated control board as well as to the sound
 	// engine, so the firmware's own display tracks what is being played.
 	void forwardMidiToFirmware(const juce::MidiMessage &message);
+
+public:
+	// Whether note on/off reach the control board.
+	//
+	// OFF by default, and that default is not timidity - it is measured. Notes send the
+	// firmware down its voice-allocation path, and that path ends at the LA32, which MAME
+	// does not emulate for any Roland LA machine. The firmware does not crash; it stays
+	// alive (its RAM keeps changing) but never returns to scanning the front panel, so
+	// within a few seconds of playing every button and the whole display go dead while the
+	// sound carries on. plugin/longrun_test.cpp reproduces it in about four seconds and
+	// shows the panel surviving indefinitely once notes are withheld.
+	//
+	// Turning it on lights the part indicators on the top LCD row, which is the only thing
+	// it buys, and costs the panel. Offered as a choice rather than removed, because on a
+	// track where nothing is touched after setup it is a reasonable trade.
+	void setForwardNotesToFirmware(bool shouldForward) { forwardNotes = shouldForward; }
+	bool getForwardNotesToFirmware() const { return forwardNotes; }
+
+private:
+	std::atomic<bool> forwardNotes{false};
 	// Opens the synth from whatever is currently in controlRomData/pcmRomData.
 	bool openSynthIfReady();
 	// Scans getAutoRomFolder() for a Control ROM and PCM ROM by content (not filename) and
