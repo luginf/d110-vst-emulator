@@ -556,8 +556,6 @@ void D110Panel::showOptionsMenu()
 
 	juce::PopupMenu m;
 	m.addItem(1, "Import SysEx/MIDI Bank...");
-	m.addItem(4, "Factory Reset (rebuild patch memory from ROM)",
-	          processor.getCore().isRunning() && !processor.getCore().isResetting());
 	m.addSeparator();
 	m.addItem(2, "Reverb", true, reverbOn);
 	m.addItem(3, "Super Mode (unofficial, extra polyphony)", true, superOn);
@@ -581,6 +579,15 @@ void D110Panel::showOptionsMenu()
 	                   ? juce::String("Firmware memory: in the D-110 Data folder")
 	                   : juce::String("Firmware memory: in app data (data folder not writable)"),
 	          false, false);
+	// There is no Factory Reset command here any more, and deliberately so: the D-110 has
+	// its own way of doing it and the panel can now perform it exactly. Ctrl+click latches
+	// a cap down, which is what makes "hold this button while switching on" possible with
+	// one mouse. Latching is on a modifier rather than on a long press because the firmware
+	// repeats a held button - a long press is how you scroll a value, and it must stay that
+	// way.
+	m.addSeparator();
+	m.addItem(106, "Factory init, as on the hardware:", false, false);
+	m.addItem(107, "   POWER off, Ctrl+click WRITE/COPY, POWER on, then ENTER", false, false);
 
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
 		[this, reverb, superMode, reverbOn, superOn](int result) {
@@ -602,9 +609,6 @@ void D110Panel::showOptionsMenu()
 					reverb->setValueNotifyingHost(reverbOn ? 0.0f : 1.0f);
 					reverb->endChangeGesture();
 				}
-				break;
-			case 4:
-				processor.getCore().factoryReset();
 				break;
 			case 3:
 				if (superMode != nullptr) {

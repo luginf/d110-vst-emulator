@@ -83,11 +83,25 @@ Right-click the panel to see what was recognised.
 > [`docs/factory_defaults.md`](docs/factory_defaults.md) for the full factory state (channels,
 > pan, key ranges, partial reserve) read straight off the firmware's own display.
 
-A new instance performs the documented cold start **automatically** the first time you switch
-it on, so it comes up at factory settings rather than showing the empty patch a D-110 with
-blank battery RAM really does show. **Factory Reset** on the right-click menu does the same
-thing again at any time - it is Roland's own procedure (hold Write/Copy across a reset, confirm
-with Enter), performed for you.
+The very first time the plugin is ever used it performs the documented cold start once, so it
+comes up at factory settings instead of showing the empty patch a D-110 with blank battery RAM
+really does show. The result is kept and every instance created afterwards is seeded from it,
+so **loading the plugin never makes you sit through initialisation**.
+
+To initialise it again later, do what you would do on the hardware - **hold WRITE/COPY while
+switching on, then confirm with ENTER**:
+
+1. Switch **POWER** off.
+2. **Ctrl+click** (or Alt+click) **WRITE/COPY**. The cap latches down, exactly as if you were
+   holding it.
+3. Switch **POWER** on. The firmware comes up seeing the button held and asks to confirm.
+4. Click **ENTER**.
+5. Ctrl+click WRITE/COPY again to release it.
+
+Ctrl+click latches any of the sixteen caps, which is what makes "hold this button while
+switching on" possible with a single mouse. It is on a modifier rather than on a long press on
+purpose: **the firmware repeats a held button**, so a long press is how you scroll a value, and
+that has to keep working.
 
 ## Project layout
 

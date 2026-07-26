@@ -9,10 +9,13 @@ documented factory initialisation — not copied from a manual and not inferred 
 Roland's procedure is to hold **WRITE/COPY** while switching the unit on and confirm with
 **ENTER**. The plugin does exactly that:
 
-- **Automatically**, the first time a new instance is switched on. A D-110 with blank
-  battery RAM boots to an empty patch and reads as broken rather than as new, and since
-  each plugin instance keeps its own firmware memory, "new" is the normal case.
-- **On demand**, from **Factory Reset** on the panel's right-click menu.
+- **Once, automatically**, the very first time the plugin is ever used — a D-110 with blank
+  battery RAM boots to an empty patch and reads as broken rather than as new. The result is
+  kept as a template and every instance afterwards is seeded from it, so loading the plugin
+  never repeats the initialisation.
+- **On demand, on the panel itself**, by the hardware's own procedure: POWER off,
+  **Ctrl+click WRITE/COPY** to latch the cap down, POWER on, then **ENTER**. There is no
+  Factory Reset command in the plugin's menu, because the instrument already has one.
 
 Either way the firmware rebuilds its own patch memory, timbre memory and settings from the
 preset ROM. There is no table of defaults written out in the plugin — the values are the
