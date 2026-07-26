@@ -472,6 +472,13 @@ void D110Panel::mouseDown(const juce::MouseEvent &e)
 		processor.togglePower();
 		if (!processor.isPoweredOn())
 			for (auto &m : motion) { m.held = false; m.latched = false; }
+		// Only one emulated control board can exist per process, so a second instance
+		// cannot be switched on. Say so plainly - the alternative is a POWER button that
+		// silently does nothing.
+		if (processor.isPowerBlocked())
+			juce::NativeMessageBox::showMessageBoxAsync(
+				juce::MessageBoxIconType::WarningIcon, "D-110 Emulator",
+				processor.getLastError());
 		return;
 	}
 

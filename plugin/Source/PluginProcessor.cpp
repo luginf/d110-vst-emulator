@@ -68,6 +68,23 @@ static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
 	return {params.begin(), params.end()};
 }
 
+// Instance ids in use right now. Guarded because a host may build and tear down plugin
+// instances from more than one thread.
+static juce::CriticalSection gInstanceIdLock;
+static juce::StringArray gInstanceIdsInUse;
+
+bool D110AudioProcessor::claimInstanceId(const juce::String &id) {
+	const juce::ScopedLock sl(gInstanceIdLock);
+	if (gInstanceIdsInUse.contains(id)) return false;
+	gInstanceIdsInUse.add(id);
+	return true;
+}
+
+void D110AudioProcessor::releaseInstanceId(const juce::String &id) {
+	const juce::ScopedLock sl(gInstanceIdLock);
+	gInstanceIdsInUse.removeString(id);
+}
+
 D110AudioProcessor::D110AudioProcessor()
 	: AudioProcessor(BusesProperties().withOutput("Output", juce::AudioChannelSet::stereo(), true)),
 	  parameters(*this, nullptr, "PARAMS", createParameterLayout()) {
@@ -75,10 +92,12 @@ D110AudioProcessor::D110AudioProcessor()
 	reverbEnabledParam = parameters.getRawParameterValue("reverbEnabled");
 	superModeParam = parameters.getRawParameterValue("superMode");
 
+	claimInstanceId(instanceId.toDashedString());
 	tryAutoLoadRoms();
 }
 
 D110AudioProcessor::~D110AudioProcessor() {
+	releaseInstanceId(instanceId.toDashedString());
 	closeSynth();
 }
 
@@ -119,23 +138,63 @@ void D110AudioProcessor::setPcmRomPath(const juce::String &path) {
 
 void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
 	if (poweredOn.load() == shouldBePoweredOn) return;
-	poweredOn = shouldBePoweredOn;
 
 	// Booting is the real thing: the machine starts here and the firmware comes up on the
 	// panel's own display in real time, not fast-forwarded.
 	if (shouldBePoweredOn) {
 		const auto nvram = getNvramFolder();
-		nvram.createDirectory();
-		core.start(getMameRomPath().toStdString(), nvram.getFullPathName().toStdString());
+		nvram.getChildFile("d110").createDirectory();
+
+		// A brand-new instance has no firmware memory at all, and a D-110 with blank
+		// battery RAM boots to an empty patch - it reads as broken rather than as new.
+		// Each instance now having its OWN memory makes this the normal case rather than
+		// a once-per-install oddity, so do what the manual tells an owner to do with a
+		// fresh unit: the documented cold start, performed automatically. Only when there
+		// is genuinely nothing to lose - a restored project brings its own memory, and it
+		// is written out before this point.
+		const bool virgin = !nvram.getChildFile("d110").getChildFile("rams").existsAsFile();
+
+		if (!core.start(getMameRomPath().toStdString(), nvram.getFullPathName().toStdString())) {
+			// Another instance already holds the emulated control board. Stay off rather
+			// than start a second machine, which crashes the host outright.
+			powerBlocked = true;
+			lastError = "Another D-110 Emulator instance is already switched on. "
+			            "Only one can run at a time - switch that one off first.";
+			return;
+		}
+		powerBlocked = false;
+		if (virgin) core.factoryReset();
 	} else {
 		core.stop();
 	}
+	poweredOn = shouldBePoweredOn;
 }
 
-juce::File D110AudioProcessor::getNvramFolder() {
+juce::File D110AudioProcessor::getNvramRoot() {
 	return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
 		.getChildFile("D-110 Emulator")
 		.getChildFile("nvram");
+}
+
+juce::File D110AudioProcessor::getNvramFolder() const {
+	return getNvramRoot().getChildFile(instanceId.toDashedString());
+}
+
+// MAME keeps each nvram_device in its own file under <nvram_directory>/<machine>/, so the
+// D-110's battery RAM is "rams" and its memory card is "memcs", both raw 32 KB images.
+void D110AudioProcessor::writeNvramFiles(const juce::MemoryBlock &rams,
+                                         const juce::MemoryBlock &memcs) const {
+	const auto dir = getNvramFolder().getChildFile("d110");
+	dir.createDirectory();
+	if (rams.getSize() > 0) dir.getChildFile("rams").replaceWithData(rams.getData(), rams.getSize());
+	if (memcs.getSize() > 0) dir.getChildFile("memcs").replaceWithData(memcs.getData(), memcs.getSize());
+}
+
+juce::MemoryBlock D110AudioProcessor::readNvramFile(const juce::String &name) const {
+	juce::MemoryBlock block;
+	const auto file = getNvramFolder().getChildFile("d110").getChildFile(name);
+	if (file.existsAsFile()) file.loadFileAsData(block);
+	return block;
 }
 
 // The ROM files sit loose in the plugin's data folder, the same as every other synth in
@@ -473,6 +532,13 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 }
 
 void D110AudioProcessor::handleIncomingMidiMessage(const juce::MidiMessage &message) {
+	// The control board gets its own copy first. On the real instrument one MIDI cable
+	// feeds both the CPU and the voice circuitry; here the CPU is MAME and the voice
+	// circuitry is mt32emu, so both have to be told. Without this the firmware never
+	// learns a note was played - which is why the top LCD row did not light the playing
+	// parts, and why the display drifted away from the host's program changes.
+	forwardMidiToFirmware(message);
+
 	if (!synth) return;
 
 	if (message.isSysEx()) {
@@ -492,6 +558,21 @@ void D110AudioProcessor::handleIncomingMidiMessage(const juce::MidiMessage &mess
 		| (static_cast<MT32Emu::Bit32u>(data1) << 8)
 		| (static_cast<MT32Emu::Bit32u>(data2) << 16);
 	synth->playMsg(msg);
+}
+
+void D110AudioProcessor::forwardMidiToFirmware(const juce::MidiMessage &message) {
+	if (!core.isRunning()) return;
+
+	// Clock and active sensing arrive constantly and say nothing the panel can show. At
+	// 3125 bytes a second they would crowd out the messages that matter, so they stop
+	// here. Everything else - notes, controllers, program changes, bend, exclusive - goes
+	// through, because the firmware is meant to be the authority on what it is playing.
+	const auto *raw = message.getRawData();
+	const int size = message.getRawDataSize();
+	if (size <= 0) return;
+	if (raw[0] == 0xF8 || raw[0] == 0xFE) return;
+
+	core.pushMidi(static_cast<const juce::uint8 *>(raw), size);
 }
 
 juce::AudioProcessorEditor *D110AudioProcessor::createEditor() {
@@ -544,6 +625,15 @@ D110AudioProcessor::LcdSnapshot D110AudioProcessor::getLcdSnapshot() const {
 		write(1, 2, juce::String(name).trim().toRawUTF8());
 
 	return snapshot;
+}
+
+bool D110AudioProcessor::readEngineMemory(juce::uint32 packedAddress, juce::uint32 length,
+                                          juce::uint8 *out) {
+	if (synth == nullptr) return false;
+	synth->readMemory(static_cast<MT32Emu::Bit32u>(packedAddress),
+	                  static_cast<MT32Emu::Bit32u>(length),
+	                  static_cast<MT32Emu::Bit8u *>(out));
+	return true;
 }
 
 float D110AudioProcessor::getMasterVolume() const {
@@ -613,11 +703,59 @@ void D110AudioProcessor::stepPatch(int direction) {
 	pendingShortMessages.push_back(message);
 }
 
+// Compressing before base64 is worth the few lines: the firmware's 32 KB battery RAM is
+// mostly repeated patch and timbre records, so it packs down hard, and a project file
+// should not carry ~88 KB of text per instance for something this repetitive.
+static juce::String packBlock(const juce::MemoryBlock &raw) {
+	if (raw.getSize() == 0) return {};
+	juce::MemoryOutputStream compressed;
+	{
+		juce::GZIPCompressorOutputStream gzip(compressed);
+		gzip.write(raw.getData(), raw.getSize());
+	}
+	return juce::Base64::toBase64(compressed.getData(), compressed.getDataSize());
+}
+
+static juce::MemoryBlock unpackBlock(const juce::String &text) {
+	juce::MemoryBlock out;
+	if (text.isEmpty()) return out;
+	juce::MemoryOutputStream compressed;
+	if (!juce::Base64::convertFromBase64(compressed, text)) return out;
+	juce::MemoryInputStream source(compressed.getData(), compressed.getDataSize(), false);
+	juce::GZIPDecompressorInputStream gzip(source);
+	juce::MemoryOutputStream expanded;
+	expanded.writeFromInputStream(gzip, -1);
+	out.append(expanded.getData(), expanded.getDataSize());
+	return out;
+}
+
 void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	auto state = parameters.copyState();
 	std::unique_ptr<juce::XmlElement> xml(state.createXml());
 	xml->setAttribute("controlRomPath", controlRomPath);
 	xml->setAttribute("pcmRomPath", pcmRomPath);
+	xml->setAttribute("instanceId", instanceId.toDashedString());
+
+	// The firmware's own memory - its patches, its timbres, its edits - so that a project
+	// recalls the sounds it was saved with instead of whatever the shared folder happens
+	// to hold now.
+	//
+	// While the machine is running the FILE on disk is stale: MAME only writes its NVRAM
+	// out when the machine exits. So take the live image straight from the core, and fall
+	// back to the file only when powered off.
+	juce::MemoryBlock rams;
+	if (core.isRunning()) {
+		rams.setSize(D110Core::kRamSize);
+		if (!core.getRam(static_cast<juce::uint8 *>(rams.getData()))) rams.reset();
+	}
+	if (rams.getSize() == 0) rams = readNvramFile("rams");
+
+	// The memory card has no live window, so it can only come off disk.
+	const juce::MemoryBlock memcs = readNvramFile("memcs");
+
+	xml->setAttribute("nvramRams", packBlock(rams));
+	xml->setAttribute("nvramMemcs", packBlock(memcs));
+
 	copyXmlToBinary(*xml, destData);
 }
 
@@ -634,6 +772,25 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 		pcmRomPath = prp;
 		openSynthIfReady();
 	}
+
+	// Take back the folder this project was saved with - unless another live instance is
+	// already using it, which is what happens when a plugin is copied and pasted rather
+	// than newly added. In that case keep the fresh id minted in the constructor, so the
+	// copy starts as a copy instead of fighting the original over one folder.
+	const auto savedId = xml->getStringAttribute("instanceId");
+	if (savedId.isNotEmpty() && savedId != instanceId.toDashedString()
+	    && claimInstanceId(savedId)) {
+		releaseInstanceId(instanceId.toDashedString());
+		instanceId = juce::Uuid(savedId);
+	}
+
+	// Land the saved firmware memory in this instance's folder now, while the machine is
+	// certainly not running - the plugin always comes up powered off, and MAME reads these
+	// files once at start. Hitting POWER then boots the project's own instrument.
+	const auto rams = unpackBlock(xml->getStringAttribute("nvramRams"));
+	const auto memcs = unpackBlock(xml->getStringAttribute("nvramMemcs"));
+	if (rams.getSize() > 0 || memcs.getSize() > 0)
+		writeNvramFiles(rams, memcs);
 }
 
 juce::AudioProcessor *JUCE_CALLTYPE createPluginFilter() {

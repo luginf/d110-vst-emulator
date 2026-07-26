@@ -21,6 +21,38 @@ the emulated controller's own mask character ROM. See
 The plugin opens **powered off**, as a rack unit does. Click POWER and the firmware boots live,
 in real time.
 
+## What reaches the sound
+
+Every parameter block the firmware keeps is mirrored into the sound engine, so the deep editor
+pages are real and not decoration:
+
+- **Timbre Temporary** - which timbre each part plays, key shift, fine tune, bender range,
+  assign mode, output level, pan.
+- **Tone Temporary** - the tone itself: structure, partial mute, waveforms, and the pitch, TVF
+  and TVA envelopes, for all eight parts. Editing `Tone Edit / Structure 1&2` moves the sound
+  immediately.
+- **System** - partial reserve and the per-part MIDI channel map, so the SYSTEM page's channel
+  assignment actually takes effect.
+
+Host MIDI is delivered to **both** halves, as one cable feeds both on the real instrument. The
+firmware therefore sees what you play: the top LCD row lights the indicator for the part being
+played, and the display follows program changes sent by the DAW.
+
+Each instance keeps its **own** firmware memory, and your project saves it. Reload a session and
+the patches and edits come back with it, rather than whatever a shared folder last held.
+
+### Known limits
+
+- **Only one instance can be switched on at a time.** MAME reaches its machine through a
+  process-wide singleton, so a second running machine corrupts the host's heap - measured, not
+  assumed. A second instance therefore refuses to power on and says so, instead of crashing your
+  DAW. Loading several is fine; only one may be on.
+- Playing on channel 9 or 10 sounds part 8 and the rhythm part correctly, but their two
+  indicators on the LCD do not light. MAME emulates no LA32, so firmware logic that reads voice
+  state back from the sound chip has nothing to read.
+- Master tune, reverb and master volume are deliberately not mirrored - see
+  [`docs/sysex_address_map.md`](docs/sysex_address_map.md) for exactly why each one is excluded.
+
 ## Requirements
 
 You need your own **MAME `d110` ROM set** - copyrighted Roland firmware, **not included** here.
@@ -39,13 +71,17 @@ still in its `.zip`. Whatever you have, drop it in.
 
 Right-click the panel to see what was recognised.
 
-> **Note:** by factory default Part 1 listens on **MIDI channel 2**, not 1 - that is how the
-> hardware behaves, not a bug.
+> **Note:** by factory default **nothing plays on MIDI channel 1**. Part 1 listens on channel
+> **2**, part 2 on 3, and so on to part 8 on channel 9, with rhythm on 10. That is how the
+> hardware behaves, not a bug - see
+> [`docs/factory_defaults.md`](docs/factory_defaults.md) for the full factory state (channels,
+> pan, key ranges, partial reserve) read straight off the firmware's own display.
 
-On a fresh install the firmware's memory is blank and the display shows an empty patch. Use
-**Factory Reset** on the right-click menu to have the firmware rebuild its patch and timbre
-memory from the preset ROM - it is the documented cold start (hold Write/Copy across a reset,
-confirm with Enter), performed for you.
+A new instance performs the documented cold start **automatically** the first time you switch
+it on, so it comes up at factory settings rather than showing the empty patch a D-110 with
+blank battery RAM really does show. **Factory Reset** on the right-click menu does the same
+thing again at any time - it is Roland's own procedure (hold Write/Copy across a reset, confirm
+with Enter), performed for you.
 
 ## Project layout
 
@@ -59,8 +95,17 @@ confirm with Enter), performed for you.
 - `docs/` - the measured panel geometry and the SysEx address map, both derived by profiling
   rather than by eye. Every number in the code is justified there.
 - `rom_test/` - a console tool that renders a test chord from a Control + PCM ROM pair.
-- `plugin/audio_test.cpp` - offline check with no DAW: powers the plugin on, plays a note, and
-  proves a panel edit changes the sound by measuring the pitch before and after.
+- `plugin/audio_test.cpp` - offline check with no DAW: powers the plugin on, plays a note, proves
+  a panel edit changes the sound, checks that re-sending an *unedited* state changes nothing, and
+  sweeps all sixteen MIDI channels reading the part indicators off the firmware's own display.
+- `plugin/tone_probe.cpp` - locates the Tone Temporary Area by reading the engine's copy of each
+  tone back out and matching it against the firmware's RAM. An exact match is simultaneously the
+  measurement and the null test.
+- `plugin/state_test.cpp` - edits a parameter, saves the plugin state, restores it into a fresh
+  instance, and checks the edit came back; also checks two instances get separate memory and that
+  the second refuses to power on.
+- `plugin/two_instance_test.cpp` - records what really happens when two machines run in one
+  process. Diagnostic, not a fix.
 - `plugin/bridge_probe.cpp`, `core_test.cpp` - the harnesses used to map the firmware's RAM and
   to exercise the control board on its own.
 

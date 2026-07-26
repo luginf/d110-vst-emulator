@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(D110Emulator VERSION 0.7.0)
+project(D110Emulator VERSION 0.9.0)
 
 # C++20 because MAME's headers need it.
 set(CMAKE_CXX_STANDARD 20)
@@ -85,11 +85,6 @@ target_link_libraries(D110Emulator PUBLIC
 )
 
 # ---------------------------------------------------------------------------
-# Console check of the D110Core lifecycle: boots the real firmware in-process and
-# prints the MSM6222B's own dot matrix while pressing front-panel buttons. Proves
-# the wrap independently of the plugin.
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
 # Offline audio check: instantiates the real processor, powers it on, plays a note
 # and measures the output. No DAW, no audio device. Also the harness for proving
 # that a panel edit becomes audible once the RAM bridge is in.
@@ -113,6 +108,48 @@ target_compile_definitions(d110_bridge_probe PRIVATE ${MAME_DEFS})
 target_link_libraries(d110_bridge_probe PRIVATE ${MAME_LIBS} ${MAME_SYS_LIBS})
 target_link_options(d110_bridge_probe PRIVATE /ignore:4099 /FORCE:MULTIPLE)
 
+# ---------------------------------------------------------------------------
+# Locates the Tone Temporary Area in the firmware's RAM by comparing bytes: reads the
+# tone mt32emu holds for each part back out of the engine and slides it over the whole
+# 32 KB. An exact match both pins the base and proves that mirroring an unedited tone
+# changes nothing - the null test the bridge needed before the deep Edit pages could be
+# wired up. See docs/sysex_address_map.md.
+# ---------------------------------------------------------------------------
+add_executable(d110_tone_probe tone_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_tone_probe PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_tone_probe PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_tone_probe PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_tone_probe PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Checks that a project recalls its own firmware memory, that two instances get separate
+# memory, and that the second one refuses to power on instead of crashing the host.
+add_executable(d110_state_test state_test.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_state_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_state_test PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_state_test PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_state_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Records what really happens when two machines run in one process, which is what a DAW
+# does as soon as a second instance of the plugin is loaded. Diagnostic, not a fix.
+add_executable(d110_two_instance_test two_instance_test.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_two_instance_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_two_instance_test PRIVATE ${MAME_DEFS})
+target_link_libraries(d110_two_instance_test PRIVATE ${MAME_LIBS} ${MAME_SYS_LIBS})
+target_link_options(d110_two_instance_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Console check of the D110Core lifecycle: boots the real firmware in-process and prints
+# the MSM6222B's own dot matrix while pressing front-panel buttons. Proves the wrap
+# independently of the plugin.
 add_executable(d110_core_test core_test.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_core_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_core_test PRIVATE ${MAME_DEFS})

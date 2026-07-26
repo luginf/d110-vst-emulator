@@ -11,6 +11,7 @@
 #include "render.h"
 #include "ioport.h"
 #include "video/msm6222b.h"
+#include "cpu/mcs96/i8x9x.h"
 #include "frontend/mame/ui/menuitem.h"
 #include "frontend/mame/mame.h"
 #include "frontend/mame/clifront.h"
@@ -18,6 +19,7 @@
 #include "drivenum.h"
 
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <cstring>
 
@@ -62,6 +64,8 @@ class D110Osd : public osd_common_t {
 	running_machine *m_machine = nullptr;
 	render_target *m_target = nullptr;
 	msm6222b_device *m_lcd = nullptr;
+	i8x9x_device *m_cpu = nullptr;
+	emu_timer *m_midiTimer = nullptr;
 	uint8_t *m_ram = nullptr;
 	std::array<ioport_field *, D110Core::kNumButtons> m_buttonField{};
 	bool m_resolved = false;
@@ -102,6 +106,10 @@ class D110Osd : public osd_common_t {
 			if (share->bytes() >= D110Core::kRamSize)
 				m_ram = static_cast<uint8_t *>(share->ptr());
 
+		// The CPU's own serial receiver is the D-110's MIDI IN. The driver drives it the
+		// same way for its built-in test note, so this needs nothing MAME does not expose.
+		m_cpu = root.subdevice<i8x9x_device>("maincpu");
+
 		m_resolved = true;
 	}
 
@@ -116,6 +124,16 @@ public:
 		m_target = machine.render().target_alloc();
 		m_target->set_bounds(320, 240);
 		m_lcdScratch.resize(D110Core::kLcdBytes, 0);
+
+		// The MIDI IN timer has to be allocated HERE and nowhere later: MAME closes save
+		// state registration once the machine has finished starting, and a timer created
+		// after that is a fatal error ("Attempt to register save state entry after state
+		// registration is closed"). The CPU is not resolvable this early, which is fine -
+		// the callback simply does nothing until it is.
+		const attotime period = attotime::from_hz(D110Core::kMidiBytesPerSecond);
+		m_midiTimer = machine.scheduler().timer_alloc(
+			timer_expired_delegate(FUNC(D110Osd::midiTick), this));
+		m_midiTimer->adjust(period, 0, period);
 	}
 
 	virtual void osd_exit() override {
@@ -177,6 +195,18 @@ public:
 		}
 
 		if (m_ram) core->osdSnapshotRam(m_ram);
+	}
+
+	// Host MIDI arriving at the emulated MIDI IN, one byte per firing. It has to be a
+	// machine timer rather than something driven from update(): the emulated UART is a
+	// single register with no FIFO, so two writes without emulated time between them
+	// leave only the second byte, and update() runs once a frame - far too coarse and
+	// far too bursty. On a timer the bytes arrive spaced exactly as they would down a
+	// real MIDI cable, which is also what the driver's own built-in test note does.
+	void midiTick(s32) {
+		uint8_t byte = 0;
+		if (m_cpu && core->popMidiByte(byte))
+			m_cpu->serial_w(byte);
 	}
 
 	// ---- input / debugger: nothing to do headless ----
@@ -255,11 +285,22 @@ public:
 // only the part that actually changed keeps the engine from re-caching all eight tones
 // on every edit.
 //
-// Its base and stride were measured, not assumed: changing the timbre number makes the
-// firmware reload a whole tone, and doing that on part 1 then part 2 gave changed spans
-// ending at 0x22D9 and 0x23CE - 245 apart, i.e. a 246-byte stride, putting part 1's
-// tone at 0x22D9-245 = 0x21E4. That also matches the arithmetic (0x2000 + 144 timbre
-// temp + 340 rhythm setup) and the manual's own part 7 and part 8 addresses.
+// Its base was MEASURED, and by comparison rather than inference - `plugin/tone_probe.cpp`
+// reads back the tone mt32emu holds for each part and slides those 246 bytes over the
+// whole 32 KB of firmware RAM. All eight parts match 246 bytes out of 246, at exactly
+// base + part * 246 from 0x21E4:
+//
+//     part 1 0x21E4 'AcouBass 1'   part 5 0x25BC 'Trombone 1'
+//     part 2 0x22DA 'AcouPiano2'   part 6 0x26B2 'Sax 1'
+//     part 3 0x23D0 'Guitar 1'     part 7 0x27A8 'Sax 3'
+//     part 4 0x24C6 'Trumpet 2'    part 8 0x289E 'Strings 3'
+//
+// An exact match is also the null test: both halves load the same tone out of the same
+// ROM, so mirroring an unedited one demonstrably changes nothing. That is what the
+// earlier span-difference method could never establish - it only bounded the base from
+// BELOW, because the tail bytes of two tones need not differ. (The "+460 cents" that
+// once seemed to condemn 0x21E4 was not the base at all: it was the test harness's
+// zero-crossing pitch meter latching onto a different harmonic. The base was right.)
 #define D110_TONE(part) \
 	{ uint16_t(0x21E4 + (part) * 246), \
 	  0x040000u | (uint32_t(((part) * 246) / 128) << 8) | uint32_t(((part) * 246) % 128), \
@@ -270,31 +311,53 @@ const D110Core::MirrorRegion D110Core::kMirrorRegions[] = {
 	// rhythm at 0x030100. 144 bytes fits one DT1, so it goes as a single block.
 	{ 0x2000, 0x030000, 9 * 16, "Timbre Temporary" },
 
-	// The eight Tone Temporary regions belong here and the SysEx side of them is right
-	// (the generated addresses reproduce the manual's own part 7 and part 8 entries,
-	// 0x040B44 and 0x040D3A). They are OUT until the RAM base is positively identified.
+	// The eight tones the parts are actually playing. This is what carries Edit's deep
+	// pages - the partials, the waveforms, the pitch/TVF/TVA envelopes - which until now
+	// moved the display and nothing else. The generated SysEx addresses reproduce the
+	// manual's own part 7 and part 8 entries, 0x040B44 and 0x040D3A.
+	D110_TONE(0), D110_TONE(1), D110_TONE(2), D110_TONE(3),
+	D110_TONE(4), D110_TONE(5), D110_TONE(6), D110_TONE(7),
+
+	// The System Area, but deliberately only the middle of it. The base is certain -
+	// tone_probe's audit reads RAM 0x2D94 as Roland's structure and two fields confirm it
+	// beyond coincidence: reserveSettings sums to exactly 32, and chanAssign reads
+	// 1 2 3 4 5 6 7 8 9, which is the D-110's documented "Part 1 answers on MIDI channel
+	// 2" assignment. Those 18 bytes are mirrored, so the SYSTEM page's partial reserve and
+	// channel map become real rather than decorative.
 	//
-	// 0x21E4 was wrong to trust: the span measurement only ever gave a LOWER BOUND for
-	// it, because the last bytes of a tone need not differ between two tones. Mirroring
-	// from there wrote shifted data, and the test caught it - lowering Fine Tune raised
-	// the pitch by 460 cents instead of lowering it slightly. A wrong base here is far
-	// worse than no mirroring at all, because it corrupts a sound that was correct.
-	//
-	// The base must be found positively, not by inference: a tone begins with its
-	// 10-character ASCII name, so searching RAM for the name the display is showing
-	// pins it exactly.
-	// D110_TONE(0), ... D110_TONE(7),
+	// The bytes on either side are NOT mirrored, and both would do real damage:
+	//   masterVol (offset 22) reads 0, because on a D-110 the volume is a physical knob
+	//     and the firmware never fills that byte in. Sending it set the engine's master
+	//     volume to zero and dropped the whole instrument by ~30 dB - which is exactly
+	//     how this was found.
+	//   reverbMode (offset 1) reads 4, outside the 0-3 this engine accepts; the D-110's
+	//     reverb settings do not line up with the MT-32's.
+	//   masterTune (offset 0) is left out too: the panel reads 442 where Roland's
+	//     documented 0-127 -> 432.1-457.6 Hz mapping makes 0x4A about 447, so the two
+	//     scales disagree and mirroring it would detune everything against the display.
+	{ 0x2D98, 0x100004, 18, "System (reserve + channels)" },
 };
 #undef D110_TONE
 constexpr int D110Core::kNumMirrorRegions =
 	int(sizeof(D110Core::kMirrorRegions) / sizeof(D110Core::kMirrorRegions[0]));
 
+// One DT1 carries kMaxSysexBytes minus an 8-byte header and a 2-byte tail. The largest
+// thing mirrored here is a 246-byte tone, which fits with EXACTLY no slack.
+static constexpr int kMaxRegionBytes = D110Core::kMaxSysexBytes - 10;
+static_assert(kMaxRegionBytes >= 246, "a Tone Temporary region no longer fits in one DT1");
+
 D110Core::D110Core()
 	: lcd(kLcdBytes, 0), ram(kRamSize, 0),
-	  sysexBuf((size_t)kSysexSlots * kMaxSysexBytes, 0), sysexLen(kSysexSlots, 0) {
+	  sysexBuf((size_t)kSysexSlots * kMaxSysexBytes, 0), sysexLen(kSysexSlots, 0),
+	  midiBuf(kMidiSlots, 0) {
 	mirrorPrev.resize(kNumMirrorRegions);
-	for (int i = 0; i < kNumMirrorRegions; ++i)
+	for (int i = 0; i < kNumMirrorRegions; ++i) {
+		// A region longer than one DT1 would be truncated by emitRegionSysex and still
+		// sent with a valid checksum, so the engine would silently accept a half-written
+		// parameter block. Catch it here rather than let it become a mystery.
+		assert(kMirrorRegions[i].length <= kMaxRegionBytes);
 		mirrorPrev[(size_t)i].assign(kMirrorRegions[i].length, 0);
+	}
 }
 
 D110Core::~D110Core() {
@@ -302,12 +365,33 @@ D110Core::~D110Core() {
 	if (resetThread.joinable()) resetThread.join();
 }
 
-void D110Core::start(const std::string &rom, const std::string &nvram) {
-	if (running.load(std::memory_order_acquire)) return;
+std::atomic<bool> D110Core::sMachineLive{false};
+
+bool D110Core::start(const std::string &rom, const std::string &nvram) {
+	if (running.load(std::memory_order_acquire)) return true;
+
+	// Claim the process's one machine slot, or refuse. Doing this before the thread is
+	// spawned is what makes it a guarantee rather than a race.
+	bool expected = false;
+	if (!sMachineLive.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+		return false;
+	holdsMachine = true;
+
 	romPath = rom;
 	nvramDir = nvram;
 	stopFlag.store(false, std::memory_order_release);
+
+	// A fresh machine means a fresh baseline. Without this the previous run's contents
+	// survive in mirrorPrev, so the first snapshot after a restart diffs against a state
+	// that no longer exists - the "prime silently, then send only changes" rule held only
+	// for the very first boot in the process. Instead: prime silently here, then resync
+	// everything once the firmware has settled, below in osdSnapshotRam.
+	mirrorPrimed = false;
+	startedAt = std::chrono::steady_clock::now();
+	bootResyncPending = true;
+
 	mameThread = std::thread(&D110Core::threadFunc, this);
+	return true;
 }
 
 void D110Core::stop() {
@@ -317,6 +401,13 @@ void D110Core::stop() {
 	stopFlag.store(true, std::memory_order_release);
 	if (mameThread.joinable()) mameThread.join();
 	running.store(false, std::memory_order_release);
+
+	// Release the process's machine slot only once the thread is truly gone - MAME's
+	// singleton is not free until its destructor has run.
+	if (holdsMachine) {
+		holdsMachine = false;
+		sMachineLive.store(false, std::memory_order_release);
+	}
 }
 
 void D110Core::threadFunc() {
@@ -375,6 +466,9 @@ void D110Core::factoryReset() {
 		// Give the firmware time to rewrite its patch and timbre memory before anything
 		// else touches it.
 		std::this_thread::sleep_for(std::chrono::seconds(4));
+		// The whole memory has just been rebuilt from the preset ROM, so tell the engine
+		// about all of it rather than waiting for a diff to notice piecemeal.
+		resyncMirror();
 		resetting.store(false, std::memory_order_release);
 	});
 }
@@ -410,6 +504,18 @@ bool D110Core::getLcd(uint8_t *out) const {
 // ---- battery RAM ----------------------------------------------------------
 
 void D110Core::osdSnapshotRam(const uint8_t *src) {
+	// Once the firmware has stopped scribbling over its RAM on the way up, push the whole
+	// mirrored state across once. The engine booted on its own ROM defaults while the
+	// firmware booted on the user's saved memory, so until this happens the panel and the
+	// sound disagree about which timbres are loaded.
+	if (bootResyncPending
+	    && std::chrono::steady_clock::now() - startedAt
+	           >= std::chrono::milliseconds(kBootSettleMs)) {
+		bootResyncPending = false;
+		mirrorResync.store(true, std::memory_order_release);
+	}
+	const bool resync = mirrorResync.exchange(false, std::memory_order_acq_rel);
+
 	// Only the mirrored regions decide whether anything is sent onward. Diffing the
 	// whole 32 KB would fire dozens of times a second on the firmware's scratch area,
 	// which has nothing to do with the sound.
@@ -417,13 +523,13 @@ void D110Core::osdSnapshotRam(const uint8_t *src) {
 		const auto &region = kMirrorRegions[i];
 		auto &prev = mirrorPrev[(size_t)i];
 		const uint8_t *now = src + region.ramOffset;
-		if (mirrorPrimed && std::memcmp(prev.data(), now, region.length) == 0)
+		if (!resync && mirrorPrimed && std::memcmp(prev.data(), now, region.length) == 0)
 			continue;
 		std::memcpy(prev.data(), now, region.length);
-		// The very first snapshot only establishes the baseline: the engine already
-		// holds whatever the ROMs booted with, and blasting it at startup would fight
-		// the host's own program changes.
-		if (mirrorPrimed)
+		// The very first snapshot after a start only establishes the baseline; the
+		// deliberate catch-up is the resync above, which happens once the firmware is
+		// no longer mid-boot.
+		if (mirrorPrimed || resync)
 			emitRegionSysex(region, src);
 	}
 	mirrorPrimed = true;
@@ -487,6 +593,33 @@ void D110Core::pushSysex(const uint8_t *msg, int len) {
 	sysexLen[(size_t)w] = uint16_t(len);
 	sW.store((w + 1) & kSysexMask, std::memory_order_release);
 	sysexCount.fetch_add(1, std::memory_order_release);
+}
+
+// ---- host MIDI into the firmware ------------------------------------------
+
+void D110Core::pushMidi(const uint8_t *bytes, int len) {
+	int w = mW.load(std::memory_order_relaxed);
+	const int r = mR.load(std::memory_order_acquire);
+	for (int i = 0; i < len; ++i) {
+		const int next = (w + 1) & kMidiMask;
+		if (next == r) { // full: drop the rest rather than stall the audio thread
+			midiDropCount.fetch_add(uint64_t(len - i), std::memory_order_relaxed);
+			break;
+		}
+		midiBuf[(size_t)w] = bytes[i];
+		w = next;
+		midiInCount.fetch_add(1, std::memory_order_relaxed);
+	}
+	mW.store(w, std::memory_order_release);
+}
+
+bool D110Core::popMidiByte(uint8_t &out) {
+	const int r = mR.load(std::memory_order_relaxed);
+	if (r == mW.load(std::memory_order_acquire)) return false;
+	out = midiBuf[(size_t)r];
+	mR.store((r + 1) & kMidiMask, std::memory_order_release);
+	midiOutCount.fetch_add(1, std::memory_order_relaxed);
+	return true;
 }
 
 int D110Core::popSysex(uint8_t *out) {

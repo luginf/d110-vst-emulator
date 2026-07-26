@@ -15,6 +15,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -28,9 +29,21 @@ public:
 
 	// Boots the machine. `romPath` is a MAME rompath (the d110 romset); `nvramDir` is
 	// where the firmware's battery RAM and memory card persist between runs.
-	void start(const std::string &romPath, const std::string &nvramDir);
+	//
+	// Returns false, having done nothing, if another machine is already running anywhere
+	// in this process. ONLY ONE IS POSSIBLE, and the reason is structural rather than
+	// something this code can arrange around: MAME reaches its machine through
+	// mame_machine_manager::instance(), which caches a process-wide
+	// `static mame_machine_manager *s_manager` and hands the same one to every later
+	// caller, so a second cli_frontend attaches to the first machine's OSD and options.
+	// Measured, not assumed - plugin/two_instance_test.cpp starts a second core while the
+	// first is up and the process dies of heap corruption within seconds. Refusing is
+	// therefore the only safe answer until MAME's singleton is dealt with.
+	bool start(const std::string &romPath, const std::string &nvramDir);
 	void stop();
 	bool isRunning() const { return running.load(std::memory_order_acquire); }
+	// Whether some other instance in this process already holds the machine.
+	static bool machineHeldElsewhere() { return sMachineLive.load(std::memory_order_acquire); }
 
 	// --- LCD -----------------------------------------------------------------
 	// The real MSM6222B's rendered dot matrix, straight out of the chip: 2 lines of
@@ -100,14 +113,45 @@ public:
 	// Copies one pending message into `out` (at least kMaxSysexBytes) and returns its
 	// length, or 0 if the queue is empty. Safe to call from the audio thread.
 	int popSysex(uint8_t *out);
+	// Sends every mirrored region on the next snapshot, whether or not it changed. Used
+	// wherever the engine's idea of the state cannot be trusted to match the firmware's:
+	// once the machine has finished booting (the engine came up on its own ROM defaults
+	// while the firmware came up on the user's saved memory) and after a factory reset
+	// (the firmware has just rebuilt that memory from scratch). The firmware is the
+	// master here, so it is always the engine that gets brought into line.
+	void resyncMirror() { mirrorResync.store(true, std::memory_order_release); }
 	// How many mirror messages have been produced since boot - diagnostics, so a
 	// "nothing changed" result can be told apart from "the bridge never fired".
 	uint64_t sysexEmitted() const { return sysexCount.load(std::memory_order_acquire); }
 
+	// --- host MIDI into the firmware ------------------------------------------
+	// The firmware has to SEE the notes, not just the sound engine. Its MIDI IN is the
+	// CPU's serial port, and the driver already drives it that way for its own test note.
+	// Without this the control board never learns a key was pressed, so the top LCD row
+	// never lights the playing parts and the display drifts away from the host's own
+	// program changes - the panel would be showing a machine that is not being played.
+	//
+	// Queues bytes to be shifted in at MIDI's own rate. Safe to call from the audio
+	// thread; the machine thread consumes them.
+	void pushMidi(const uint8_t *bytes, int len);
+
 	// --- called by the internal OSD only --------------------------------------
 	void osdSnapshotLcd(const uint8_t *renderBuf);
 	void osdSnapshotRam(const uint8_t *ram);
+	// Takes the next byte for the CPU's serial receiver, or returns false if none is
+	// waiting. Exactly one byte per call by design: the emulated UART has no FIFO, so a
+	// second write before the firmware's interrupt handler has read the first simply
+	// overwrites it. The caller is a MAME timer running at the MIDI byte rate, which is
+	// what puts real emulated time between one byte and the next.
+	bool popMidiByte(uint8_t &out);
+	// MIDI's own byte rate: 31250 baud, one start bit and one stop bit around each byte.
+	static constexpr double kMidiBytesPerSecond = 31250.0 / 10.0;
 	bool shouldStop() const { return stopFlag.load(std::memory_order_acquire); }
+	// Diagnostics: bytes accepted, bytes actually shifted into the CPU, and bytes dropped
+	// because the queue was full.
+	uint64_t midiForwarded() const { return midiInCount.load(std::memory_order_acquire); }
+	uint64_t midiDelivered() const { return midiOutCount.load(std::memory_order_acquire); }
+	uint64_t midiDropped() const { return midiDropCount.load(std::memory_order_acquire); }
 
 	// One block of the firmware's RAM that is mirrored into the LA engine, and where
 	// Roland's own exclusive map says it lives.
@@ -124,6 +168,9 @@ private:
 	void threadFunc();
 
 	std::thread mameThread;
+	// Process-wide: set while ANY instance holds the machine. See start().
+	static std::atomic<bool> sMachineLive;
+	bool holdsMachine = false;
 	std::atomic<bool> running{false};
 	std::atomic<bool> stopFlag{false};
 	std::string romPath, nvramDir;
@@ -148,6 +195,13 @@ private:
 	// Previous contents of each mirrored region, so only real changes are sent.
 	std::vector<std::vector<uint8_t>> mirrorPrev;
 	bool mirrorPrimed = false;
+	std::atomic<bool> mirrorResync{false};
+	// The firmware scribbles all over its RAM while it boots, so the one-shot resync that
+	// brings the engine into line waits for it to settle rather than firing on the first
+	// snapshot. Measured from the moment the machine is started.
+	static constexpr int kBootSettleMs = 4000;
+	std::chrono::steady_clock::time_point startedAt;
+	bool bootResyncPending = false;
 
 	// SysEx ring: MAME thread producer, audio thread consumer. Fixed-size slots so
 	// the audio thread never allocates or blocks.
@@ -157,4 +211,13 @@ private:
 	std::vector<uint16_t> sysexLen;
 	std::atomic<int> sW{0}, sR{0};
 	std::atomic<uint64_t> sysexCount{0};
+
+	// MIDI going the other way - host to firmware. A plain byte ring, because MIDI is a
+	// byte stream and a message may legitimately be split across calls. Generous enough
+	// to swallow a SysEx bank at 3125 bytes/s without the host ever blocking.
+	static constexpr int kMidiSlots = 8192;
+	static constexpr int kMidiMask = kMidiSlots - 1;
+	std::vector<uint8_t> midiBuf;
+	std::atomic<int> mW{0}, mR{0};
+	std::atomic<uint64_t> midiInCount{0}, midiOutCount{0}, midiDropCount{0};
 };

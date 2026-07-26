@@ -93,16 +93,90 @@ So two bases are now pinned:
 The per-part structure agreeing on **three consecutive bytes in the order Roland
 documents** is much stronger evidence than any single byte.
 
-**Strong candidate for the Tone Temporary Area: RAM `0x21E4`.** Changing the timbre
-*number* (byte `0x2001`) made the firmware rewrite 150 bytes starting at exactly
-`0x21E4` — which is what loading a different tone into the working area looks like.
-It also fits arithmetically: `0x2000` + 144 (9 × 16 timbre temp) = `0x2090`, plus
-340 bytes of Rhythm Setup (85 × 4) = `0x21E4`. To be confirmed by editing a tone
-parameter directly.
+### Tone Temporary Area: `0x21E4`, measured by comparison
+
+**Confirmed exactly**, and by a method that cannot give a false positive.
+`plugin/tone_probe.cpp` reads the tone mt32emu holds for each part back out of the
+engine — `Synth::readMemory()` is a real public API, and the Tone Temporary region
+is backed by real memory — and slides those 246 bytes over the whole 32 KB of
+firmware RAM looking for the best match. Both halves load their tone from the same
+ROM, so where the bridge is right the two copies must be identical.
+
+All eight parts match **246 bytes out of 246**, at exactly `base + part × 246`:
+
+| Part | RAM | Tone | Part | RAM | Tone |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `0x21E4` | AcouBass 1 | 5 | `0x25BC` | Trombone 1 |
+| 2 | `0x22DA` | AcouPiano2 | 6 | `0x26B2` | Sax 1 |
+| 3 | `0x23D0` | Guitar 1 | 7 | `0x27A8` | Sax 3 |
+| 4 | `0x24C6` | Trumpet 2 | 8 | `0x289E` | Strings 3 |
+
+> **RAM `0x21E4` == SysEx `0x040000`** — Tone Temporary, 8 × 246 bytes
+
+An exact match is also the **null test**: mirroring a tone nobody edited provably
+changes nothing. That is what the earlier span-difference method could never
+establish — it only ever bounded the base from *below*, because the tail bytes of
+two different tones need not differ. (The "+460 cents" that once seemed to condemn
+`0x21E4` was not the base at all; it was the test harness's zero-crossing pitch
+meter latching onto a different harmonic. The base was right all along.)
+
+### System Area: correct, but only partly safe to mirror
+
+The base is certain — read as Roland's structure, `0x2D94` gives
+`reserveSettings` summing to exactly **32** and `chanAssign` reading
+**1 2 3 4 5 6 7 8 9**, the D-110's documented "Part 1 answers on MIDI channel 2"
+assignment. Neither could be coincidence.
+
+But three fields must **not** be sent to the engine:
+
+| Offset | Field | Reads | Why it is excluded |
+| --- | --- | --- | --- |
+| 0 | `masterTune` | `0x4A` | The panel shows 442, while Roland's documented 0–127 → 432.1–457.6 Hz mapping makes `0x4A` ≈ 447. The two scales disagree, so mirroring it would detune everything against the display. |
+| 1–3 | reverb mode/time/level | `04 04 04` | `reverbMode` 4 is outside the 0–3 this engine accepts; the D-110's reverb does not line up with the MT-32's. |
+| 22 | `masterVol` | `00` | **The D-110's volume is a physical knob**, so the firmware never fills this byte in. Sending it set the engine's master volume to zero and dropped the whole instrument by about 30 dB — which is how this was found. |
+
+So only the verified middle is mirrored:
+
+> **RAM `0x2D98` == SysEx `0x100004`** — partial reserve + MIDI channel map, 18 bytes
 
 Not yet found: the Part Set page's first parameter did not move any byte by the
 press count — most likely it was already at its maximum (Output Level was showing
 100). Re-probe from a lower value.
+
+## Host MIDI going the other way
+
+The bridge above carries panel edits *out* to the engine. Traffic also has to go
+*in*: on the real instrument one MIDI cable feeds both the CPU and the voice
+circuitry, and here the CPU is MAME while the voice circuitry is mt32emu, so both
+must be told. Without it the control board never learns a note was played, so the
+top LCD row never lights the playing parts and the display drifts away from the
+host's program changes.
+
+The injection point is the CPU's own serial receiver, `m_maincpu->serial_w()` —
+exactly what the driver uses for its built-in test note, so no MAME patch is
+needed. Two details matter:
+
+1. **It must be paced by a machine timer**, not driven from the OSD's `update()`.
+   The emulated UART is a single register with no FIFO (`i8x9x_device::serial_w`
+   overwrites `sbuf` and raises an interrupt), so two writes without emulated time
+   between them leave only the second byte. A periodic `emu_timer` at MIDI's own
+   3125 bytes/s spaces them exactly as a real cable would.
+2. **That timer has to be allocated during OSD `init()`.** MAME closes save-state
+   registration once the machine has finished starting, and allocating a timer
+   after that is a fatal error.
+
+Measured result: playing each channel in turn lights exactly the matching part on
+the firmware's own display.
+
+| Channel | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10–16 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Part indicator | — | 1 | 2 | 3 | 4 | 5 | 6 | 7 | — | — |
+
+Channels 9 and 10 **do sound** (part 8 and rhythm play normally) but their
+indicators do not light. MAME emulates no LA32 at all, so firmware logic that reads
+voice state back from the sound chip has nothing to read; that is the most likely
+cause, and it is a pre-existing limit of the control-board emulation rather than
+anything the bridge does.
 
 ## Two facts that shape the bridge
 

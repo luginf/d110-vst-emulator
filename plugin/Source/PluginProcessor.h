@@ -92,9 +92,30 @@ public:
 	// its 16 panel buttons. Supplies everything mt32emu has no notion of.
 	D110Core &getCore() { return core; }
 
+	// Reads the LA engine's own copy of a parameter area back out. `packedAddress` is a
+	// Roland address in mt32emu's packed form (three 7-bit bytes squeezed together, so
+	// 0x040000 on the wire is 0x010000 here), NOT the three separate bytes emitRegionSysex
+	// transmits. Returns false when no synth is open.
+	//
+	// Diagnostics only - the plugin never needs it - but it is what lets a test check the
+	// firmware-to-engine bridge byte for byte instead of guessing from the sound. Both
+	// halves load their tones from the same ROM, so where the bridge is correct the two
+	// copies must be identical.
+	bool readEngineMemory(juce::uint32 packedAddress, juce::uint32 length, juce::uint8 *out);
+
 	// Where the firmware's battery RAM and memory card persist. Must be writable, so it is
 	// under the user's app data rather than beside the ROMs in Program Files.
-	static juce::File getNvramFolder();
+	//
+	// PER INSTANCE, not shared: the firmware's patch and timbre memory IS the instrument's
+	// sound, so two plugins in one project each need their own, and a project has to be
+	// able to recall the one it was saved with. The folder is named after this instance's
+	// id, and getStateInformation carries its contents in the project file.
+	static juce::File getNvramRoot();
+	juce::File getNvramFolder() const;
+
+	// Set when a power-on was refused because another instance already holds the emulated
+	// machine. Only one can run per process - see D110Core::start.
+	bool isPowerBlocked() const { return powerBlocked; }
 	// MAME rompath for the d110 romset: the plugin's own data folder first, then the
 	// machine's standing MAME ROM folders so a development box works without copying.
 	static juce::String getMameRomPath();
@@ -124,6 +145,9 @@ private:
 	void closeSynth();
 	void rebuildSampleRateConverter();
 	void handleIncomingMidiMessage(const juce::MidiMessage &message);
+	// Hands a host MIDI message to the emulated control board as well as to the sound
+	// engine, so the firmware's own display tracks what is being played.
+	void forwardMidiToFirmware(const juce::MidiMessage &message);
 	// Opens the synth from whatever is currently in controlRomData/pcmRomData.
 	bool openSynthIfReady();
 	// Scans getAutoRomFolder() for a Control ROM and PCM ROM by content (not filename) and
@@ -168,6 +192,23 @@ private:
 	juce::String lastImportMessage;
 
 	D110Core core;
+
+	// Identifies this instance's private firmware memory, and is itself saved in the
+	// project so a reloaded session finds the same folder again. A copy-pasted plugin
+	// restores the same id, so claimInstanceId() hands out a fresh one on collision.
+	juce::Uuid instanceId;
+	bool powerBlocked = false;
+
+	// Every id currently in use in this process, so two live instances can never be handed
+	// the same firmware-memory folder. Claiming is what a restoring instance does; the
+	// constructor registers the fresh id it minted, and the destructor gives it back.
+	static bool claimInstanceId(const juce::String &id);
+	static void releaseInstanceId(const juce::String &id);
+
+	// Writes the saved firmware memory into this instance's folder, ready for the machine
+	// to pick up next time it starts, and reads it back out again.
+	void writeNvramFiles(const juce::MemoryBlock &rams, const juce::MemoryBlock &memcs) const;
+	juce::MemoryBlock readNvramFile(const juce::String &name) const;
 
 	std::atomic<int> selectedPartIndex{0};
 	std::array<int, 8> currentProgramPerPart{};
