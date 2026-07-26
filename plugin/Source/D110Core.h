@@ -135,6 +135,67 @@ public:
 	// thread; the machine thread consumes them.
 	void pushMidi(const uint8_t *bytes, int len);
 
+	// --- the missing external interrupt ---------------------------------------
+	// When a note reaches it, the firmware enables the CPU's external interrupt and then
+	// spins at 0x29E9 waiting for a flag in its own RAM to have bit 7 set:
+	//
+	//     29E6  orb   int_mask, #80        enable EXTINT
+	//     29E9  ldbze 54, f440[52]         read the flag
+	//     29EE  jbc   54, 7, 29e9          keep waiting while bit 7 is clear
+	//
+	// Only an interrupt handler can set that flag, and NOTHING in MAME's roland_d10
+	// drives EXTINT - the one interrupt the driver wires up is HSI0 from the key scanner,
+	// which the D-110 configuration then removes outright. So the wait never ends and the
+	// firmware never returns to scanning the front panel.
+	//
+	// This supplies the missing edge. The rate is settable because the hardware's real
+	// source is unknown - it is somewhere on the sound board, which is exactly the part
+	// MAME does not emulate. 0 disables it, restoring the old behaviour.
+	// Driving EXTINT turned out to be the wrong lever: in MAME the line also feeds what
+	// port 2 reads back (see i8x9x_device::port2_r), so raising it corrupts a port the
+	// firmware relies on, and the panel dies even at 62 Hz with no notes at all. Kept
+	// because the measurement is worth preserving, but it defaults to off.
+	static constexpr int kExtIntTimerHz = 32000;
+	// Rising edges arrive at kExtIntTimerHz / (2 * divider). 0 means never.
+	void setExtIntDivider(int divider) { extIntDiv.store(divider, std::memory_order_release); }
+	int extIntDivider() const { return extIntDiv.load(std::memory_order_acquire); }
+	uint64_t extIntEdges() const { return extIntCount.load(std::memory_order_acquire); }
+
+	// --- releasing the stuck wait ---------------------------------------------
+	// The loop at 0x29E9 polls a byte in battery RAM (0xF440 goes through fixed_r into the
+	// "rams" share at offset 0x3440) and spins until bit 7 of it is set. On the hardware
+	// the sound board's interrupt sets that flag; in MAME nothing ever does.
+	//
+	// So set it - but ONLY while the firmware is demonstrably sitting in that loop, which
+	// is checked by looking at the program counter. Outside those two addresses this
+	// touches nothing at all, so it cannot disturb a machine that is running normally.
+	static constexpr uint16_t kStuckLoopPc = 0x29E9;
+	static constexpr uint16_t kStuckLoopPcAlt = 0x29EE;
+	// f440[] is one array of per-voice flags; f460[] immediately after it is a DIFFERENT
+	// array, walked by the voice-chain loop at 0x268A. Writing across both corrupts the
+	// chain and merely moves the hang, which is what a 64-byte span did. 32 bytes covers
+	// f440[] alone.
+	static constexpr uint16_t kVoiceFlagBase = 0x3440;
+	static constexpr int kVoiceFlagSpan = 32;
+	void setReleaseStuckWait(bool on) { releaseStuck.store(on, std::memory_order_release); }
+	bool releaseStuckWait() const { return releaseStuck.load(std::memory_order_acquire); }
+	uint64_t stuckReleases() const { return stuckCount.load(std::memory_order_acquire); }
+
+	// --- diagnostics: where is the CPU actually spending its time? -------------
+	// Samples the program counter densely while the machine runs. When the firmware
+	// stops servicing the front panel the PC collapses onto a handful of addresses, and
+	// those addresses say exactly which loop it is stuck in - which is the only way to
+	// find out what it is waiting for from the LA32 that MAME does not emulate.
+	void setPcSampling(bool on) { pcSampling.store(on, std::memory_order_release); }
+	void resetPcHistogram();
+	// Fills `out` with the `count` most-sampled addresses, most frequent first.
+	struct PcHit { uint16_t pc; uint64_t hits; };
+	std::vector<PcHit> topPcs(int count) const;
+	uint64_t pcSampleTotal() const { return pcTotal.load(std::memory_order_acquire); }
+	void osdSamplePc(uint16_t pc);
+	void osdCountExtInt() { extIntCount.fetch_add(1, std::memory_order_relaxed); }
+	void osdCountStuckRelease() { stuckCount.fetch_add(1, std::memory_order_relaxed); }
+
 	// --- called by the internal OSD only --------------------------------------
 	void osdSnapshotLcd(const uint8_t *renderBuf);
 	void osdSnapshotRam(const uint8_t *ram);
@@ -213,11 +274,23 @@ private:
 	std::atomic<uint64_t> sysexCount{0};
 
 	// MIDI going the other way - host to firmware. A plain byte ring, because MIDI is a
-	// byte stream and a message may legitimately be split across calls. Generous enough
-	// to swallow a SysEx bank at 3125 bytes/s without the host ever blocking.
-	static constexpr int kMidiSlots = 8192;
+	// byte stream and a message may legitimately be split across calls. Sized to swallow a
+	// whole imported SysEx bank in one go: it drains at MIDI's real 3125 bytes a second,
+	// so a large bank sits here for several seconds and must not be truncated meanwhile.
+	static constexpr int kMidiSlots = 65536;
 	static constexpr int kMidiMask = kMidiSlots - 1;
 	std::vector<uint8_t> midiBuf;
 	std::atomic<int> mW{0}, mR{0};
 	std::atomic<uint64_t> midiInCount{0}, midiOutCount{0}, midiDropCount{0};
+
+	std::atomic<int> extIntDiv{0};
+	std::atomic<uint64_t> extIntCount{0};
+	std::atomic<bool> releaseStuck{false};
+	std::atomic<uint64_t> stuckCount{0};
+
+	// PC histogram: written only by the machine thread, read under the mutex.
+	std::atomic<bool> pcSampling{false};
+	mutable std::mutex pcMutex;
+	std::vector<uint64_t> pcHist;
+	std::atomic<uint64_t> pcTotal{0};
 };

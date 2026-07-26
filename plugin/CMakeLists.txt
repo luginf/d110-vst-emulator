@@ -152,6 +152,41 @@ target_link_libraries(d110_state_test PRIVATE
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_state_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
 
+# Checks that an imported SysEx bank actually reaches the control board, rather than only
+# the sound engine - where the next RAM mirror silently undid it.
+add_executable(d110_sysex_test sysex_test.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_sysex_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_sysex_test PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_sysex_test PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_sysex_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Reads the firmware back as MCS-96 assembly, using MAME's own disassembler. Needed to see
+# what the loop hang_probe found is actually waiting for.
+# D110Core.cpp comes along only for the emulator_info definitions MAME's frontend expects.
+add_executable(d110_disasm disasm_tool.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_disasm PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_disasm PRIVATE ${MAME_DEFS})
+target_link_libraries(d110_disasm PRIVATE ${MAME_LIBS} ${MAME_SYS_LIBS})
+target_link_options(d110_disasm PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Finds WHERE the firmware gets stuck once notes reach it, by sampling the program counter
+# in a healthy state and a dead one and diffing the two histograms.
+add_executable(d110_hang_probe hang_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_hang_probe PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_hang_probe PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_hang_probe PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_hang_probe PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
 # Isolates why the control board stops responding after some seconds of playing: runs the
 # firmware for a minute with and without host MIDI, pressing a button throughout.
 add_executable(d110_longrun_test longrun_test.cpp

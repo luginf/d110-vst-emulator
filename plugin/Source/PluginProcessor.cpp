@@ -559,8 +559,16 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 		pendingImportsToSend.swap(pendingSysexImports);
 		pendingShortMessagesToSend.swap(pendingShortMessages);
 	}
-	for (auto &message : pendingImportsToSend)
+	for (auto &message : pendingImportsToSend) {
 		synth->playSysex(message.data(), static_cast<MT32Emu::Bit32u>(message.size()));
+		// And to the control board, which is the half that actually owns this data. Sending
+		// it only to the sound engine looked like it worked and did nothing: the firmware
+		// never learned of the new patches, so the next RAM mirror overwrote them with the
+		// firmware's unchanged state and the display never moved either. Pushed from here
+		// rather than from importSysexBank because the ring has one producer by design,
+		// and that producer is this thread.
+		core.pushMidi(message.data(), static_cast<int>(message.size()));
+	}
 	for (auto message : pendingShortMessagesToSend)
 		synth->playMsg(message);
 
@@ -767,8 +775,14 @@ void D110AudioProcessor::importSysexBank(const juce::File &file) {
 		const juce::ScopedLock sl(engineActionLock);
 		for (auto &message : messages) pendingSysexImports.push_back(std::move(message));
 	}
-	lastImportMessage = "Queued " + juce::String(messages.size()) + " SysEx message(s) from "
-		+ file.getFileName();
+	size_t bytes = 0;
+	for (const auto &m : messages) bytes += m.size();
+	// It goes into the control board down an emulated MIDI cable at the real 31250 baud,
+	// so a big bank genuinely takes a few seconds to land, exactly as on the hardware.
+	const int seconds = int(double(bytes) / D110Core::kMidiBytesPerSecond + 0.5);
+	lastImportMessage = "Sending " + juce::String(messages.size()) + " SysEx message(s) from "
+		+ file.getFileName()
+		+ (seconds >= 2 ? " (about " + juce::String(seconds) + "s at MIDI speed)" : juce::String());
 }
 
 void D110AudioProcessor::selectNextPart() {

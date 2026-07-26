@@ -18,6 +18,7 @@
 #include "frontend/mame/mameopts.h"
 #include "drivenum.h"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <chrono>
@@ -66,6 +67,9 @@ class D110Osd : public osd_common_t {
 	msm6222b_device *m_lcd = nullptr;
 	i8x9x_device *m_cpu = nullptr;
 	emu_timer *m_midiTimer = nullptr;
+	emu_timer *m_extIntTimer = nullptr;
+	int m_extIntPhase = 0;
+	bool m_extIntLevel = false;
 	uint8_t *m_ram = nullptr;
 	std::array<ioport_field *, D110Core::kNumButtons> m_buttonField{};
 	bool m_resolved = false;
@@ -134,6 +138,14 @@ public:
 		m_midiTimer = machine.scheduler().timer_alloc(
 			timer_expired_delegate(FUNC(D110Osd::midiTick), this));
 		m_midiTimer->adjust(period, 0, period);
+
+		// The external interrupt nothing else provides - see D110Core::setExtIntDivider.
+		// Allocated here for the same reason as the MIDI timer: after the machine has
+		// started, MAME refuses to create timers at all.
+		const attotime extPeriod = attotime::from_hz(D110Core::kExtIntTimerHz);
+		m_extIntTimer = machine.scheduler().timer_alloc(
+			timer_expired_delegate(FUNC(D110Osd::extIntTick), this));
+		m_extIntTimer->adjust(extPeriod, 0, extPeriod);
 	}
 
 	virtual void osd_exit() override {
@@ -207,6 +219,38 @@ public:
 		uint8_t byte = 0;
 		if (m_cpu && core->popMidiByte(byte))
 			m_cpu->serial_w(byte);
+
+		if (!m_cpu) return;
+		const uint16_t pc = uint16_t(m_cpu->pc());
+
+		// Piggy-back the PC sample on this timer: it already fires 3125 times a second,
+		// which is dense enough to see which loop the firmware is sitting in.
+		core->osdSamplePc(pc);
+
+		// Release the wait the missing sound board would have released. Deliberately
+		// conditional on the program counter: if the firmware is anywhere else, nothing
+		// here writes anything.
+		if (m_ram && core->releaseStuckWait()
+		    && (pc == D110Core::kStuckLoopPc || pc == D110Core::kStuckLoopPcAlt)) {
+			for (int i = 0; i < D110Core::kVoiceFlagSpan; ++i)
+				m_ram[D110Core::kVoiceFlagBase + i] |= 0x80;
+			core->osdCountStuckRelease();
+		}
+	}
+
+	// Drives the external interrupt the D-110's sound board would raise and MAME does not.
+	// The line is edge triggered - execute_set_input only latches when it goes from low to
+	// high - so it is toggled rather than pulsed within one call, which guarantees a clean
+	// edge no matter how the scheduler batches things.
+	void extIntTick(s32) {
+		const int divider = core->extIntDivider();
+		if (!m_cpu || divider <= 0) return;
+		if (++m_extIntPhase < divider) return;
+		m_extIntPhase = 0;
+
+		m_extIntLevel = !m_extIntLevel;
+		m_cpu->set_input_line(i8x9x_device::EXTINT_LINE, m_extIntLevel ? ASSERT_LINE : CLEAR_LINE);
+		if (m_extIntLevel) core->osdCountExtInt();
 	}
 
 	// ---- input / debugger: nothing to do headless ----
@@ -611,6 +655,33 @@ void D110Core::pushMidi(const uint8_t *bytes, int len) {
 		midiInCount.fetch_add(1, std::memory_order_relaxed);
 	}
 	mW.store(w, std::memory_order_release);
+}
+
+// ---- PC sampling ----------------------------------------------------------
+
+void D110Core::osdSamplePc(uint16_t pc) {
+	if (!pcSampling.load(std::memory_order_acquire)) return;
+	std::lock_guard<std::mutex> lock(pcMutex);
+	if (pcHist.empty()) pcHist.assign(0x10000, 0);
+	++pcHist[pc];
+	pcTotal.fetch_add(1, std::memory_order_release);
+}
+
+void D110Core::resetPcHistogram() {
+	std::lock_guard<std::mutex> lock(pcMutex);
+	pcHist.assign(0x10000, 0);
+	pcTotal.store(0, std::memory_order_release);
+}
+
+std::vector<D110Core::PcHit> D110Core::topPcs(int count) const {
+	std::lock_guard<std::mutex> lock(pcMutex);
+	std::vector<PcHit> all;
+	for (size_t i = 0; i < pcHist.size(); ++i)
+		if (pcHist[i]) all.push_back({uint16_t(i), pcHist[i]});
+	std::sort(all.begin(), all.end(),
+	          [](const PcHit &a, const PcHit &b) { return a.hits > b.hits; });
+	if (int(all.size()) > count) all.resize(count);
+	return all;
 }
 
 bool D110Core::popMidiByte(uint8_t &out) {
