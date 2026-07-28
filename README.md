@@ -160,9 +160,9 @@ instrument's battery RAM, and travels with your project the same way. See
 You need your own **MAME `d110` ROM set** - copyrighted Roland firmware, **not included** here.
 Put the files loose into:
 
-```
-C:\Program Files\Common Files\VST3\D-110 Data\
-```
+- Windows: `C:\Program Files\Common Files\VST3\D-110 Data\`
+- macOS: `~/Library/Audio/Plug-Ins/VST3/D-110 Data/`
+- Linux: `~/.vst3/D-110_Data/`
 
 That one set serves both halves: the control board takes the firmware, the presets and the
 character generator from it, and the sound engine's Control and PCM images are assembled from
@@ -243,20 +243,28 @@ that has to keep working.
 
 ## Building
 
-Requires CMake and a C++ compiler (Visual Studio Build Tools on Windows). JUCE is fetched
-automatically by CMake on first configure.
+Requires CMake and a C++ compiler (Visual Studio Build Tools on Windows; GCC and the SDL OSD's
+dependencies on Linux - `libsdl2-dev libsdl2-ttf-dev libfontconfig1-dev libpulse-dev` cover it on
+Debian/Ubuntu). JUCE is fetched automatically by CMake on first configure.
 
 **MAME is not vendored here and must be built first**, because its libraries are what run the
 firmware. From an unmodified [MAME 0.288](https://github.com/mamedev/mame/releases/tag/mame0288)
 tree - no source patches are needed:
 
+Windows:
 ```
 make vs2022 MSBUILD=1 PTR64=1 MINGW64=C:/msys64/mingw64 MINGW32=C:/msys64/mingw32 \
      NOWERROR=1 PYTHON_EXECUTABLE=python SUBTARGET=d110 \
      SOURCES=src/mame/roland/roland_d10.cpp USE_BGFX=0
 ```
 
-Then point `MAME_DIR` in [`plugin/mame.cmake`](plugin/mame.cmake) at that tree and build:
+Linux (uses MAME's own default SDL OSD, no extra flags needed):
+```
+make SUBTARGET=d110 SOURCES=src/mame/roland/roland_d10.cpp -j$(nproc)
+```
+
+Then point `MAME_DIR` in [`plugin/mame.cmake`](plugin/mame.cmake) at that tree (or pass
+`-DMAME_DIR=...` on the CMake command line) and build:
 
 ```
 cd plugin
@@ -264,8 +272,10 @@ cmake -B build -S .
 cmake --build build --config Release
 ```
 
-Everything is built with the static runtime (`/MT`) to match MAME's release libraries. The
-built `.vst3` is copied automatically to `C:\Program Files\Common Files\VST3`.
+On Windows, everything is built with the static runtime (`/MT`) to match MAME's release
+libraries. The built `.vst3` is copied automatically to the platform's shared VST3 folder
+(`C:\Program Files\Common Files\VST3` on Windows, `~/Library/Audio/Plug-Ins/VST3` on macOS,
+`~/.vst3` on Linux).
 
 ## Legal Notice
 

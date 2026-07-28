@@ -230,6 +230,19 @@ void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
 	poweredOn = shouldBePoweredOn;
 }
 
+// Accepts both the underscore and space spellings of a plugin data folder name - some
+// platforms/older builds used one or the other (see getAutoRomFolder() below) - so neither
+// convention silently gets ignored. Prefers whichever already exists on disk; if neither
+// does, returns the space variant to create, matching this project's own established
+// naming (D-110 Emulator, D-110 Data).
+static juce::File resolveNamedFolder(const juce::File &parent, const juce::String &spaceName) {
+	const auto spaced = parent.getChildFile(spaceName);
+	if (spaced.isDirectory()) return spaced;
+	const auto underscored = parent.getChildFile(spaceName.replaceCharacter(' ', '_'));
+	if (underscored.isDirectory()) return underscored;
+	return spaced;
+}
+
 // The firmware's memory lives beside the ROMs, in the plugin's own data folder, exactly as
 // it does for the other synths in this series - MU-100R keeps `mame_nvram\mu100r\nvram`,
 // QS300 keeps `mame_nvram\qs300\ram`, and so on. Same shape here, so the D-110's battery
@@ -249,8 +262,8 @@ juce::File D110AudioProcessor::getNvramRoot() {
 	}();
 	if (writable) return preferred;
 
-	return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-		.getChildFile("D-110 Emulator")
+	return resolveNamedFolder(juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory),
+	                          "D-110 Emulator")
 		.getChildFile("nvram");
 }
 
@@ -300,8 +313,8 @@ juce::MemoryBlock D110AudioProcessor::readNvramFile(const juce::String &name) co
 // working folder shaped the way the machine wants. Nothing about the data folder
 // changes, and the copy is about 1.2 MB.
 juce::String D110AudioProcessor::getMameRomPath() {
-	const auto root = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-		.getChildFile("D-110 Emulator").getChildFile("romset");
+	const auto root = resolveNamedFolder(juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory),
+	                                     "D-110 Emulator").getChildFile("romset");
 	const auto setDir = root.getChildFile("d110");
 	setDir.createDirectory();
 
@@ -328,11 +341,19 @@ juce::String D110AudioProcessor::getMameRomPath() {
 }
 
 juce::File D110AudioProcessor::getAutoRomFolder() {
-	// Real DAW plugin folder on this machine - see the vst_data_folder_location
-	// memory note: all plugin data (ROMs, NVRAM, etc.) lives under here, not
-	// AppData (that was only ever a leftover from this project's original
-	// CMakeLists template).
-	return juce::File("C:/Program Files/Common Files/VST3/D-110 Data");
+	// Colocated with the platform's standard shared VST3 folder (see VST3_COPY_DIR in
+	// plugin/CMakeLists.txt) - not AppData/etc, which was only ever a leftover from this
+	// project's original CMakeLists template.
+#if JUCE_WINDOWS
+	return resolveNamedFolder(juce::File("C:/Program Files/Common Files/VST3"), "D-110 Data");
+#elif JUCE_MAC
+	return resolveNamedFolder(
+		juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile("Library/Audio/Plug-Ins/VST3"),
+		"D-110 Data");
+#else
+	return resolveNamedFolder(juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile(".vst3"),
+	                          "D-110 Data");
+#endif
 }
 
 bool D110AudioProcessor::identifyRomData(const juce::MemoryBlock &data,

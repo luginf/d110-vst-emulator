@@ -17,9 +17,12 @@ project(D110Emulator VERSION 0.9.5)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# CRITICAL: MAME's Release libs are built against the static runtime, so everything
-# here - JUCE and mt32emu included - must use /MT too or the link mixes runtimes.
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+# CRITICAL: on Windows, MAME's Release libs are built against the static runtime, so
+# everything here - JUCE and mt32emu included - must use /MT too or the link mixes
+# runtimes. Doesn't apply to the Linux (GCC) build.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+endif()
 
 # Комментарии в этом проекте пишутся по-русски, а MSVC без этого ключа читает исходник
 # в кодовой странице системы и на кириллице выдаёт C4819 - а в худшем случае съедает
@@ -40,6 +43,8 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(JUCE)
 
 # Build mt32emu as a static library, C++ interface only (matches rom_test setup).
+# PIC is required so this static lib can be linked into the VST3 shared module on Linux.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(BUILD_SHARED_LIBS FALSE CACHE BOOL "" FORCE)
 set(libmt32emu_SHARED FALSE CACHE BOOL "" FORCE)
 set(libmt32emu_C_INTERFACE FALSE CACHE BOOL "" FORCE)
@@ -50,6 +55,15 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../munt/mt32emu" "${CMAKE_CURRENT_
 juce_add_binary_data(D110PanelData
     SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../docs/panel_reference.png"
             "${CMAKE_CURRENT_SOURCE_DIR}/../docs/memory_card_m256d.png")
+
+# On Windows, plugins conventionally live in the shared Program Files VST3 folder.
+# Elsewhere, JUCE's own default (~/Library/Audio/Plug-Ins/VST3 on macOS, ~/.vst3 on Linux)
+# is already the right per-user location, so leave VST3_COPY_DIR unset there.
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set(D110_VST3_COPY_DIR_ARGS VST3_COPY_DIR "C:/Program Files/Common Files/VST3")
+else()
+    set(D110_VST3_COPY_DIR_ARGS)
+endif()
 
 juce_add_plugin(D110Emulator
     # Без этого JUCE ставит собственную версию по умолчанию, и хост показывает её вместо
@@ -62,11 +76,12 @@ juce_add_plugin(D110Emulator
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     COPY_PLUGIN_AFTER_BUILD TRUE
-    VST3_COPY_DIR "C:/Program Files/Common Files/VST3"
+    ${D110_VST3_COPY_DIR_ARGS}
     PLUGIN_MANUFACTURER_CODE Manu
     PLUGIN_CODE Dvst
     FORMATS VST3 Standalone
-    PRODUCT_NAME "D-110 Emulator"
+    PRODUCT_NAME "D-110_Emulator"
+    PLUGIN_NAME "D-110 Emulator"
 )
 
 target_sources(D110Emulator PRIVATE
@@ -98,7 +113,16 @@ target_link_libraries(D110Emulator PRIVATE
 # built with a different debug-info setting than JUCE's.
 foreach(_fmt VST3 Standalone)
     if(TARGET D110Emulator_${_fmt})
-        target_link_options(D110Emulator_${_fmt} PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+        target_link_options(D110Emulator_${_fmt} PRIVATE ${MAME_LINK_OPTIONS})
+        if(NOT MSVC)
+            # GNU ld only extracts a .a member when something already needs it at that point
+            # in the link. libD-110_Emulator_SharedCode.a (which the MAME_DRIVLIST object -
+            # driver_list::s_driver_count/s_drivers_sorted - ends up archived into) is linked
+            # before the MAME libs that reference those symbols, so it's never pulled in.
+            # --whole-archive forces every member in, same as a plain .o would behave.
+            target_link_options(D110Emulator_${_fmt} PRIVATE
+                -Wl,--whole-archive $<TARGET_FILE:D110Emulator> -Wl,--no-whole-archive)
+        endif()
     endif()
 endforeach()
 
@@ -126,11 +150,15 @@ juce_add_plugin(D110EmulatorNative
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     COPY_PLUGIN_AFTER_BUILD TRUE
-    VST3_COPY_DIR "C:/Program Files/Common Files/VST3"
+    ${D110_VST3_COPY_DIR_ARGS}
     PLUGIN_MANUFACTURER_CODE Manu
     PLUGIN_CODE Dvsn
     FORMATS VST3 Standalone
-    PRODUCT_NAME "D-110 Emulator (Native)"
+    # Not "D-110 Emulator (Native)": parentheses in the product name end up in the .vst3
+    # bundle's own path, and CMake's Unix Makefiles generator doesn't shell-escape them in
+    # the generated copy/remove recipes - `(` reaches /bin/sh unquoted and breaks the build.
+    # Spaces are escaped there; parens are not, on Linux. Windows never hit this.
+    PRODUCT_NAME "D-110 Emulator Native"
 )
 
 target_sources(D110EmulatorNative PRIVATE
@@ -178,7 +206,7 @@ target_compile_definitions(d110_audio_test PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_audio_test PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_audio_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_audio_test PRIVATE ${MAME_LINK_OPTIONS})
 
 # Maps the firmware's battery RAM onto Roland's SysEx addresses by experiment: presses
 # panel buttons and reports which bytes moved. See docs/sysex_address_map.md.
@@ -186,7 +214,7 @@ add_executable(d110_bridge_probe bridge_probe.cpp Source/D110Core.cpp "${MAME_DR
 target_include_directories(d110_bridge_probe PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_bridge_probe PRIVATE ${MAME_DEFS})
 target_link_libraries(d110_bridge_probe PRIVATE ${MAME_LIBS} ${MAME_SYS_LIBS})
-target_link_options(d110_bridge_probe PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_bridge_probe PRIVATE ${MAME_LINK_OPTIONS})
 
 # ---------------------------------------------------------------------------
 # Locates the Tone Temporary Area in the firmware's RAM by comparing bytes: reads the
@@ -204,7 +232,7 @@ target_compile_definitions(d110_tone_probe PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_tone_probe PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_tone_probe PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_tone_probe PRIVATE ${MAME_LINK_OPTIONS})
 
 # Checks that loading the plugin does NOT re-initialise the instrument, and that the
 # hardware's own factory init (latch WRITE/COPY, power on, ENTER) works from the panel.
@@ -217,7 +245,7 @@ target_compile_definitions(d110_coldstart_test PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_coldstart_test PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_coldstart_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_coldstart_test PRIVATE ${MAME_LINK_OPTIONS})
 
 # Checks that a project recalls its own firmware memory, that two instances get separate
 # memory, and that the second one refuses to power on instead of crashing the host.
@@ -230,7 +258,7 @@ target_compile_definitions(d110_state_test PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_state_test PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_state_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_state_test PRIVATE ${MAME_LINK_OPTIONS})
 
 # Discovers the LA32's register interface by logging every access to an address the D-110's
 # map leaves unclaimed - which is precisely where the missing sound board would answer.
@@ -243,7 +271,7 @@ target_compile_definitions(d110_la32_probe PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_la32_probe PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_la32_probe PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_la32_probe PRIVATE ${MAME_LINK_OPTIONS})
 
 # One-shot: play a single note, freeze it (no interrupt answered), dump the raw voice
 # bookkeeping tables - ground truth for what StuckPolicy::La32Stub's slot scan should see.
@@ -256,7 +284,7 @@ target_compile_definitions(d110_la32_lifecycle PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_la32_lifecycle PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_la32_lifecycle PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_la32_lifecycle PRIVATE ${MAME_LINK_OPTIONS})
 
 # Live write tap over the voice-context bookkeeping arrays (f3c0..f480), engaged
 # together with StuckPolicy::La32Stub - answers whether the firmware's own housekeeping
@@ -270,7 +298,7 @@ target_compile_definitions(d110_la32_ctx PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_la32_ctx PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_la32_ctx PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_la32_ctx PRIVATE ${MAME_LINK_OPTIONS})
 
 # Practical question hang_probe/longrun_test don't ask: with La32Stub engaged, does the
 # panel survive NORMAL playing (single notes, realistic gaps), not deliberate chord-stress.
@@ -283,7 +311,7 @@ target_compile_definitions(d110_la32_realistic PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_la32_realistic PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_la32_realistic PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_la32_realistic PRIVATE ${MAME_LINK_OPTIONS})
 
 # Reproduces the user's own reported steps directly - EDIT+ENTER into ROM Play, ENTER to
 # play the demo song - instead of only inferring from synthetic MIDI tests that it hits
@@ -298,7 +326,7 @@ target_compile_definitions(d110_demo_song_repro PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_demo_song_repro PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_demo_song_repro PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_demo_song_repro PRIVATE ${MAME_LINK_OPTIONS})
 
 # Does a factory reset actually restore the documented per-part pan fan, and does that
 # byte reach the sound engine as a real stereo shift? Answers the "panning feels wrong /
@@ -312,7 +340,7 @@ target_compile_definitions(d110_pan_verify PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_pan_verify PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_pan_verify PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_pan_verify PRIVATE ${MAME_LINK_OPTIONS})
 
 # The demo song is silent because the firmware plays it internally and never transmits it.
 # This checks whether the notes are nevertheless recoverable from the firmware's own RAM
@@ -326,7 +354,7 @@ target_compile_definitions(d110_note_source PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_note_source PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_note_source PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_note_source PRIVATE ${MAME_LINK_OPTIONS})
 
 # Renders the demo song to a WAV so "is there any sound at all" is answered by a file the
 # user can listen to, not by inference.
@@ -339,7 +367,7 @@ target_compile_definitions(d110_demo_wav PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_demo_wav PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_demo_wav PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_demo_wav PRIVATE ${MAME_LINK_OPTIONS})
 
 # Sounds each part on its own and measures it, so "part 6 lights up but makes no noise" is
 # answered per part instead of by ear across nine at once. Two passes: straight into the
@@ -353,7 +381,7 @@ target_compile_definitions(d110_part_audio PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_part_audio PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_part_audio PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_part_audio PRIVATE ${MAME_LINK_OPTIONS})
 
 # Renders the demo song once per part, with only that part delivered, and measures what
 # comes out. Note counts cannot tell "silent" from "buried"; a level can.
@@ -366,7 +394,7 @@ target_compile_definitions(d110_solo_level PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_solo_level PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_solo_level PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_solo_level PRIVATE ${MAME_LINK_OPTIONS})
 
 # Compares, per part and DURING the demo, what the firmware holds against what the engine
 # holds. A level 20 dB adrift is either the bridge failing to carry something or the
@@ -380,7 +408,7 @@ target_compile_definitions(d110_part_state PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_part_state PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_part_state PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_part_state PRIVATE ${MAME_LINK_OPTIONS})
 
 # Спрашивает по каждой партии и за ОДИН прогон, держит ли движок тот тембр, который
 # держит прошивка, - по имени, чего измерение уровня не умеет. Собственный путь чтения
@@ -394,7 +422,7 @@ target_compile_definitions(d110_tone_clobber PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_tone_clobber PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_tone_clobber PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_tone_clobber PRIVATE ${MAME_LINK_OPTIONS})
 
 # Различает две причины «Attempted to play unmapped key» в начале демо: карту ритма,
 # которая ещё не доехала до движка, и карту, в которой клавиша действительно выключена.
@@ -407,7 +435,7 @@ target_compile_definitions(d110_rhythm_map PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_rhythm_map PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_rhythm_map PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_rhythm_map PRIVATE ${MAME_LINK_OPTIONS})
 
 # Ищет путь, которым тип/время/уровень ревербератора доходят до микросхемы BOSS: жмёт
 # кнопки, печатает экран и показывает рядом сдвиги ОЗУ и записи в регистр SO.
@@ -420,7 +448,7 @@ target_compile_definitions(d110_reverb_path PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_reverb_path PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_reverb_path PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_reverb_path PRIVATE ${MAME_LINK_OPTIONS})
 
 # Карта регистров LA32: что прошивка кладёт в микросхему синтеза и какая ячейка что значит.
 # Три раздражителя, отличающиеся ровно одним свойством, плюс окно без ноты как контроль.
@@ -433,7 +461,7 @@ target_compile_definitions(d110_la32_regmap PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_la32_regmap PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_la32_regmap PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_la32_regmap PRIVATE ${MAME_LINK_OPTIONS})
 
 # Доезжает ли заводской банк патчей до самой прошивки и что он меняет в её памяти. Разницу
 # «до и после» сравнивает с контрольным окном такой же длины БЕЗ импорта, потому что
@@ -447,7 +475,7 @@ target_compile_definitions(d110_factory_bank PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_factory_bank PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_factory_bank PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_factory_bank PRIVATE ${MAME_LINK_OPTIONS})
 
 # Обратный путь моста: доходит ли правка, посланная эксклюзивным сообщением, до самой
 # прошивки, куда она ложится и не запрещает ли её Mem Protect. Это фундамент расширенного
@@ -462,7 +490,7 @@ target_compile_definitions(d110_editor_write PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_editor_write PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_editor_write PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_editor_write PRIVATE ${MAME_LINK_OPTIONS})
 
 # Снимок расширенного редактора в PNG - настоящего компонента, с живыми значениями из
 # работающего прибора. Судить о разметке по константам нельзя, поэтому её снимают и смотрят.
@@ -475,7 +503,7 @@ target_compile_definitions(d110_editor_shot PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_editor_shot PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_editor_shot PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_editor_shot PRIVATE ${MAME_LINK_OPTIONS})
 
 # Доходит ли правка из расширенного редактора до прибора, до звука и обратно. Проверяет
 # каждый отправитель по памяти прошивки, слышимость - по RMS с контрольным прогоном, и
@@ -492,7 +520,7 @@ target_compile_definitions(d110_editor_test PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_editor_test PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_editor_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_editor_test PRIVATE ${MAME_LINK_OPTIONS})
 
 # Ищет адрес, по которому прошивка задаёт ТИП ревербератора: перехватывает весь свободный
 # внешний ввод-вывод 0x0400-0x0BFF, разворачивает восемь типов и сравнивает с контрольным
@@ -506,7 +534,7 @@ target_compile_definitions(d110_reverb_reg PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_reverb_reg PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_reverb_reg PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_reverb_reg PRIVATE ${MAME_LINK_OPTIONS})
 
 # Переживает ли правка тембра смену параметра партии на ОБЫЧНОМ патче - вопрос, на который
 # демо-песня ответить не может, потому что её группа тембра 5 с панели недостижима. Ставит
@@ -521,7 +549,7 @@ target_compile_definitions(d110_tone_edit_survives PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_tone_edit_survives PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_tone_edit_survives PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_tone_edit_survives PRIVATE ${MAME_LINK_OPTIONS})
 
 # Первый мост от регистров к звуку: снятое с прошивки состояние прогоняется через модель той
 # же микросхемы из munt. Включает её внутренние заголовки - библиотека статическая, символы на
@@ -537,7 +565,7 @@ target_compile_definitions(d110_la32_render PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_la32_render PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_la32_render PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_la32_render PRIVATE ${MAME_LINK_OPTIONS})
 
 # Что банк 0x0CC0 несёт во времени, пока нота звучит. Печатает поток как ряд, а не сравнивает
 # множества значений - на этом сравнении три прежних захода на этот банк и провалились.
@@ -550,7 +578,7 @@ target_compile_definitions(d110_la32_stream PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_la32_stream PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_la32_stream PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_la32_stream PRIVATE ${MAME_LINK_OPTIONS})
 
 # Снимает настоящую панель в PNG, чтобы её было на что посмотреть рядом с фотографией.
 add_executable(d110_panel_render panel_render.cpp
@@ -564,7 +592,7 @@ target_compile_definitions(d110_panel_render PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_panel_render PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_panel_render PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_panel_render PRIVATE ${MAME_LINK_OPTIONS})
 
 # Чем прошивка отличает вставленную карту памяти от пустого гнезда. Подставляет ей четыре
 # разные карты и снимает с экрана, что она о каждой сказала.
@@ -577,7 +605,7 @@ target_compile_definitions(d110_card PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_card PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_card PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_card PRIVATE ${MAME_LINK_OPTIONS})
 
 # Ищет момент, когда прошивка перепрограммирует микросхему ревербератора: пишет каждую
 # запись в регистр SO вместе с адресом подпрограммы, которая её сделала.
@@ -590,7 +618,7 @@ target_compile_definitions(d110_so_trace PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_so_trace PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_so_trace PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_so_trace PRIVATE ${MAME_LINK_OPTIONS})
 
 # Renders the LCD at several settings to PNG so the result can be looked at beside the
 # reference photo. Calibration only - not part of the plugin's render path.
@@ -611,7 +639,7 @@ target_compile_definitions(d110_sysex_test PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_sysex_test PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_sysex_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_sysex_test PRIVATE ${MAME_LINK_OPTIONS})
 
 # Reads the firmware back as MCS-96 assembly, using MAME's own disassembler. Needed to see
 # what the loop hang_probe found is actually waiting for.
@@ -620,7 +648,7 @@ add_executable(d110_disasm disasm_tool.cpp Source/D110Core.cpp "${MAME_DRIVLIST}
 target_include_directories(d110_disasm PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_disasm PRIVATE ${MAME_DEFS})
 target_link_libraries(d110_disasm PRIVATE ${MAME_LIBS} ${MAME_SYS_LIBS})
-target_link_options(d110_disasm PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_disasm PRIVATE ${MAME_LINK_OPTIONS})
 
 # Finds WHERE the firmware gets stuck once notes reach it, by sampling the program counter
 # in a healthy state and a dead one and diffing the two histograms.
@@ -633,7 +661,7 @@ target_compile_definitions(d110_hang_probe PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_hang_probe PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_hang_probe PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_hang_probe PRIVATE ${MAME_LINK_OPTIONS})
 
 # Isolates why the control board stops responding after some seconds of playing: runs the
 # firmware for a minute with and without host MIDI, pressing a button throughout.
@@ -646,7 +674,7 @@ target_compile_definitions(d110_longrun_test PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_longrun_test PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_longrun_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_longrun_test PRIVATE ${MAME_LINK_OPTIONS})
 
 # Records what really happens when two machines run in one process, which is what a DAW
 # does as soon as a second instance of the plugin is loaded. Diagnostic, not a fix.
@@ -654,7 +682,7 @@ add_executable(d110_two_instance_test two_instance_test.cpp Source/D110Core.cpp 
 target_include_directories(d110_two_instance_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_two_instance_test PRIVATE ${MAME_DEFS})
 target_link_libraries(d110_two_instance_test PRIVATE ${MAME_LIBS} ${MAME_SYS_LIBS})
-target_link_options(d110_two_instance_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_two_instance_test PRIVATE ${MAME_LINK_OPTIONS})
 
 # Console check of the D110Core lifecycle: boots the real firmware in-process and prints
 # the MSM6222B's own dot matrix while pressing front-panel buttons. Proves the wrap
@@ -663,7 +691,7 @@ add_executable(d110_core_test core_test.cpp Source/D110Core.cpp "${MAME_DRIVLIST
 target_include_directories(d110_core_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_core_test PRIVATE ${MAME_DEFS})
 target_link_libraries(d110_core_test PRIVATE ${MAME_LIBS} ${MAME_SYS_LIBS})
-target_link_options(d110_core_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_core_test PRIVATE ${MAME_LINK_OPTIONS})
 
 # Куда деваются ноты при быстрой игре: их теряет заглушка LA32 или их некуда играть.
 # Считает ноту на трёх рубежах - отправлено, взято прошивкой, занято у движка - и делает это
@@ -677,7 +705,7 @@ target_compile_definitions(d110_polyphony PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_polyphony PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_polyphony PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_polyphony PRIVATE ${MAME_LINK_OPTIONS})
 
 # Two parts (bass + solo) playing fast, overlapping lines AT THE SAME TIME - the user's actual
 # reported shape (both parts losing notes together), not one part tested in isolation.
@@ -690,7 +718,7 @@ target_compile_definitions(d110_multi_part_polyphony PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_multi_part_polyphony PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_multi_part_polyphony PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_multi_part_polyphony PRIVATE ${MAME_LINK_OPTIONS})
 
 # Measures the real DSP cost of raising mt32emu's usePartialCount - no real-time pacing in its
 # timed section, unlike every other probe here, on purpose.
@@ -703,7 +731,7 @@ target_compile_definitions(d110_partial_count_cpu PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_partial_count_cpu PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_partial_count_cpu PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_partial_count_cpu PRIVATE ${MAME_LINK_OPTIONS})
 
 # Owner's live-DAW report: D110Emulator (MAME-backed) sustains notes forever and freezes the
 # LCD on Fantasy/Steel Drum, while D110EmulatorNative is fine - so this is backend-specific,
@@ -717,7 +745,7 @@ target_compile_definitions(d110_mame_stuck_note_repro PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_mame_stuck_note_repro PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_mame_stuck_note_repro PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_mame_stuck_note_repro PRIVATE ${MAME_LINK_OPTIONS})
 
 # Кто пишет в таблицу слотов LA32 и освобождает ли её хоть кто-нибудь. Перехват записей в
 # окно диспетчеризации даёт адрес, значение и PC - то есть отвечает не догадкой, а именем
@@ -731,7 +759,7 @@ target_compile_definitions(d110_slot_life PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_slot_life PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_slot_life PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_slot_life PRIVATE ${MAME_LINK_OPTIONS})
 
 # Восстановление настоящей батарейной памяти прибора после порчи файла (например, резким
 # обрывом питания посреди записи). Идёт тем же путём, что и сам плагин, - через
@@ -746,7 +774,7 @@ target_compile_definitions(d110_nvram_recovery PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_nvram_recovery PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_nvram_recovery PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_nvram_recovery PRIVATE ${MAME_LINK_OPTIONS})
 
 # Проверяет документированную процедуру факт-сброса ("POWER off, Ctrl+click WRITE/COPY,
 # POWER on, ENTER") настоящими нажатиями по настоящей D110Panel - в отличие от
@@ -761,7 +789,7 @@ target_compile_definitions(d110_panel_factory_init PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_panel_factory_init PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_panel_factory_init PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_panel_factory_init PRIVATE ${MAME_LINK_OPTIONS})
 
 # Насколько на самом деле расходится время регистрации ноты прошивкой, если несколько
 # партий бьют одновременно - измеряет по-настоящему через D110Core::startNoteLog(), а не
@@ -775,7 +803,7 @@ target_compile_definitions(d110_midi_congestion PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_midi_congestion PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_midi_congestion PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_midi_congestion PRIVATE ${MAME_LINK_OPTIONS})
 
 # Заливка банка тонов в настоящую память прибора. Отдельный инструмент, а не часть
 # nvram_recovery: тот возвращает заводское состояние, а память тонов заводским состоянием
@@ -789,7 +817,7 @@ target_compile_definitions(d110_bank_import PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_bank_import PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_bank_import PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_bank_import PRIVATE ${MAME_LINK_OPTIONS})
 
 # Воспроизведение жалобы «ноты залипают на всех партиях сразу». Отдельно от d110_polyphony:
 # тот меряет ПОТЕРИ нот на одной партии, а этот - ОСТАТОК при отпущенных клавишах на всех
@@ -803,7 +831,7 @@ target_compile_definitions(d110_stuck_notes PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_stuck_notes PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_stuck_notes PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_stuck_notes PRIVATE ${MAME_LINK_OPTIONS})
 
 # MAME-backed counterpart to d110_native_ramp_edge_stress - same dense overlapping/legato
 # pattern, against D110Core.cpp's own midiTick() fix.
@@ -816,7 +844,7 @@ target_compile_definitions(d110_mame_ramp_edge_stress PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_mame_ramp_edge_stress PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_mame_ramp_edge_stress PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_mame_ramp_edge_stress PRIVATE ${MAME_LINK_OPTIONS})
 
 # Играет каждую ритм-клавишу по отдельности и меряет пик. Отвечает на "closed hat не
 # звучит" измерением, а не догадкой - список молчащих клавиш даёт прямо, без предположений
@@ -830,7 +858,7 @@ target_compile_definitions(d110_rhythm_key PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_rhythm_key PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_rhythm_key PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_rhythm_key PRIVATE ${MAME_LINK_OPTIONS})
 
 # Проверка: возвращает ли повторный выбор текущего патча живую Timbre Temp к данным патча.
 # Живая область читалась сплошным центром (pan 7 у всех восьми) при верных данных в самом
@@ -844,7 +872,7 @@ target_compile_definitions(d110_pan_resync PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_pan_resync PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_pan_resync PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_pan_resync PRIVATE ${MAME_LINK_OPTIONS})
 
 # Проверка на девственной, временной НВР: сразу после заводского сброса, ДО единого нажатия
 # пользователем, читается ли живая панорама верно или сплошным центром - разводит "баг
@@ -853,7 +881,7 @@ add_executable(d110_virgin_boot virgin_boot_probe.cpp Source/D110Core.cpp "${MAM
 target_include_directories(d110_virgin_boot PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_virgin_boot PRIVATE ${MAME_DEFS})
 target_link_libraries(d110_virgin_boot PRIVATE ${MAME_LIBS} ${MAME_SYS_LIBS})
-target_link_options(d110_virgin_boot PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_virgin_boot PRIVATE ${MAME_LINK_OPTIONS})
 
 # Трассирует запись в таблицы полного круга голоса (dispatch + completion) для одного удара
 # по ритм-клавише, чтобы найти источник "Attempted to play invalid key 1" рядом с closed
@@ -867,7 +895,7 @@ target_compile_definitions(d110_rhythm_ctx PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_rhythm_ctx PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_rhythm_ctx PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_rhythm_ctx PRIVATE ${MAME_LINK_OPTIONS})
 
 # «Патчи в демо-песне не соответствуют» - разводит два возможных объяснения: демо трогает
 # Patch/Timbre Memory (значит зависит от того, что реально лежит в батарейной памяти
@@ -882,7 +910,7 @@ target_compile_definitions(d110_demo_patch PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_demo_patch PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_demo_patch PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_demo_patch PRIVATE ${MAME_LINK_OPTIONS})
 
 # «Синхронизация с Ableton плывёт» - меряет реальную задержку между подачей ноты в
 # processBlock и моментом, когда прошивка сама её регистрирует (NoteLog). Демо-песня этого
@@ -896,7 +924,7 @@ target_compile_definitions(d110_note_latency PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_note_latency PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_note_latency PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_note_latency PRIVATE ${MAME_LINK_OPTIONS})
 
 # Проверяет перенесённый BOSS-ревербератор не на компиляции, а на звуке: грузится ли
 # ic6.bin, доходит ли байт типа ревербератора (System 0x2D95) до BossEmu, и дают ли разные
@@ -910,7 +938,7 @@ target_compile_definitions(d110_boss_reverb PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_boss_reverb PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_boss_reverb PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_boss_reverb PRIVATE ${MAME_LINK_OPTIONS})
 
 # Проверка одного типа ревербератора в СВЕЖЕМ экземпляре (аргумент argv[1]) - разводит
 # "тип сам по себе тих" от "переключение между типами что-то ломает".
@@ -923,7 +951,7 @@ target_compile_definitions(d110_boss_reverb_iso PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_boss_reverb_iso PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_boss_reverb_iso PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_boss_reverb_iso PRIVATE ${MAME_LINK_OPTIONS})
 
 # Проверяет перенесённые шесть индивидуальных выходов на маршрутизации звука, не только на
 # компиляции: включает все доп. шины, меняет Output Assign партии 1, меряет энергию в
@@ -937,7 +965,7 @@ target_compile_definitions(d110_multi_output PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_multi_output PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_multi_output PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_multi_output PRIVATE ${MAME_LINK_OPTIONS})
 
 # Регрессия по слуху: играешь кик (35), потом Closed Hi-Hat (42) - и на хай-хэте звучит
 # соседний барабан. Причина была в том, что подсказка для подмены ставилась в очередь для
@@ -951,7 +979,7 @@ target_compile_definitions(d110_rhythm_hint_bleed PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_rhythm_hint_bleed PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_rhythm_hint_bleed PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_rhythm_hint_bleed PRIVATE ${MAME_LINK_OPTIONS})
 
 # Диагностика: pan_verify.cpp только что показал 6 из 8 партий беззвучными после заводского
 # сброса. Дамп живой Timbre Temp/Tone Temp для всех восьми партий сразу после того же
@@ -966,7 +994,7 @@ target_compile_definitions(d110_pan_verify_diag PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_pan_verify_diag PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_pan_verify_diag PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_pan_verify_diag PRIVATE ${MAME_LINK_OPTIONS})
 
 # Настоящее звуковое измерение панорамы барабанов - до сих пор сверяли только байт в
 # памяти против заводского дампа, никогда реальный звук по обоим каналам.
@@ -979,7 +1007,7 @@ target_compile_definitions(d110_rhythm_pan_audio PRIVATE ${MAME_DEFS}
 target_link_libraries(d110_rhythm_pan_audio PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
-target_link_options(d110_rhythm_pan_audio PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_rhythm_pan_audio PRIVATE ${MAME_LINK_OPTIONS})
 
 # ---------------------------------------------------------------------------
 # Native D-110 CPU core port (see the "Native D-110 CPU core port" plan) - the D-110's own
@@ -1099,7 +1127,7 @@ add_executable(d110_mame_factory_reset_tool mame_factory_reset_tool.cpp Source/D
 target_include_directories(d110_mame_factory_reset_tool PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_mame_factory_reset_tool PRIVATE ${MAME_DEFS})
 target_link_libraries(d110_mame_factory_reset_tool PRIVATE ${MAME_LIBS} ${MAME_SYS_LIBS})
-target_link_options(d110_mame_factory_reset_tool PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_mame_factory_reset_tool PRIVATE ${MAME_LINK_OPTIONS})
 
 # Diagnostic: same raw pushMidi()->popNoteEvent() experiment as native_note_probe.cpp, but
 # against the real MAME-backed core directly - isolates a native-core bug from a property of
@@ -1108,4 +1136,4 @@ add_executable(d110_mame_note_probe mame_note_probe.cpp Source/D110Core.cpp "${M
 target_include_directories(d110_mame_note_probe PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_mame_note_probe PRIVATE ${MAME_DEFS})
 target_link_libraries(d110_mame_note_probe PRIVATE ${MAME_LIBS} ${MAME_SYS_LIBS})
-target_link_options(d110_mame_note_probe PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+target_link_options(d110_mame_note_probe PRIVATE ${MAME_LINK_OPTIONS})

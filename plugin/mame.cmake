@@ -1,49 +1,112 @@
 # The MAME d110 subset: the real Roland firmware, its menus, its MSM6222B LCD and its
-# 16 front-panel buttons. Built out of the MAME 0.288 tree with
+# 16 front-panel buttons. No MAME source patches are needed: render(), the "rams" memory
+# share and the SC0/SC1 ioports are all public. See docs/sysex_address_map.md.
+#
+# Windows: built out of the MAME 0.288 tree with
 #   make vs2022 MSBUILD=1 PTR64=1 MINGW64=... NOWERROR=1 PYTHON_EXECUTABLE=python \
 #        SUBTARGET=d110 SOURCES=src/mame/roland/roland_d10.cpp USE_BGFX=0
-# No MAME source patches are needed: render(), the "rams" memory share and the SC0/SC1
-# ioports are all public. See docs/sysex_address_map.md.
-set(MAME_DIR "C:/Users/bd260/Projects/MU128-VST/mame-master")
-set(_mame_libdir  "${MAME_DIR}/build/vs2022/bin/x64/Release")
-set(_mame_sublib  "${_mame_libdir}/mame_d110")
+# Linux: built out of the same mame0288 tag with GNU make and the SDL OSD (MAME's own
+# default OSD on Linux), no patches, no extra flags:
+#   make SUBTARGET=d110 SOURCES=src/mame/roland/roland_d10.cpp -j$(nproc)
+# Verified to build cleanly this way and to produce every archive the Windows build
+# lists below, just as .a instead of .lib, plus a working standalone `d110` executable.
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set(MAME_DIR "C:/Users/bd260/Projects/MU128-VST/mame-master")
+    set(_mame_libdir "${MAME_DIR}/build/vs2022/bin/x64/Release")
+    set(_mame_sublib "${_mame_libdir}/mame_d110")
 
-set(MAME_LIBS
-  "${_mame_sublib}/mame_d110.lib" "${_mame_sublib}/optional.lib"
-  "${_mame_sublib}/formats.lib"   "${_mame_sublib}/dasm.lib"
-  "${_mame_libdir}/frontend.lib"  "${_mame_libdir}/emu.lib"
-  "${_mame_libdir}/osd_windows.lib" "${_mame_libdir}/ocore_windows.lib"
-  "${_mame_libdir}/qtdbg_windows.lib" "${_mame_libdir}/utils.lib"
-  "${_mame_libdir}/expat.lib" "${_mame_libdir}/zlib.lib"
-  "${_mame_libdir}/portmidi.lib" "${_mame_libdir}/flac.lib" "${_mame_libdir}/7z.lib"
-  "${_mame_libdir}/softfloat3.lib" "${_mame_libdir}/utf8proc.lib"
-  "${_mame_libdir}/jpeg.lib" "${_mame_libdir}/sqlite3.lib" "${_mame_libdir}/zstd.lib"
-  "${_mame_libdir}/portaudio.lib" "${_mame_libdir}/lua.lib" "${_mame_libdir}/lualibs.lib"
-  "${_mame_libdir}/asmjit.lib" "${_mame_libdir}/bgfx.lib" "${_mame_libdir}/bimg.lib"
-  "${_mame_libdir}/bx.lib" "${_mame_libdir}/ymfm.lib" "${_mame_libdir}/wdlfft.lib"
-  "${_mame_libdir}/linenoise.lib")
-# No ntdll.lib - it is imported by ordinal and makes the module fail to load.
-# No softfloat.lib - merged into softfloat3.lib on this tree.
+    set(MAME_LIBS
+      "${_mame_sublib}/mame_d110.lib" "${_mame_sublib}/optional.lib"
+      "${_mame_sublib}/formats.lib"   "${_mame_sublib}/dasm.lib"
+      "${_mame_libdir}/frontend.lib"  "${_mame_libdir}/emu.lib"
+      "${_mame_libdir}/osd_windows.lib" "${_mame_libdir}/ocore_windows.lib"
+      "${_mame_libdir}/qtdbg_windows.lib" "${_mame_libdir}/utils.lib"
+      "${_mame_libdir}/expat.lib" "${_mame_libdir}/zlib.lib"
+      "${_mame_libdir}/portmidi.lib" "${_mame_libdir}/flac.lib" "${_mame_libdir}/7z.lib"
+      "${_mame_libdir}/softfloat3.lib" "${_mame_libdir}/utf8proc.lib"
+      "${_mame_libdir}/jpeg.lib" "${_mame_libdir}/sqlite3.lib" "${_mame_libdir}/zstd.lib"
+      "${_mame_libdir}/portaudio.lib" "${_mame_libdir}/lua.lib" "${_mame_libdir}/lualibs.lib"
+      "${_mame_libdir}/asmjit.lib" "${_mame_libdir}/bgfx.lib" "${_mame_libdir}/bimg.lib"
+      "${_mame_libdir}/bx.lib" "${_mame_libdir}/ymfm.lib" "${_mame_libdir}/wdlfft.lib"
+      "${_mame_libdir}/linenoise.lib")
+    # No ntdll.lib - it is imported by ordinal and makes the module fail to load.
+    # No softfloat.lib - merged into softfloat3.lib on this tree.
 
-set(MAME_SYS_LIBS ws2_32 winmm dinput8 dxguid opengl32 dsound xinput
-                  comctl32 shlwapi userenv bcrypt advapi32 gdi32 user32 ole32
-                  oleaut32 uuid shcore)
+    set(MAME_SYS_LIBS ws2_32 winmm dinput8 dxguid opengl32 dsound xinput
+                      comctl32 shlwapi userenv bcrypt advapi32 gdi32 user32 ole32
+                      oleaut32 uuid shcore)
 
-set(MAME_INCLUDES
-  "${MAME_DIR}/src" "${MAME_DIR}/src/osd" "${MAME_DIR}/src/emu"
-  "${MAME_DIR}/src/devices" "${MAME_DIR}/src/mame" "${MAME_DIR}/src/mame/shared"
-  "${MAME_DIR}/src/lib" "${MAME_DIR}/src/lib/util" "${MAME_DIR}/src/lib/netlist"
-  "${MAME_DIR}/3rdparty" "${MAME_DIR}/build/generated/mame/layout"
-  "${MAME_DIR}/3rdparty/asio/include" "${MAME_DIR}/3rdparty/flac/include"
-  "${MAME_DIR}/3rdparty/glm" "${MAME_DIR}/3rdparty/libjpeg"
-  "${MAME_DIR}/3rdparty/rapidjson/include" "${MAME_DIR}/3rdparty/zlib"
-  "${MAME_DIR}/3rdparty/dxsdk/Include")
+    set(MAME_INCLUDES
+      "${MAME_DIR}/src" "${MAME_DIR}/src/osd" "${MAME_DIR}/src/emu"
+      "${MAME_DIR}/src/devices" "${MAME_DIR}/src/mame" "${MAME_DIR}/src/mame/shared"
+      "${MAME_DIR}/src/lib" "${MAME_DIR}/src/lib/util" "${MAME_DIR}/src/lib/netlist"
+      "${MAME_DIR}/3rdparty" "${MAME_DIR}/build/generated/mame/layout"
+      "${MAME_DIR}/3rdparty/asio/include" "${MAME_DIR}/3rdparty/flac/include"
+      "${MAME_DIR}/3rdparty/glm" "${MAME_DIR}/3rdparty/libjpeg"
+      "${MAME_DIR}/3rdparty/rapidjson/include" "${MAME_DIR}/3rdparty/zlib"
+      "${MAME_DIR}/3rdparty/dxsdk/Include")
 
-set(MAME_DEFS
-  CRLF=3 LSB_FIRST FLAC__NO_DLL PUGIXML_HEADER_ONLY ASMJIT_STATIC
-  LUA_COMPAT_ALL LUA_COMPAT_5_1 LUA_COMPAT_5_2 XML_STATIC
-  _CRT_NONSTDC_NO_DEPRECATE _CRT_SECURE_NO_DEPRECATE
-  _CRT_STDIO_LEGACY_WIDE_SPECIFIERS MAME_DEBUG MAME_PROFILER
-  __STDC_FORMAT_MACROS __STDC_CONSTANT_MACROS)
+    set(MAME_DEFS
+      CRLF=3 LSB_FIRST FLAC__NO_DLL PUGIXML_HEADER_ONLY ASMJIT_STATIC
+      LUA_COMPAT_ALL LUA_COMPAT_5_1 LUA_COMPAT_5_2 XML_STATIC
+      _CRT_NONSTDC_NO_DEPRECATE _CRT_SECURE_NO_DEPRECATE
+      _CRT_STDIO_LEGACY_WIDE_SPECIFIERS MAME_DEBUG MAME_PROFILER
+      __STDC_FORMAT_MACROS __STDC_CONSTANT_MACROS)
+
+    set(MAME_LINK_OPTIONS /ignore:4099 /FORCE:MULTIPLE)
+else()
+    # Override with -DMAME_DIR=... if your own mame0288 checkout lives elsewhere.
+    set(MAME_DIR "$ENV{HOME}/src/D110/mame-build/mame" CACHE PATH
+        "Path to a mame0288 checkout with SUBTARGET=d110 already built (see above)")
+    set(_mame_libdir "${MAME_DIR}/build/linux_gcc/bin/x64/Release")
+    set(_mame_sublib "${_mame_libdir}/mame_d110")
+
+    # Wrapped in --start-group/--end-group: MAME's own libs cross-reference each other's
+    # symbols (e.g. liblualibs.a's sqlite3 binding needs libsqlite3.a) in an order a single
+    # left-to-right GNU ld pass can't satisfy no matter how these are sorted, so let the
+    # linker iterate instead of trying to hand-order 30 archives correctly.
+    set(MAME_LIBS
+      -Wl,--start-group
+      "${_mame_sublib}/libmame_d110.a" "${_mame_sublib}/liboptional.a"
+      "${_mame_sublib}/libformats.a"   "${_mame_sublib}/libdasm.a"
+      "${_mame_libdir}/libfrontend.a"  "${_mame_libdir}/libemu.a"
+      "${_mame_libdir}/libosd_sdl.a" "${_mame_libdir}/libocore_sdl.a"
+      "${_mame_libdir}/libqtdbg_sdl.a" "${_mame_libdir}/libutils.a"
+      "${_mame_libdir}/libexpat.a" "${_mame_libdir}/libzlib.a"
+      "${_mame_libdir}/libportmidi.a" "${_mame_libdir}/libflac.a" "${_mame_libdir}/lib7z.a"
+      "${_mame_libdir}/libsoftfloat3.a" "${_mame_libdir}/libutf8proc.a"
+      "${_mame_libdir}/libjpeg.a" "${_mame_libdir}/libsqlite3.a" "${_mame_libdir}/libzstd.a"
+      "${_mame_libdir}/libportaudio.a" "${_mame_libdir}/liblua.a" "${_mame_libdir}/liblualibs.a"
+      "${_mame_libdir}/libasmjit.a" "${_mame_libdir}/libbgfx.a" "${_mame_libdir}/libbimg.a"
+      "${_mame_libdir}/libbx.a" "${_mame_libdir}/libymfm.a" "${_mame_libdir}/libwdlfft.a"
+      "${_mame_libdir}/liblinenoise.a" "${_mame_libdir}/libprecompile.a"
+      -Wl,--end-group)
+
+    # Direct link deps of the SDL OSD + Qt debugger + pulse/pipewire sound drivers, per
+    # `ldd` on the standalone `d110` built above - everything else (X11 sub-libs, Wayland,
+    # ICU, codec libs, etc) is a transitive dependency the dynamic linker resolves on its own.
+    set(MAME_SYS_LIBS pthread dl SDL2 SDL2_ttf GL asound pulse pipewire-0.3
+                      Qt6Core Qt6Gui Qt6Widgets Qt6DBus X11 Xi fontconfig)
+
+    set(MAME_INCLUDES
+      "${MAME_DIR}/src" "${MAME_DIR}/src/osd" "${MAME_DIR}/src/emu"
+      "${MAME_DIR}/src/devices" "${MAME_DIR}/src/mame" "${MAME_DIR}/src/mame/shared"
+      "${MAME_DIR}/src/lib" "${MAME_DIR}/src/lib/util" "${MAME_DIR}/src/lib/netlist"
+      "${MAME_DIR}/3rdparty" "${MAME_DIR}/build/generated/mame/layout"
+      "${MAME_DIR}/3rdparty/asio/include" "${MAME_DIR}/3rdparty/flac/include"
+      "${MAME_DIR}/3rdparty/glm" "${MAME_DIR}/3rdparty/libjpeg"
+      "${MAME_DIR}/3rdparty/rapidjson/include" "${MAME_DIR}/3rdparty/zlib")
+
+    set(MAME_DEFS
+      CRLF=3 LSB_FIRST FLAC__NO_DLL PUGIXML_HEADER_ONLY ASMJIT_STATIC
+      LUA_COMPAT_ALL LUA_COMPAT_5_1 LUA_COMPAT_5_2 XML_STATIC
+      MAME_DEBUG MAME_PROFILER __STDC_FORMAT_MACROS __STDC_CONSTANT_MACROS)
+
+    # GNU ld equivalent of Windows' /FORCE:MULTIPLE: D110Core.cpp provides its own
+    # emulator_info:: overrides that deliberately collide with libfrontend.a's defaults
+    # (same reason the Windows build needs to ignore the clash) - first definition in link
+    # order wins, which is ours since it's listed before ${MAME_LIBS} everywhere.
+    set(MAME_LINK_OPTIONS -Wl,--allow-multiple-definition)
+endif()
 
 set(MAME_DRIVLIST "${MAME_DIR}/build/generated/mame/d110/drivlist.cpp")
