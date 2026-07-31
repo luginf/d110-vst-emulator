@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <thread>
 #include <vector>
@@ -164,6 +165,14 @@ void runOnce(const char *label, D110Core::StuckPolicy policy) {
 	// display lights a part the bridge never reported, the bridge is losing it; if neither
 	// shows it, the song simply does not use it.
 	bool everActive[9] = {};
+	// Everything in ONE run this time: the firmware's own indicators, the notes the bridge
+	// delivers, and the raw writes the bridge builds those notes from. Comparing figures
+	// taken from different runs is what produced a wrong answer earlier - a part can be lit
+	// in one run and never touched in the next, and no amount of care afterwards recovers
+	// which was which.
+	proc.getCore().setVoiceCtxTap(true);
+	proc.getCore().takeCtxEvents();
+	proc.getCore().startNoteLog();
 	proc.getCore().setPcSampling(true);
 	for (int tick = 0; tick < 75 * 5; ++tick) {
 		idle(proc, 0.2);
@@ -179,6 +188,56 @@ void runOnce(const char *label, D110Core::StuckPolicy policy) {
 		std::printf(" %s%s", (p == 8) ? "R" : std::to_string(p + 1).c_str(),
 		            everActive[p] ? "=yes" : "=no ");
 	std::printf("\n");
+
+	// --- the three views, side by side, from this one run ---------------------
+	// Drop counts FIRST, and loudly: a capture that hit its ceiling makes every tally below
+	// a lower bound rather than a count, and reading it as a count is exactly how this
+	// investigation went wrong three times.
+	const uint64_t noteDrops = proc.getCore().noteLogDropped_();
+	const uint64_t ctxDrops = proc.getCore().ctxDropped_();
+	std::printf("\n  capture integrity: note log dropped %llu, ctx log dropped %llu%s\n",
+	            (unsigned long long)noteDrops, (unsigned long long)ctxDrops,
+	            (noteDrops || ctxDrops) ? "   *** TALLIES BELOW ARE LOWER BOUNDS ***" : "  (complete)");
+
+	int delivered[9] = {};
+	for (const auto &e : proc.getCore().takeNoteLog())
+		if (e.on && e.part < 9) ++delivered[e.part];
+
+	// Every write of the part byte, by the value written. f3a0 holds part*16, so 0x40 is
+	// part 5 and 0x70 is part 8 - the two that go silent. If the firmware never writes
+	// those values, it never assigns those parts and the bridge cannot be losing them; if
+	// it does write them, the loss is ours.
+	int partByteWrites[9] = {};
+	std::map<int, std::map<uint16_t, int>> pcsPerPart; // part -> PC -> count
+	int noteByteWrites[D110Core::kNumVoiceContexts] = {};
+	for (const auto &e : proc.getCore().takeCtxEvents()) {
+		if (e.addr >= D110Core::kNoteTable &&
+		    e.addr < D110Core::kNoteTable + D110Core::kNumVoiceContexts)
+			++noteByteWrites[e.addr - D110Core::kNoteTable];
+		if (e.addr >= D110Core::kPartTable &&
+		    e.addr < D110Core::kPartTable + D110Core::kNumVoiceContexts) {
+			const int part = e.value >> 4;
+			if (part < 9) { ++partByteWrites[part]; ++pcsPerPart[part][e.pc]; }
+		}
+	}
+
+	std::printf("\n  part | display | f3a0 writes | notes delivered | verdict\n");
+	for (int p = 0; p < 9; ++p) {
+		const char *verdict =
+			(partByteWrites[p] == 0 && !everActive[p]) ? "not used by this song"
+			: (partByteWrites[p] == 0 && everActive[p]) ? "*** LIT BUT NEVER ASSIGNED ***"
+			: (delivered[p] == 0) ? "*** ASSIGNED BUT NO NOTE SENT ***"
+			: "ok";
+		std::printf("   %4d | %7s | %11d | %15d | %s\n", p + 1, everActive[p] ? "lit" : "-",
+		            partByteWrites[p], delivered[p], verdict);
+	}
+
+	std::printf("\n  which code writes the part byte, per part:\n");
+	for (const auto &[part, pcs] : pcsPerPart) {
+		std::printf("    part %d:", part + 1);
+		for (const auto &[pc, n] : pcs) std::printf("  PC %04X x%d", pc, n);
+		std::printf("\n");
+	}
 
 	// NOT buttonStillWorks() here. During ROM Play the firmware legitimately stays on the
 	// play screen and ignores Timbre, so that check reported a DEAD panel for a machine

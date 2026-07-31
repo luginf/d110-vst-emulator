@@ -261,6 +261,47 @@ target_link_libraries(d110_demo_wav PRIVATE
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_demo_wav PRIVATE /ignore:4099 /FORCE:MULTIPLE)
 
+# Sounds each part on its own and measures it, so "part 6 lights up but makes no noise" is
+# answered per part instead of by ear across nine at once. Two passes: straight into the
+# engine, and through the firmware on that part's own channel.
+add_executable(d110_part_audio part_audio_test.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_part_audio PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_part_audio PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_part_audio PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_part_audio PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Renders the demo song once per part, with only that part delivered, and measures what
+# comes out. Note counts cannot tell "silent" from "buried"; a level can.
+add_executable(d110_solo_level solo_level_test.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_solo_level PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_solo_level PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_solo_level PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_solo_level PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Compares, per part and DURING the demo, what the firmware holds against what the engine
+# holds. A level 20 dB adrift is either the bridge failing to carry something or the
+# arrangement; only a byte-for-byte comparison tells them apart.
+add_executable(d110_part_state part_state_compare.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_part_state PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_part_state PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_part_state PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_part_state PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
 # Renders the LCD at several settings to PNG so the result can be looked at beside the
 # reference photo. Calibration only - not part of the plugin's render path.
 add_executable(d110_lcd_check lcd_render_check.cpp)

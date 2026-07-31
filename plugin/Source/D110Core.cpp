@@ -999,7 +999,9 @@ std::vector<std::string> D110Core::takeLogLines() {
 void D110Core::osdLogCtxEvent(uint16_t pc, uint16_t addr, uint8_t value) {
 	if (!voiceCtxTap.load(std::memory_order_acquire)) return;
 	std::lock_guard<std::mutex> lock(ctxMutex);
-	if (ctxEvents.size() >= kMaxCtxEvents) return;
+	// Counted, not silently discarded - see the note on osdLogNote. A tally taken from a
+	// capture that quietly stopped recording is worse than no tally, because it looks fine.
+	if (ctxEvents.size() >= kMaxCtxEvents) { ++ctxDropped; return; }
 	ctxEvents.push_back({pc, addr, value});
 }
 
@@ -1013,8 +1015,12 @@ std::vector<D110Core::CtxEvent> D110Core::takeCtxEvents() {
 // ---- notes recovered from the firmware --------------------------------------
 
 void D110Core::osdPushNoteEvent(const NoteEvent &ev) {
+	// Logged before the solo filter, so the log always says what the firmware actually
+	// played even when only one part is being rendered.
 	if (noteLoggingOn())
 		osdLogNote({noteLogElapsedMs(), ev.part, ev.note, ev.velocity, ev.on});
+	const int solo = soloPart.load(std::memory_order_relaxed);
+	if (solo >= 0 && ev.part != solo) return;
 	const int w = nW.load(std::memory_order_relaxed);
 	const int next = (w + 1) & kNoteMask;
 	// Full means the audio thread has stalled; dropping is the only safe answer, and a

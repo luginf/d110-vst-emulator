@@ -51,17 +51,23 @@ static std::vector<std::vector<MT32Emu::Bit8u>> extractSysexMessagesFromMidiFile
 static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout() {
 	std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
 
-	// 0..2 rather than 0..1.5 so that unity gain - the default - is the exact middle of the range,
-	// and therefore sits dead centre on the panel knob's printed scale (which the reference photo
-	// shows is centred on straight-up to within 0.03 degrees). The default loudness is unchanged;
-	// the knob simply now points at 12 o'clock at rest instead of leaning right.
-	// Full clockwise is unity gain, and that is where the knob starts - a rack module is
-	// normally run with its volume wide open and the level set downstream. The range used
-	// to run to 2.0 so that unity sat at the knob's printed centre, but then "wide open"
-	// meant +6 dB and clipped the moment a full patch was played.
+	// 0..2 with unity as the default, so unity is the exact middle of the range and the
+	// panel knob therefore rests pointing straight up - the reference photo's printed scale
+	// is centred on vertical to within 0.03 degrees, and the knob draws whatever fraction of
+	// its travel the parameter is at. With a 0..1 range the default of unity WAS the maximum,
+	// so the knob sat hard clockwise: correct arithmetic, wrong-looking instrument.
+	//
+	// The consequence, stated plainly rather than avoided: the top half of the travel is
+	// boost, and running it wide open is +6 dB and will clip a busy patch. That is what a
+	// hardware volume control does too, and it is the player's choice; the default loudness
+	// is unchanged either way. (An earlier revert to 0..1 traded the knob's rest position
+	// away to prevent that, which fixed nothing that was broken.)
+	//
+	// Safe for existing projects: the value tree stores the real value, not a normalised
+	// one, so a session saved at 1.0 still loads as unity.
 	params.push_back(std::make_unique<juce::AudioParameterFloat>(
 		juce::ParameterID{"masterVolume", 1}, "Master Volume",
-		juce::NormalisableRange<float>(0.0f, 1.0f), 1.0f));
+		juce::NormalisableRange<float>(0.0f, 2.0f), 1.0f));
 
 	params.push_back(std::make_unique<juce::AudioParameterBool>(
 		juce::ParameterID{"reverbEnabled", 1}, "Reverb", true));

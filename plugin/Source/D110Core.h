@@ -365,6 +365,12 @@ public:
 	// empty. Safe to call from the audio thread.
 	bool popNoteEvent(NoteEvent &out);
 	void osdPushNoteEvent(const NoteEvent &ev);
+	// Diagnostics: deliver only this part's notes to the engine, so one part of a piece can
+	// be rendered and measured on its own. -1 delivers everything, which is the only value
+	// the plugin ever uses. Measuring a part inside a full mix cannot distinguish "this part
+	// is silent" from "this part is buried", and that distinction is the whole question.
+	void setSoloPart(int part) { soloPart.store(part, std::memory_order_release); }
+	int soloPart_() const { return soloPart.load(std::memory_order_acquire); }
 	// How many note-ons the firmware has handed over - diagnostics, so "the demo song is
 	// silent" can be told apart from "the demo song is not playing".
 	uint64_t firmwareNoteOns() const { return noteOnCount.load(std::memory_order_acquire); }
@@ -381,12 +387,24 @@ public:
 	// "the sequencer itself is running fast". Both inflate the note rate; only the first
 	// puts several identical notes inside the same millisecond.
 	struct NoteLog { double ms; uint8_t part, note, velocity; bool on; };
+	// A capture that hits its ceiling must SAY SO. Three separate wrong conclusions in one
+	// session came from buffers that filled and then quietly stopped recording, so the
+	// numbers looked complete and were not: a part that entered late read as a part that
+	// never played, and a tally of 192 writes sat next to 1305 notes built from them
+	// without either figure looking suspicious on its own. Every taker below returns its
+	// drop count, and every caller is expected to print it.
 	void osdLogNote(const NoteLog &e) {
 		std::lock_guard<std::mutex> lock(noteLogMutex);
-		// Generous, because a short cap silently truncates the run: at 400 entries a
-		// 20-second capture ended around the twelve-second mark, and a part that enters
-		// after that looked like a part that never plays at all.
-		if (noteLog.size() < 20000) noteLog.push_back(e);
+		if (noteLog.size() < 200000) noteLog.push_back(e);
+		else ++noteLogDropped;
+	}
+	uint64_t noteLogDropped_() const {
+		std::lock_guard<std::mutex> lock(noteLogMutex);
+		return noteLogDropped;
+	}
+	uint64_t ctxDropped_() const {
+		std::lock_guard<std::mutex> lock(ctxMutex);
+		return ctxDropped;
 	}
 	std::vector<NoteLog> takeNoteLog() {
 		std::lock_guard<std::mutex> lock(noteLogMutex);
@@ -397,6 +415,7 @@ public:
 	void startNoteLog() {
 		std::lock_guard<std::mutex> lock(noteLogMutex);
 		noteLog.clear();
+		noteLogDropped = 0;
 		noteLogStart = std::chrono::steady_clock::now();
 		noteLogging = true;
 	}
@@ -435,7 +454,16 @@ public:
 	// fraction of dispatched voices ever complete" needs.
 	static constexpr uint16_t kDispatchTapBase = 0xEDC0;
 	static constexpr uint16_t kDispatchTapSpan = 0x240; // covers edc0..efff
-	void setVoiceCtxTap(bool on) { voiceCtxTap.store(on, std::memory_order_release); }
+	// Turning the tap ON starts a fresh capture window, drop count included, so a reading
+	// always describes one window rather than everything since the machine booted.
+	void setVoiceCtxTap(bool on) {
+		if (on) {
+			std::lock_guard<std::mutex> lock(ctxMutex);
+			ctxEvents.clear();
+			ctxDropped = 0;
+		}
+		voiceCtxTap.store(on, std::memory_order_release);
+	}
 	bool voiceCtxTapEnabled() const { return voiceCtxTap.load(std::memory_order_acquire); }
 	struct CtxEvent { uint16_t pc; uint16_t addr; uint8_t value; };
 	void osdLogCtxEvent(uint16_t pc, uint16_t addr, uint8_t value);
@@ -577,11 +605,14 @@ private:
 	std::vector<NoteEvent> noteBuf;
 	std::atomic<int> nW{0}, nR{0};
 	std::atomic<uint64_t> noteOnCount{0}, noteOffCount{0}, noteMsTotal{0};
+	std::atomic<int> soloPart{-1};
 	std::atomic<bool> soLampOn{false}, soLampSeen{false};
 	mutable std::mutex noteLogMutex;
 	std::vector<NoteLog> noteLog;
 	std::chrono::steady_clock::time_point noteLogStart;
 	bool noteLogging = false;
+	uint64_t noteLogDropped = 0;
+	uint64_t ctxDropped = 0;
 
 	std::atomic<bool> voiceCtxTap{false};
 	mutable std::mutex ctxMutex;

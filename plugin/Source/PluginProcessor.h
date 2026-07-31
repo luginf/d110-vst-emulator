@@ -195,6 +195,40 @@ public:
 	void setForwardNotesToFirmware(bool shouldForward) { forwardNotes = shouldForward; }
 	bool getForwardNotesToFirmware() const { return forwardNotes; }
 
+	// Sounds one part directly, with no firmware involvement - diagnostics only. It is the
+	// only way to ask what the ENGINE does with a part, separately from whether the
+	// firmware is sending it anything. Safe to call from a test's own thread because
+	// nothing else is writing to the synth at the time; not for use from the plugin.
+	void playNoteOnPartForTest(uint8_t part, uint8_t note, uint8_t velocity) {
+		if (synth) synth->playMsgOnPart(part, 0x9, note, velocity);
+	}
+	void playNoteOffOnPartForTest(uint8_t part, uint8_t note) {
+		if (synth) synth->playMsgOnPart(part, 0x8, note, 0);
+	}
+	// Which parts the ENGINE currently has sounding, as a bitmask - the counterpart to the
+	// firmware's own indicators. Where the two disagree, the note reached the engine and
+	// the engine chose not to sound it, which is a different fault from losing the note.
+	// What the engine holds for a part, so it can be compared against what the firmware
+	// holds for the same part. Diagnostics: a difference here is the bridge failing to
+	// carry something across, which is invisible from either side alone.
+	void engineReadMemory(uint32_t sysexAddr, uint32_t len, uint8_t *out) const {
+		if (synth) synth->readMemory(sysexAddr, len, out);
+	}
+	uint32_t enginePartStates() const { return synth ? synth->getPartStates() : 0u; }
+	uint32_t enginePartialCount() const { return synth ? synth->getPartialCount() : 0u; }
+	// How many partials are busy right now. If this sits at the ceiling while a part is
+	// silent, the part is being starved rather than ignored.
+	int engineActivePartials() const {
+		if (!synth) return -1;
+		const uint32_t total = synth->getPartialCount();
+		std::vector<MT32Emu::Bit8u> states(total, 0);
+		synth->getPartialStates(states.data());
+		int busy = 0;
+		for (uint32_t i = 0; i < total; ++i)
+			if (states[i] != 0) ++busy; // 0 is INACTIVE
+		return busy;
+	}
+
 private:
 	std::atomic<bool> forwardNotes{true};
 
