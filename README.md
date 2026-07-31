@@ -59,12 +59,21 @@ the patches and edits come back with it, rather than whatever a shared folder la
   process-wide singleton, so a second running machine corrupts the host's heap - measured, not
   assumed. A second instance therefore refuses to power on and says so, instead of crashing your
   DAW. Loading several is fine; only one may be on.
+- **The reverb is not the D-110's.** A real D-110 reverberates in a dedicated BOSS DSP with its
+  own 32 KB ROM (`r15179879.ic6.bin`, the romset's `boss` region), and the firmware picks its
+  program through bits 1-2 of the SO register. Nothing emulates that chip, here or in MAME, so
+  what you hear is the sound engine's MT-32 reverb instead - a different unit with four modes
+  where the D-110's panel offers eight types plus OFF. The panel's Reverb Type, Time and Level
+  are therefore deliberately not mirrored; see
+  [`docs/sysex_address_map.md`](docs/sysex_address_map.md). The per-part Reverb Switch does
+  reach the engine.
 - The real D-110 has eight **individual outputs** as well as the stereo mix, and a per-part
   assignment for them. This plugin is stereo only: the sound engine models the MT-32, which had
   no individual outputs at all, so there is nothing to route them from.
-- Some voices are released by the firmware without the explicit marker this plugin watches for,
-  so a few notes rely on the engine's own voice management to reclaim them rather than getting a
-  note-off of their own.
+- **Master Tune** is not mirrored either: the firmware's scale and the engine's disagree, so
+  passing the byte across would detune everything against what the display says.
+- Dense material can peak slightly above full scale. The panel's VOLUME knob is the remedy, as
+  it is on the hardware.
 - Master tune, reverb and master volume are deliberately not mirrored - see
   [`docs/sysex_address_map.md`](docs/sysex_address_map.md) for exactly why each one is excluded.
 

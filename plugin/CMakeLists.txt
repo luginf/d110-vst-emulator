@@ -1,5 +1,5 @@
 ﻿cmake_minimum_required(VERSION 3.22)
-project(D110Emulator VERSION 0.9.6)
+project(D110Emulator VERSION 0.9.7)
 
 # C++20 because MAME's headers need it.
 set(CMAKE_CXX_STANDARD 20)
