@@ -140,6 +140,9 @@ class D110Osd : public osd_common_t {
 		    ramsOffset < D110Core::kPartTable + D110Core::kNumVoiceContexts) {
 			const int ctx = ramsOffset - D110Core::kPartTable;
 			const uint8_t part = uint8_t(value >> 4); // stored as part * 16
+			// Считаем ДО двух отсечек ниже, чтобы "прошивка никогда не называет эту
+			// партию" отличалось от "мост выбросил её здесь".
+			core->osdCountPartByte(value);
 			if (part > 8) return;                     // 0-7 voice parts, 8 rhythm
 			m_ctxPart[ctx] = part;
 			// Third write of the triple completes a note - but ONLY if this run actually
@@ -286,6 +289,8 @@ class D110Osd : public osd_common_t {
 				D110Core::kSoRegister, D110Core::kSoRegister + 1, "d110_so_led",
 				[this](offs_t, u16 &data, u16 mem_mask) {
 					if (!(mem_mask & 0x00ff)) return;
+					core->osdCountSoWrite(uint8_t(data & 0xff));
+					core->osdLogSoWrite(uint16_t(m_cpu->pc()), uint8_t(data & 0xff));
 					core->osdSetMidiLamp((data & 0x01) != 0);
 					core->osdMarkMidiLampSeen();
 				});
@@ -640,7 +645,7 @@ public:
 #define D110_TONE(part) \
 	{ uint16_t(0x21E4 + (part) * 246), \
 	  0x040000u | (uint32_t(((part) * 246) / 128) << 8) | uint32_t(((part) * 246) % 128), \
-	  246, "Tone Temporary" }
+	  246, "Tone Temporary", true }
 
 // The Rhythm Setup Area: 85 entries of 4 bytes (timbre, output level, panpot, reverb
 // switch) mapping each drum key to a tone. RAM 0x2090 - immediately after the 144 bytes of
@@ -691,11 +696,30 @@ const D110Core::MirrorRegion D110Core::kMirrorRegions[] = {
 	//   masterTune (offset 0) is left out too: the panel reads 442 where Roland's
 	//     documented 0-127 -> 432.1-457.6 Hz mapping makes 0x4A about 447, so the two
 	//     scales disagree and mirroring it would detune everything against the display.
+
+	// Время и уровень ревербератора - системные смещения 2 и 3. Измерено панелью
+	// (plugin/reverb_path_probe.cpp): страница Patch Edit, Reverb Time сдвигает ровно
+	// 0x2D96, Reverb Level - ровно 0x2D97, а смена патча переписывает обе, потому что
+	// D-110 хранит настройки ревербератора в патче. Диапазоны совпадают с полями движка
+	// байт в байт: Time на экране 1-8 это байт 0-7, Level 0-7 это байт 0-7.
+	//
+	// Тип ревербератора (смещение 1) СЮДА НЕ ВХОДИТ, и поэтому регион начинается со
+	// второго байта: у D-110 восемь типов плюс OFF, у движка четыре режима, и никакого
+	// однозначного отображения между ними нет - его пришлось бы придумать. Пока тип не
+	// переносится, режим остаётся тем, что движок выбрал сам.
+	//
+	// Оговорка, которая никуда не девается: сам блок чужой. У D-110 ревербератор - это
+	// отдельная микросхема BOSS со своим ПЗУ, которую не эмулирует никто; звучит
+	// ревербератор MT-32. Переносятся параметры, а не прибор.
+	{ 0x2D96, 0x100002, 2, "System (reverb time+level)" },
+
 	{ 0x2D98, 0x100004, 18, "System (reserve + channels)" },
 };
 #undef D110_TONE
 constexpr int D110Core::kNumMirrorRegions =
 	int(sizeof(D110Core::kMirrorRegions) / sizeof(D110Core::kMirrorRegions[0]));
+static_assert(D110Core::kNumMirrorRegions <= D110Core::kMaxMirrorRegions,
+              "увеличьте kMaxMirrorRegions - счётчик отправок индексируется номером региона");
 
 // One DT1 carries kMaxSysexBytes minus an 8-byte header and a 2-byte tail. The largest
 // thing mirrored here is a 246-byte tone, which fits with EXACTLY no slack.
@@ -714,6 +738,10 @@ D110Core::D110Core()
 		assert(kMirrorRegions[i].length <= kMaxRegionBytes);
 		mirrorPrev[(size_t)i].assign(kMirrorRegions[i].length, 0);
 	}
+	// osdSnapshotRam подтверждает тембры после региона 0 по индексу, и каждый регион,
+	// просящий о подтверждении, обязан стоять в массиве после него - иначе порядок врёт.
+	assert(kMirrorRegions[0].sysexAddress == 0x030000u);
+	assert(!kMirrorRegions[0].reassertAfterTimbreTemp);
 }
 
 D110Core::~D110Core() {
@@ -875,18 +903,27 @@ void D110Core::osdSnapshotRam(const uint8_t *src) {
 	// Only the mirrored regions decide whether anything is sent onward. Diffing the
 	// whole 32 KB would fire dozens of times a second on the firmware's scratch area,
 	// which has nothing to do with the sound.
+
+	// Взводится, как только на этом проходе ушёл регион Timbre Temporary; почему тембры
+	// обязаны идти следом - см. MirrorRegion::reassertAfterTimbreTemp.
+	bool timbreTempSent = false;
 	for (int i = 0; i < kNumMirrorRegions; ++i) {
 		const auto &region = kMirrorRegions[i];
 		auto &prev = mirrorPrev[(size_t)i];
 		const uint8_t *now = src + region.ramOffset;
-		if (!resync && mirrorPrimed && std::memcmp(prev.data(), now, region.length) == 0)
+		const bool mustReassert = timbreTempSent && region.reassertAfterTimbreTemp;
+		if (!resync && !mustReassert && mirrorPrimed &&
+		    std::memcmp(prev.data(), now, region.length) == 0)
 			continue;
 		std::memcpy(prev.data(), now, region.length);
 		// The very first snapshot after a start only establishes the baseline; the
 		// deliberate catch-up is the resync above, which happens once the firmware is
 		// no longer mid-boot.
-		if (mirrorPrimed || resync)
+		if (mirrorPrimed || resync) {
 			emitRegionSysex(region, src);
+			regionEmits[i].fetch_add(1, std::memory_order_relaxed);
+			if (i == 0) timbreTempSent = true; // регион 0 - это Timbre Temporary
+		}
 	}
 	mirrorPrimed = true;
 
@@ -944,7 +981,13 @@ void D110Core::pushSysex(const uint8_t *msg, int len) {
 	if (len <= 0 || len > kMaxSysexBytes) return;
 	const int w = sW.load(std::memory_order_relaxed);
 	const int r = sR.load(std::memory_order_acquire);
-	if (((w + 1) & kSysexMask) == r) return; // full: drop rather than stall the machine
+	// Кольцо полно: бросаем, а не тормозим машину, - но СЧИТАЕМ. Молча потерянное
+	// сообщение зеркала - это параметр, о котором движок так и не узнает, а мост теперь
+	// шлёт девять сообщений там, где смена тембра раньше слала одно.
+	if (((w + 1) & kSysexMask) == r) {
+		sysexDropCount.fetch_add(1, std::memory_order_relaxed);
+		return;
+	}
 	std::memcpy(&sysexBuf[(size_t)w * kMaxSysexBytes], msg, (size_t)len);
 	sysexLen[(size_t)w] = uint16_t(len);
 	sW.store((w + 1) & kSysexMask, std::memory_order_release);
@@ -1019,6 +1062,8 @@ void D110Core::osdPushNoteEvent(const NoteEvent &ev) {
 	// played even when only one part is being rendered.
 	if (noteLoggingOn())
 		osdLogNote({noteLogElapsedMs(), ev.part, ev.note, ev.velocity, ev.on});
+	// По той же причине, и, в отличие от журнала, здесь место кончиться не может.
+	if (ev.on && ev.part < 9) noteOnPart[ev.part].fetch_add(1, std::memory_order_relaxed);
 	const int solo = soloPart.load(std::memory_order_relaxed);
 	if (solo >= 0 && ev.part != solo) return;
 	const int w = nW.load(std::memory_order_relaxed);
@@ -1037,6 +1082,22 @@ bool D110Core::popNoteEvent(NoteEvent &out) {
 	out = noteBuf[(size_t)r];
 	nR.store((r + 1) & kNoteMask, std::memory_order_release);
 	return true;
+}
+
+void D110Core::osdLogSoWrite(uint16_t pc, uint8_t value) {
+	std::lock_guard<std::mutex> lock(soMutex);
+	if (!soTracing) return;
+	if (soTrace.size() >= kMaxSoWrites) { ++soDropped; return; }
+	soTrace.push_back({std::chrono::duration<double, std::milli>(
+	                       std::chrono::steady_clock::now() - soTraceStart).count(),
+	                   pc, value});
+}
+
+std::vector<D110Core::SoWrite> D110Core::takeSoWrites() {
+	std::lock_guard<std::mutex> lock(soMutex);
+	std::vector<SoWrite> out;
+	out.swap(soTrace);
+	return out;
 }
 
 void D110Core::osdLogPort2Sample(uint16_t pc, uint8_t port2, bool stuckIntHigh, bool la32Pending) {

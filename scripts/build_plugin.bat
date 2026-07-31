@@ -26,6 +26,9 @@ cmake --build . --config Release --target d110_core_test d110_longrun_test ^
     d110_la32_realistic d110_demo_song_repro d110_demo_wav d110_hang_probe ^
     d110_la32_ctx d110_la32_lifecycle d110_note_source d110_pan_verify ^
     d110_audio_test d110_coldstart_test d110_state_test d110_sysex_test ^
+    d110_part_audio d110_solo_level d110_part_state d110_tone_clobber ^
+    d110_bridge_probe d110_tone_probe d110_la32_probe d110_two_instance_test ^
+    d110_rhythm_map d110_reverb_path d110_so_trace ^
     > "%~dp0..\build_logs\tests.log" 2>&1
 echo TESTS_EXIT=%ERRORLEVEL%
 

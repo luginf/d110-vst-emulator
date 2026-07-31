@@ -519,6 +519,11 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 		pendingImportsToSend.swap(pendingSysexImports);
 		pendingShortMessagesToSend.swap(pendingShortMessages);
 	}
+	// Эти две очереди намеренно идут через очередь движка с отметкой времени, а не через
+	// «немедленные» формы, которыми пользуется мост ниже: их источник - действие
+	// пользователя на панели, оно отстоит от любой ноты на секунды, и обгон в один блок
+	// здесь ничего не решает. У моста иначе - там параметр и нота приходят в одну и ту же
+	// миллисекунду, и порядок между ними значим.
 	for (auto &message : pendingImportsToSend) {
 		synth->playSysex(message.data(), static_cast<MT32Emu::Bit32u>(message.size()));
 		// And to the control board, which is the half that actually owns this data. Sending
@@ -536,10 +541,20 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 	// button was pressed on the panel - the core hands us the Roland exclusive message
 	// the hardware would have used, and the LA engine takes it natively. This is what
 	// makes an edit made on the panel audible.
+	//
+	// playSysexNow, а не playSysex: последний ставит сообщение в собственную очередь
+	// движка с отметкой времени, и применяется оно только когда расчёт звука до неё
+	// дойдёт, - тогда как ноты ниже уходят через playMsgOnPart, который действует
+	// НЕМЕДЛЕННО. Ноты обгоняли параметры, от которых зависят. В начале демо-песни это
+	// стоило двух ударов: прошивка загружала карту ритма и почти сразу стучала по
+	// клавишам 25 и 27, а движок применял удары раньше карты, видел там тембр 127 (OFF)
+	// и молча их отбрасывал ("Attempted to play unmapped key"). Здесь оба пути
+	// действуют в момент разбора очередей, и порядок этого цикла - параметры, потом
+	// ноты - становится настоящим.
 	{
 		MT32Emu::Bit8u sysex[D110Core::kMaxSysexBytes];
 		while (const int len = core.popSysex(sysex))
-			synth->playSysex(sysex, static_cast<MT32Emu::Bit32u>(len));
+			synth->playSysexNow(sysex, static_cast<MT32Emu::Bit32u>(len));
 	}
 
 	// The other half of the same idea, for notes rather than parameters: the firmware tells
@@ -586,11 +601,30 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 												   static_cast<unsigned int>(samplesToRender));
 			float *left = buffer.getWritePointer(0, samplePos);
 			float *right = numOutChannels > 1 ? buffer.getWritePointer(1, samplePos) : nullptr;
+			// Насыщение ЦАПа, и только потом ручка громкости - в приборе они стоят
+			// именно в таком порядке: ЦАП шестнадцатибитный и физически не может выдать
+			// больше полной шкалы, а регулятор громкости аналоговый и стоит за ним.
+			//
+			// Само насыщение принадлежит движку: Synth::clipSampleEx(Bit32s) прижимает
+			// сумму голосов к +-32767. Но у той же функции есть перегрузка для float, и
+			// она НАМЕРЕННО ничего не делает - `return sampleEx;`. Наша сборка идёт по
+			// float-пути, поэтому модель ЦАПа до выхода не доезжала, и плотные места
+			// демо-песни выходили за шкалу примерно на 1.5 дБ. Это расхождение с
+			// прибором, а не его характер: на «Macho Memory» за полную шкалу выходили
+			// 69 отсчётов из 6 614 016, то есть одна тысячная процента, - ЦАП срезал бы
+			// их неслышно.
+			//
+			// Ручка на панели идёт 0..2 с единичным усилением ровно посередине, где она
+			// и стоит по умолчанию, так что в состоянии покоя выход теперь не может
+			// превысить полную шкалу. Всё, что правее середины, - это уже запрошенное
+			// пользователем усиление, как фейдер на пульте, а не поведение прибора.
 			for (int i = 0; i < samplesToRender; ++i) {
-				const float l = interleavedScratch[static_cast<size_t>(i) * 2] * masterVolume;
-				const float r = interleavedScratch[static_cast<size_t>(i) * 2 + 1] * masterVolume;
-				left[i] = l;
-				if (right != nullptr) right[i] = r;
+				const float l = juce::jlimit(-1.0f, 1.0f,
+				                            interleavedScratch[static_cast<size_t>(i) * 2]);
+				const float r = juce::jlimit(-1.0f, 1.0f,
+				                            interleavedScratch[static_cast<size_t>(i) * 2 + 1]);
+				left[i] = l * masterVolume;
+				if (right != nullptr) right[i] = r * masterVolume;
 			}
 		}
 		samplePos = nextEventSample;
@@ -859,7 +893,6 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	std::unique_ptr<juce::XmlElement> xml(state.createXml());
 	xml->setAttribute("controlRomPath", controlRomPath);
 	xml->setAttribute("pcmRomPath", pcmRomPath);
-	xml->setAttribute("forwardNotes", forwardNotes.load());
 	// Ports are stored by identifier, not by name: names repeat across machines and change
 	// when a device is renamed, whereas the identifier is what openDevice actually wants.
 	xml->setAttribute("midiIn", selInputId);
@@ -902,10 +935,11 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 		openSynthIfReady();
 	}
 
-	// Default true (2026-07-31): an older saved project predates this attribute and never
-	// made a choice either way, so it should pick up today's default rather than be pinned
-	// to the workaround the fix above made unnecessary.
-	forwardNotes = xml->getBoolAttribute("forwardNotes", true);
+	// Атрибут forwardNotes из старых проектов намеренно игнорируется. Пока он был
+	// переключателем в меню, его можно было сохранить выключенным; теперь переключателя
+	// нет, и восстановленное «выключено» оставило бы инструмент без индикации партий и без
+	// собственных диапазонов клавиш прошивки, причём включить обратно было бы нечем.
+	forwardNotes = true;
 
 	// Reopening by identifier: if the device is not present on this machine the call simply
 	// finds nothing and the plugin stays on host MIDI alone, which is the right outcome for

@@ -123,6 +123,10 @@ public:
 	// How many mirror messages have been produced since boot - diagnostics, so a
 	// "nothing changed" result can be told apart from "the bridge never fired".
 	uint64_t sysexEmitted() const { return sysexCount.load(std::memory_order_acquire); }
+	// Сообщения зеркала, которым не хватило места в кольце. Всё, кроме нуля, означает,
+	// что движок недополучил обновления параметров, и любое снятое с него показание -
+	// это нижняя граница.
+	uint64_t sysexDropped() const { return sysexDropCount.load(std::memory_order_acquire); }
 
 	// --- host MIDI into the firmware ------------------------------------------
 	// The firmware has to SEE the notes, not just the sound engine. Its MIDI IN is the
@@ -324,6 +328,39 @@ public:
 	void osdMarkMidiLampSeen() { soLampSeen.store(true, std::memory_order_release); }
 	static constexpr uint16_t kSoRegister = 0x0200;
 
+	// Весь байт SO, а не только бит лампы. По разбору MAME (`so_w` в roland_d10.cpp):
+	// бит 0 - светодиод, биты 1-2 - номер программы ревербератора (это A13/A14 ПЗУ
+	// микросхемы BOSS, то есть всего четыре программы), бит 3 - "R. SW." на аналоговую
+	// плату, бит 5 - тактирование BOSS. Панель при этом предлагает восемь типов
+	// ревербератора плюс OFF, так что двух бит на них не хватает, и путь остальных
+	// параметров надо искать. Гистограмма по всем 256 значениям ничего потерять не может.
+	void osdCountSoWrite(uint8_t v) {
+		soByteHist[v].fetch_add(1, std::memory_order_relaxed);
+		soLast.store(int(v), std::memory_order_release);
+	}
+	uint64_t soWrites(uint8_t v) const { return soByteHist[v].load(std::memory_order_acquire); }
+	int soLastValue() const { return soLast.load(std::memory_order_acquire); }
+
+	// Каждая запись в SO вместе с адресом, откуда она сделана. Счётчика по значениям мало:
+	// он говорит, ЧТО записали, но не говорит, какая подпрограмма это сделала, а именно
+	// адрес и открывает вход в прошивку для дизассемблера (plugin/disasm_tool.cpp).
+	// Захват может переполниться, поэтому у него есть свой счётчик потерь, и печатать его
+	// обязан каждый, кто читает записи.
+	struct SoWrite { double ms; uint16_t pc; uint8_t value; };
+	void osdLogSoWrite(uint16_t pc, uint8_t value);
+	std::vector<SoWrite> takeSoWrites();
+	uint64_t soWritesDropped() const {
+		std::lock_guard<std::mutex> lock(soMutex);
+		return soDropped;
+	}
+	void startSoTrace() {
+		std::lock_guard<std::mutex> lock(soMutex);
+		soTrace.clear();
+		soDropped = 0;
+		soTraceStart = std::chrono::steady_clock::now();
+		soTracing = true;
+	}
+
 	// --- notes recovered from the firmware itself ------------------------------
 	// The firmware plays its own demo songs (ROM Play) internally and does NOT transmit
 	// them - measured: its serial TX emitted one 0x00 byte in 40 seconds. So the demo song
@@ -365,6 +402,11 @@ public:
 	// empty. Safe to call from the audio thread.
 	bool popNoteEvent(NoteEvent &out);
 	void osdPushNoteEvent(const NoteEvent &ev);
+	// Каждая запись в байт партии f3a0[], посчитанная по названной ею партии, ДО любых
+	// собственных отсечек моста. См. partByteWrites().
+	void osdCountPartByte(uint8_t rawValue) {
+		partByteHist[rawValue >> 4].fetch_add(1, std::memory_order_relaxed);
+	}
 	// Diagnostics: deliver only this part's notes to the engine, so one part of a piece can
 	// be rendered and measured on its own. -1 delivers everything, which is the only value
 	// the plugin ever uses. Measuring a part inside a full mix cannot distinguish "this part
@@ -520,9 +562,58 @@ public:
 		uint32_t sysexAddress; // 21-bit, seven bits per transmitted byte
 		uint16_t length;
 		const char *name;
+		// Переслать этот регион всякий раз, когда уходит регион Timbre Temporary, даже
+		// если в прошивке он сам не менялся.
+		//
+		// Запись в Timbre Temporary заставляет движок LA перезагрузить тембр партии из
+		// одного из своих четырёх банков (Synth::writeMemoryRegion -> Part::setTimbre) и
+		// затирает Tone Temporary, который дала прошивка. Для MT-32 это правильно, для
+		// D-110 - нет: прошивка держит группы тембра, которые четыре банка движка назвать
+		// не могут. В демо-песне партии 6 и 7 несут группу 5, а таблица максимумов самого
+		// движка прижимает её к 3 - и вместо лид-синта звучал закрытый хай-хэт на 21 дБ
+		// тише. Истина о том, что играет партия, - это Tone Temporary прошивки, поэтому
+		// он подтверждается заново после записи, которая иначе его отменяет. Порядок
+		// задаётся позицией в массиве, а все тембры стоят после Timbre Temporary, так что
+		// отдельная синхронизация не нужна.
+		bool reassertAfterTimbreTemp = false;
 	};
 	static const MirrorRegion kMirrorRegions[];
 	static const int kNumMirrorRegions;
+	// Взято с запасом, чтобы массив счётчиков ниже не приходилось трогать при добавлении
+	// региона; static_assert в .cpp держит их согласованными.
+	static constexpr int kMaxMirrorRegions = 32;
+
+	// --- счётчики без потерь ---------------------------------------------------
+	// Считаем, а не логируем. Оба журнала событий в этом классе умеют заполниться и
+	// тихо перестать писать (именно так партия, вступившая позже, однажды прочиталась
+	// как партия, которая не играет вообще), поэтому вопросы, на которые нельзя
+	// отвечать обрезанной записью, отвечают счётчики фиксированного размера - они
+	// ничего потерять не могут.
+	//
+	// noteOnPart   - завершённые прошивкой note-on, по партиям.
+	// partByteHist - каждая запись в f3a0[] по её сырому значению >> 4, ВКЛЮЧАЯ значения,
+	//                которые мост нот отвергает. "Прошивка никогда не назначает эту
+	//                партию" и "мост выбрасывает её ноты" по одному счёту нот неотличимы;
+	//                две эти строки рядом их различают.
+	// regionEmits  - сколько сообщений DT1 отправил каждый зеркалируемый регион. Регион,
+	//                сработавший в одиночку, без региона, который чинит его побочный
+	//                эффект, - конкретный и проверяемый вид отказа.
+	uint64_t noteOnsForPart(int part) const {
+		return (part >= 0 && part < 9) ? noteOnPart[part].load(std::memory_order_acquire) : 0;
+	}
+	uint64_t partByteWrites(int part) const {
+		return (part >= 0 && part < 16) ? partByteHist[part].load(std::memory_order_acquire) : 0;
+	}
+	uint64_t regionEmitCount(int region) const {
+		return (region >= 0 && region < kMaxMirrorRegions)
+		           ? regionEmits[region].load(std::memory_order_acquire) : 0;
+	}
+	void resetTallies() {
+		for (auto &v : noteOnPart) v.store(0, std::memory_order_release);
+		for (auto &v : partByteHist) v.store(0, std::memory_order_release);
+		for (auto &v : regionEmits) v.store(0, std::memory_order_release);
+		for (auto &v : soByteHist) v.store(0, std::memory_order_release);
+	}
 
 private:
 	void threadFunc();
@@ -565,12 +656,19 @@ private:
 
 	// SysEx ring: MAME thread producer, audio thread consumer. Fixed-size slots so
 	// the audio thread never allocates or blocks.
-	static constexpr int kSysexSlots = 64;
+	//
+	// 64 слотов не хватало. Пересборка зеркала шлёт все 13 регионов разом, а с тех пор
+	// как смена тембра тянет за собой ещё восемь подтверждений Tone Temporary
+	// (MirrorRegion::reassertAfterTimbreTemp), пик за один кадр стал вдесятеро больше -
+	// и sysexDropped() показал 3 потерянных сообщения за 40 секунд демо. Потерянное
+	// сообщение зеркала это молча не применённый параметр, то есть ровно тот класс
+	// ошибки, который здесь и чинится. Слот - 256 байт, так что 256 слотов стоят 64 КБ.
+	static constexpr int kSysexSlots = 256;
 	static constexpr int kSysexMask = kSysexSlots - 1;
 	std::vector<uint8_t> sysexBuf;      // kSysexSlots * kMaxSysexBytes
 	std::vector<uint16_t> sysexLen;
 	std::atomic<int> sW{0}, sR{0};
-	std::atomic<uint64_t> sysexCount{0};
+	std::atomic<uint64_t> sysexCount{0}, sysexDropCount{0};
 
 	// MIDI going the other way - host to firmware. A plain byte ring, because MIDI is a
 	// byte stream and a message may legitimately be split across calls. Sized to swallow a
@@ -605,8 +703,21 @@ private:
 	std::vector<NoteEvent> noteBuf;
 	std::atomic<int> nW{0}, nR{0};
 	std::atomic<uint64_t> noteOnCount{0}, noteOffCount{0}, noteMsTotal{0};
+	// Счётчики фиксированного размера: в отличие от двух журналов они НЕ МОГУТ ничего
+	// потерять. Почему это важно - см. методы доступа выше.
+	std::atomic<uint64_t> noteOnPart[9] = {};
+	std::atomic<uint64_t> partByteHist[16] = {};
+	std::atomic<uint64_t> regionEmits[kMaxMirrorRegions] = {};
 	std::atomic<int> soloPart{-1};
 	std::atomic<bool> soLampOn{false}, soLampSeen{false};
+	std::atomic<uint64_t> soByteHist[256] = {};
+	std::atomic<int> soLast{-1};
+	mutable std::mutex soMutex;
+	std::vector<SoWrite> soTrace;
+	std::chrono::steady_clock::time_point soTraceStart;
+	bool soTracing = false;
+	uint64_t soDropped = 0;
+	static constexpr size_t kMaxSoWrites = 20000;
 	mutable std::mutex noteLogMutex;
 	std::vector<NoteLog> noteLog;
 	std::chrono::steady_clock::time_point noteLogStart;

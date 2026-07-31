@@ -49,6 +49,14 @@ reason the two look different at first glance:
 | `System` | `0x100000` | System Area | ✅ exact |
 | `Display` | `0x200000` | Display | ✅ exact |
 
+> **Reverb, 2026-07-31**: the D-110 documents its reverb as living in Patch Memory
+> `06 00 00`, which munt has no region for — but the firmware also keeps the **live**
+> Type/Time/Level in the System Area at `0x2D95`/`0x2D96`/`0x2D97`, i.e. system offsets
+> 1/2/3, which are exactly munt's `reverbMode`/`reverbTime`/`reverbLevel`. Time and Level
+> are mirrored (`0x2D96` → `0x100002`, 2 bytes) and follow the patch; Type is not, because
+> eight D-110 types onto four engine modes has no honest mapping. Measured by
+> `plugin/reverb_path_probe.cpp`; see [`factory_defaults.md`](factory_defaults.md).
+
 **The one area munt has no region for is `06 00 00` Patch Memory** — the D-110's
 64 patches, which assign a timbre and its settings to each of the 8 parts. The
 MT-32 has no such concept. This does not block anything: when the firmware

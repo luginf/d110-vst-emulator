@@ -33,6 +33,14 @@ struct RenderResult {
 	juce::AudioBuffer<float> audio;
 	float peak = 0;
 	double rms = 0;
+	// Сколько отсчётов вышло за полную шкалу и насколько. Одного пикового числа мало:
+	// «пик 1.17» одинаково описывает и десяток отсчётов на всю песню, которые ЦАП прибора
+	// просто срезал бы неслышно, и постоянную работу в ограничении, где срез слышен.
+	// Решение, ограничивать ли выход, принимается по доле, а не по пику.
+	int64_t overFullScale = 0, totalSamples = 0;
+	double overFraction() const {
+		return totalSamples ? double(overFullScale) / double(totalSamples) : 0.0;
+	}
 };
 
 RenderResult renderRealTime(D110AudioProcessor &proc, double seconds, bool withHostNote) {
@@ -77,6 +85,8 @@ RenderResult renderRealTime(D110AudioProcessor &proc, double seconds, bool withH
 			for (int i = 0; i < kBlock; ++i) {
 				const float s = block.getSample(ch, i);
 				out.peak = juce::jmax(out.peak, std::abs(s));
+				if (std::abs(s) > 1.0f) ++out.overFullScale;
+				++out.totalSamples;
 				sumSq += double(s) * s;
 				++n;
 			}
@@ -140,6 +150,9 @@ int main(int argc, char **argv) {
 		            "                                which sounds like a runaway tempo\n",
 		            proc.getCore().meanNoteMs());
 		std::printf("  peak %.3f  rms %.5f\n", seg.peak, seg.rms);
+		std::printf("  за полной шкалой: %lld отсчётов из %lld (%.4f%%)\n",
+		            (long long)seg.overFullScale, (long long)seg.totalSamples,
+		            100.0 * seg.overFraction());
 		writeWav(outDir.getChildFile("d110_demo_song.wav"), seg.audio);
 
 		// Which parts actually receive anything. A demo song is written to show the

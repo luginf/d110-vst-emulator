@@ -1,11 +1,15 @@
-// Parts 6 and 7 measured 21-24 dB below part 1 while playing the same piece, and part 5
-// received no notes at all. Levels that far apart are not an arrangement choice, so this
-// asks the obvious next question: does the ENGINE hold, for each part, what the FIRMWARE
-// holds? Anything the bridge fails to carry shows up as a difference here and is invisible
-// from either side alone.
+// Побайтно сравнивает, что для каждой партии держит ПРОШИВКА и что держит ДВИЖОК, прямо
+// во время демо-песни. Всё, что мост не донёс, видно здесь как конкретный расходящийся
+// байт и не видно ни с одной из сторон по отдельности.
 //
-// Sampled DURING the demo, because the demo loads its own patch - what the parts look like
-// at boot says nothing about what they look like while playing.
+// Снимается ВО ВРЕМЯ демо, потому что демо загружает собственный патч: как партии выглядят
+// при загрузке, ничего не говорит о том, как они выглядят на игре.
+//
+// Штатный результат на «Macho Memory» - расходится ровно байт 0 у партий 6 и 7: прошивка
+// держит группу тембра 5, движок 3. Это не потеря в мосту, а предел, объявленный самим
+// D-110: таблица максимумов в управляющем ПЗУ даёт группе тембра максимум 3, и запись
+// прижимается к нему. Чем это грозит звуку и почему тембр всё равно приходит правильный -
+// см. docs/timbre_group_5.md.
 #include "Source/PluginProcessor.h"
 
 #include <cstdio>
@@ -68,13 +72,12 @@ int main() {
 		std::printf("  part | grp tmbr kSh fine bnd asg rev  -  LVL PAN | engine same?\n");
 		for (int p = 0; p < 8; ++p) {
 			const uint8_t *fw = &ram[0x2000 + 16 * p];
-			// The engine addresses its own memory in a PACKED form, not in Roland's
-			// three-seven-bit-bytes form: MT32EMU_MEMADDR in Structures.h folds 0x030000
-			// down to 0x00C000. Passing the Roland address found no region at all, so
-			// readMemory left the buffer untouched and every part read back as zeros -
-			// which looked exactly like "the engine holds nothing" and was in fact
-			// "nothing was read". Filled with a sentinel first, so a silent no-op can
-			// never again pass for data.
+			// Движок адресует свою память в УПАКОВАННОМ виде, а не в роландовском виде
+			// «три семибитных байта»: MT32EMU_MEMADDR из Structures.h сворачивает
+			// 0x030000 в 0x00C000. По роландовскому адресу регион не находится вовсе,
+			// readMemory возвращается, не тронув буфер, и всё читается как нули.
+			// Поэтому буфер сперва заполняется меткой: молчаливый холостой вызов не
+			// должен выглядеть как данные.
 			auto packed = [](uint32_t a) {
 				return ((a & 0x7f0000u) >> 2) | ((a & 0x7f00u) >> 1) | (a & 0x7fu);
 			};

@@ -54,6 +54,25 @@ a time, and read back off the display.
 MT-32: on the MT-32 reverb lives in the System area, and that is the area the sound engine
 models. The D-110 keeps it in Patch Memory (`06 00 00`), a region munt has no concept of.
 
+**But the live values are also kept in the System Area, at the very offsets the engine
+models** — measured with `plugin/reverb_path_probe.cpp` (target `d110_reverb_path`), which
+walks to the Patch Edit page, steps each value and reports the byte whose delta equals the
+press count:
+
+| Panel parameter | RAM | Offset from the System base `0x2D94` | Engine field |
+| --- | --- | --- | --- |
+| Reverb Type | `0x2D95` | +1 | `reverbMode` |
+| Reverb Time | `0x2D96` | +2 | `reverbTime` |
+| Reverb Level | `0x2D97` | +3 | `reverbLevel` |
+
+Changing the patch rewrites all three, which is the per-patch storage showing through.
+Ranges line up exactly: Time reads 1–8 on the panel and 0–7 in RAM, Level reads 0–7 and
+stores 0–7 — the engine's own ranges. **Time and Level are therefore mirrored** (region
+`0x2D96` → `0x100002`); Type is not, because eight types onto four engine modes has no
+honest mapping. Verified end to end: engine readback matches the firmware byte for byte, and
+setting Level 0 → 7 on the panel moves the tail after a released note from RMS 0.000076 to
+0.001415, about 25 dB.
+
 There is also a **Reverb Switch per part**, in the Timbre Temporary block. That one *is*
 mirrored, so switching reverb off for an individual part does reach the sound engine — it
 is the global type/time/level that cannot cross. See

@@ -36,7 +36,11 @@ pages are real and not decoration:
   assign mode, output level, pan.
 - **Tone Temporary** - the tone itself: structure, partial mute, waveforms, and the pitch, TVF
   and TVA envelopes, for all eight parts. Editing `Tone Edit / Structure 1&2` moves the sound
-  immediately.
+  immediately. It is re-sent after every Timbre Temporary change, because writing a timbre
+  makes the sound engine reload that part's tone from one of its four MT-32 banks - and the
+  D-110's firmware uses tone groups those four banks cannot name. Without it, two parts of the
+  first demo song played a closed hi-hat instead of a lead and measured 21 dB down; see
+  [`docs/timbre_group_5.md`](docs/timbre_group_5.md).
 - **System** - partial reserve and the per-part MIDI channel map, so the SYSTEM page's channel
   assignment actually takes effect.
 
@@ -63,17 +67,24 @@ the patches and edits come back with it, rather than whatever a shared folder la
   own 32 KB ROM (`r15179879.ic6.bin`, the romset's `boss` region), and the firmware picks its
   program through bits 1-2 of the SO register. Nothing emulates that chip, here or in MAME, so
   what you hear is the sound engine's MT-32 reverb instead - a different unit with four modes
-  where the D-110's panel offers eight types plus OFF. The panel's Reverb Type, Time and Level
-  are therefore deliberately not mirrored; see
-  [`docs/sysex_address_map.md`](docs/sysex_address_map.md). The per-part Reverb Switch does
-  reach the engine.
+  where the D-110's panel offers eight types plus OFF. **Reverb Time and Level do reach it**,
+  and so does the per-part Reverb Switch: the firmware keeps the live values at the same
+  System Area offsets the engine models, with the same 0-7 ranges, and they follow the patch
+  as they do on the hardware (measured: setting Level from 0 to 7 on the panel moves the tail
+  after a released note by 25 dB). **Reverb Type is deliberately not mirrored** - eight types
+  onto four modes has no honest mapping - so the character of the room is the engine's choice,
+  while its length and amount are the instrument's. See
+  [`docs/sysex_address_map.md`](docs/sysex_address_map.md).
 - The real D-110 has eight **individual outputs** as well as the stereo mix, and a per-part
   assignment for them. This plugin is stereo only: the sound engine models the MT-32, which had
   no individual outputs at all, so there is nothing to route them from.
 - **Master Tune** is not mirrored either: the firmware's scale and the engine's disagree, so
   passing the byte across would detune everything against what the display says.
-- Dense material can peak slightly above full scale. The panel's VOLUME knob is the remedy, as
-  it is on the hardware.
+- The output saturates at full scale rather than exceeding it, because a 16-bit DAC cannot do
+  otherwise and the VOLUME knob is analogue and sits after it. The sound engine models that
+  clamp for 16-bit output and deliberately skips it on its floating-point path, so the plugin
+  applies it before the knob. Past the knob's midpoint you are asking for gain above the
+  instrument's own maximum, as with a mixer fader.
 - Master tune, reverb and master volume are deliberately not mirrored - see
   [`docs/sysex_address_map.md`](docs/sysex_address_map.md) for exactly why each one is excluded.
 

@@ -72,7 +72,15 @@ void press(D110AudioProcessor &proc, std::initializer_list<int> idx, int hold, i
 	std::this_thread::sleep_for(std::chrono::milliseconds(settle));
 }
 
-struct Result { float peak = 0; double rms = 0; int notes = 0; std::string song; };
+struct Result {
+	float peak = 0;
+	double rms = 0;
+	int notes = 0;
+	std::string song;
+	// Полнота измерения печатается вместе с ним: журнал нот умеет заполниться, а кольцо
+	// зеркала - переполниться, и тогда цифры слева это нижние границы, а не результат.
+	uint64_t noteDrops = 0, sysexDrops = 0;
+};
 
 // Boots a fresh machine, starts the demo from a known state, renders `seconds` with only
 // `solo` delivered, and measures. A fresh machine each time is what makes the runs
@@ -81,9 +89,25 @@ Result runSolo(int solo, double seconds) {
 	D110AudioProcessor proc;
 	proc.prepareToPlay(kSampleRate, kBlock);
 	proc.setPoweredOn(true);
-	std::this_thread::sleep_for(std::chrono::seconds(9));
+	// Загрузку СЧИТАЕМ, а не спим. Мост копит по сообщению DT1 на каждый зеркалируемый
+	// регион, который меняется при старте прошивки, а разбирает кольцо только
+	// processBlock: проспать загрузку - значит начать измерение с непримененной очередью
+	// параметров, то есть измерить не то состояние, которое показывает панель.
+	{
+		juce::AudioBuffer<float> warm(2, kBlock);
+		const auto begin = Clock::now();
+		auto next = begin;
+		while (std::chrono::duration<double>(Clock::now() - begin).count() < 9.0) {
+			juce::MidiBuffer none;
+			warm.clear();
+			proc.processBlock(warm, none);
+			next += std::chrono::microseconds(int64_t(kBlockSeconds * 1e6));
+			std::this_thread::sleep_until(next);
+		}
+	}
 
 	proc.getCore().setSoloPart(solo);
+	proc.getCore().resetTallies();
 	press(proc, {D110Core::buttonIndex(1, 7), D110Core::buttonIndex(1, 0)}, 200, 500);
 	press(proc, {D110Core::buttonIndex(1, 0)}, 200, 500);
 	proc.getCore().startNoteLog();
@@ -110,8 +134,15 @@ Result runSolo(int solo, double seconds) {
 	}
 	r.rms = n ? std::sqrt(sumSq / double(n)) : 0.0;
 	r.song = lcdLine2(proc);
-	for (const auto &e : proc.getCore().takeNoteLog())
-		if (e.on && (solo < 0 || e.part == solo)) ++r.notes;
+	r.noteDrops = proc.getCore().noteLogDropped_();
+	r.sysexDrops = proc.getCore().sysexDropped();
+	// Считаем по счётчику без потерь, а не по журналу: журнал может обрезаться, счётчик нет.
+	if (solo < 0) {
+		for (int p = 0; p < 9; ++p) r.notes += int(proc.getCore().noteOnsForPart(p));
+	} else {
+		r.notes = int(proc.getCore().noteOnsForPart(solo));
+	}
+	proc.getCore().takeNoteLog();
 
 	proc.setPoweredOn(false);
 	proc.releaseResources();
@@ -128,15 +159,17 @@ int main() {
 	constexpr double kSeconds = 30.0;
 	std::printf("Each row is one fresh boot, the same song from the start, only that part\n"
 	            "delivered to the engine. %.0f seconds each.\n\n", kSeconds);
-	std::printf("  part | notes | peak      | rms       | dB vs part 1 | song\n");
+	std::printf("  part | notes | peak      | rms       | dB vs part 1 | drops | song\n");
 
 	double refRms = 0;
 	for (int part : {0, 4, 5, 6, 8}) { // part 1 as reference, then 5, 6, 7, rhythm
 		const Result r = runSolo(part, kSeconds);
 		if (part == 0) refRms = r.rms;
 		const double dB = (refRms > 0 && r.rms > 0) ? 20.0 * std::log10(r.rms / refRms) : -999.0;
-		std::printf("  %4d | %5d | %.6f | %.6f | %11.1f | %s\n", part + 1, r.notes, r.peak,
-		            r.rms, dB, r.song.c_str());
+		std::printf("  %4d | %5d | %.6f | %.6f | %11.1f | %llu/%llu | %s%s\n", part + 1, r.notes,
+		            r.peak, r.rms, dB, (unsigned long long)r.noteDrops,
+		            (unsigned long long)r.sysexDrops, r.song.c_str(),
+		            (r.noteDrops || r.sysexDrops) ? "  <-- LOWER BOUND" : "");
 	}
 
 	std::printf("\ndone\n");

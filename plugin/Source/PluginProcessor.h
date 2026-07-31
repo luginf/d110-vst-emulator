@@ -174,24 +174,20 @@ private:
 	void forwardMidiToFirmware(const juce::MidiMessage &message);
 
 public:
-	// Whether note on/off reach the control board.
+	// Доходят ли note on/off до платы управления. Всегда да; выключение осталось только
+	// для испытательных стендов и в интерфейс не выведено.
 	//
-	// OFF by default, and that default is not timidity - it is measured. Notes send the
-	// firmware down its voice-allocation path, and that path ends at the LA32, which MAME
-	// does not emulate for any Roland LA machine. The firmware does not crash; it stays
-	// alive (its RAM keeps changing) but never returns to scanning the front panel, so
-	// within a few seconds of playing every button and the whole display go dead while the
-	// sound carries on. plugin/longrun_test.cpp reproduced it in about four seconds and
-	// showed the panel surviving indefinitely once notes were withheld.
+	// Включено - это и есть поведение прибора: прошивка применяет свои диапазоны клавиш,
+	// раскладку по партиям и распределение голосов, зажигает индикаторы в верхней строке
+	// ЖКИ и сообщает обратно, какую ноту на какой партии она действительно взяла; только
+	// после этого нота попадает в звуковой движок.
 	//
-	// 2026-07-31: fixed for real (docs/la32_interface.md) - D110Core::StuckPolicy::La32Stub
-	// (set unconditionally in setPoweredOn()) supplies the sound board's missing side of
-	// the handshake. Validated against a stress-chord test (30s survived, was 0-3s), a
-	// realistic single-note test (120 notes over 60s, panel responsive throughout) and the
-	// real firmware demo song (three songs back to back). Default is ON: lights the part
-	// indicators, tracks Program Changes, and keeps the panel usable while playing - what
-	// this flag traded away before now costs nothing. Left as a switch, not removed, in
-	// case a host or a future ROM revision needs the old behaviour.
+	// Выключение когда-то было обходным путём: MAME не эмулирует LA32 ни для одной машины
+	// Roland LA, и, дойдя до распределения голосов, прошивка переставала опрашивать
+	// переднюю панель - звук шёл, а кнопки и экран умирали. Это чинит
+	// D110Core::StuckPolicy::La32Stub, безусловно включаемый в setPoweredOn(); подробности
+	// в docs/la32_interface.md. Стенды, которым нужна прошивка без нот
+	// (plugin/longrun_test.cpp, plugin/hang_probe.cpp), пользуются этим сеттером напрямую.
 	void setForwardNotesToFirmware(bool shouldForward) { forwardNotes = shouldForward; }
 	bool getForwardNotesToFirmware() const { return forwardNotes; }
 
@@ -214,6 +210,18 @@ public:
 	void engineReadMemory(uint32_t sysexAddr, uint32_t len, uint8_t *out) const {
 		if (synth) synth->readMemory(sysexAddr, len, out);
 	}
+	// Пишет в память движка так же, как это делает мост, но без прошивки за спиной -
+	// только для диагностики. Прочитанное значение само по себе не доказывает, что путь
+	// чтения работает; доказывает записанное известное значение, прочитанное обратно, -
+	// ради этого контрольного прогона метод и существует. Правило потоков то же, что у
+	// playNoteOnPartForTest: собственный поток теста, и больше в синтезатор никто не пишет.
+	void engineWriteSysexForTest(const uint8_t *data, int len) {
+		if (synth) synth->playSysex(data, static_cast<MT32Emu::Bit32u>(len));
+	}
+	// Открылся ли звуковой движок вообще. Любое показание вида "в движке нули" обязано
+	// сначала исключить это: readMemory() на закрытом синтезаторе возвращается, не тронув
+	// буфер, и это читается как данные, если буфер и так был обнулён.
+	bool engineIsOpen() const { return synth != nullptr; }
 	uint32_t enginePartStates() const { return synth ? synth->getPartStates() : 0u; }
 	uint32_t enginePartialCount() const { return synth ? synth->getPartialCount() : 0u; }
 	// How many partials are busy right now. If this sits at the ceiling while a part is

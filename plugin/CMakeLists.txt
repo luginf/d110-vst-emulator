@@ -9,6 +9,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # here - JUCE and mt32emu included - must use /MT too or the link mixes runtimes.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 
+# Комментарии в этом проекте пишутся по-русски, а MSVC без этого ключа читает исходник
+# в кодовой странице системы и на кириллице выдаёт C4819 - а в худшем случае съедает
+# байт, похожий на обратную косую черту, в конце строки комментария.
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 include("${CMAKE_CURRENT_SOURCE_DIR}/mame.cmake")
 
 include(FetchContent)
@@ -301,6 +308,59 @@ target_link_libraries(d110_part_state PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_part_state PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Спрашивает по каждой партии и за ОДИН прогон, держит ли движок тот тембр, который
+# держит прошивка, - по имени, чего измерение уровня не умеет. Собственный путь чтения
+# из движка доказывает контролем "записал и прочитал обратно" до всех прочих показаний.
+add_executable(d110_tone_clobber tone_clobber_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_tone_clobber PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_tone_clobber PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_tone_clobber PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_tone_clobber PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Различает две причины «Attempted to play unmapped key» в начале демо: карту ритма,
+# которая ещё не доехала до движка, и карту, в которой клавиша действительно выключена.
+add_executable(d110_rhythm_map rhythm_map_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_rhythm_map PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_rhythm_map PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_rhythm_map PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_rhythm_map PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Ищет путь, которым тип/время/уровень ревербератора доходят до микросхемы BOSS: жмёт
+# кнопки, печатает экран и показывает рядом сдвиги ОЗУ и записи в регистр SO.
+add_executable(d110_reverb_path reverb_path_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_reverb_path PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_reverb_path PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_reverb_path PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_reverb_path PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Ищет момент, когда прошивка перепрограммирует микросхему ревербератора: пишет каждую
+# запись в регистр SO вместе с адресом подпрограммы, которая её сделала.
+add_executable(d110_so_trace so_trace_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_so_trace PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_so_trace PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_so_trace PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_so_trace PRIVATE /ignore:4099 /FORCE:MULTIPLE)
 
 # Renders the LCD at several settings to PNG so the result can be looked at beside the
 # reference photo. Calibration only - not part of the plugin's render path.

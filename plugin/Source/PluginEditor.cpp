@@ -574,8 +574,12 @@ void D110Panel::showOptionsMenu()
 	m.addSeparator();
 	m.addItem(2, "Reverb", true, reverbOn);
 	m.addItem(3, "Super Mode (unofficial, extra polyphony)", true, superOn);
-	m.addItem(5, "Let the firmware voice the notes (part indicators, its own key ranges)",
-	          true, processor.getForwardNotesToFirmware());
+	// Пункта «пусть ноты озвучивает прошивка» здесь нет намеренно. Это не настройка, а
+	// единственное поведение: ноты идут в прошивку, она применяет свои диапазоны клавиш,
+	// раскладку по партиям и распределение голосов, зажигает индикаторы в верхней строке
+	// и возвращает то, что действительно взяла. Выключение всего этого не давало ничего,
+	// кроме менее точного инструмента, и было временной мерой на время, пока ноты роняли
+	// панель, - в 0.9.6 это исправлено.
 	m.addSeparator();
 
 	// Direct MIDI ports, beside whatever the host routes in. This is how an external
@@ -654,21 +658,6 @@ void D110Panel::showOptionsMenu()
 					reverb->endChangeGesture();
 				}
 				break;
-			case 5: {
-				const bool turningOn = !processor.getForwardNotesToFirmware();
-				processor.setForwardNotesToFirmware(turningOn);
-				// Say what it costs before it costs it, rather than leaving the user to
-				// discover a dead panel and assume the plugin has crashed.
-				if (turningOn)
-					juce::NativeMessageBox::showMessageBoxAsync(
-						juce::MessageBoxIconType::WarningIcon, "D-110 Emulator",
-						"The top row will now light the part being played.\n\n"
-						"The cost: MAME emulates no LA32, so once notes reach the firmware "
-						"it stops scanning the front panel within a few seconds. The sound "
-						"keeps playing, but the buttons and display stop responding until "
-						"you switch POWER off and on.");
-				break;
-			}
 			case 3:
 				if (superMode != nullptr) {
 					superMode->beginChangeGesture();
