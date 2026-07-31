@@ -17,8 +17,26 @@ cmake --build . --config Release --target D110Emulator_VST3 > "%~dp0..\build_log
 echo VST3_EXIT=%ERRORLEVEL%
 cmake --build . --config Release --target D110Emulator_Standalone > "%~dp0..\build_logs\plugin_standalone.log" 2>&1
 echo STANDALONE_EXIT=%ERRORLEVEL%
-cmake --build . --config Release --target d110_core_test d110_longrun_test > "%~dp0..\build_logs\tests.log" 2>&1
+REM EVERY harness, not a chosen few. Building only some of them once produced a
+REM "regression check passed" from a binary compiled before the change under test -
+REM a fatal boot bug (install_write_tap on an unaligned range) shipped that way,
+REM because the test that would have caught it was stale. A test you did not
+REM rebuild is not evidence.
+cmake --build . --config Release --target d110_core_test d110_longrun_test ^
+    d110_la32_realistic d110_demo_song_repro d110_demo_wav d110_hang_probe ^
+    d110_la32_ctx d110_la32_lifecycle d110_note_source d110_pan_verify ^
+    d110_audio_test d110_coldstart_test d110_state_test d110_sysex_test ^
+    > "%~dp0..\build_logs\tests.log" 2>&1
 echo TESTS_EXIT=%ERRORLEVEL%
+
+REM The boot test is cheap and catches the whole class of "the machine will not
+REM start at all" faults, which no amount of later checking can work around.
+"%~dp0..\plugin\build\Release\d110_core_test.exe" > "%~dp0..\build_logs\boot_check.log" 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$log = Get-Content '%~dp0..\build_logs\boot_check.log' -Raw;" ^
+  "if ($log -match 'running: yes') { Write-Host 'BOOT=ok' }" ^
+  "elseif ($log -match 'Fatal error: (.+)') { Write-Host ('BOOT=FAILED - ' + $Matches[1]) }" ^
+  "else { Write-Host 'BOOT=FAILED (see build_logs\boot_check.log)' }"
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "foreach ($l in @('plugin_vst3','plugin_standalone','tests')) {" ^

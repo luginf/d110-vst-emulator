@@ -278,8 +278,12 @@ class D110Osd : public osd_common_t {
 		// The driver's own so_w() documents the layout ("bit 0 = led") but discards the
 		// value, so a tap is how the panel gets to see it without patching MAME.
 		if (m_cpu) {
+			// The range must be word-aligned - this bus is 16 bits wide, and MAME refuses a
+			// range whose end has its low bit clear ("did you mean 201?"), fatally, which
+			// takes the whole machine down at boot. 0x0201 belongs to nothing in the D-110
+			// map, and the callback only acts on the low byte anyway.
 			m_soTap = m_cpu->space(AS_PROGRAM).install_write_tap(
-				D110Core::kSoRegister, D110Core::kSoRegister, "d110_so_led",
+				D110Core::kSoRegister, D110Core::kSoRegister + 1, "d110_so_led",
 				[this](offs_t, u16 &data, u16 mem_mask) {
 					if (!(mem_mask & 0x00ff)) return;
 					core->osdSetMidiLamp((data & 0x01) != 0);
