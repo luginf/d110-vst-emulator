@@ -76,6 +76,33 @@ Pan is written as a distance and a direction: `3>` is three steps right of centr
 three steps left. The factory patch fans the parts outwards in pairs — 1 and 2 to either
 side at 3, then 3 and 4 at 1, 5 and 6 at 5, 7 and 8 at 7.
 
+### The fan is real, and it is audible — verified end to end
+
+`plugin/pan_verify.cpp` (`d110_pan_verify`) exists because the fan reads as a fault: play
+the plugin on channel 2 out of the box and the sound sits off-centre, which feels like a
+factory reset that did not take. It did. The tool performs a genuine factory reset, reads
+the panpot byte straight out of the firmware's RAM (`PatchTemp.panpot`, RAM
+`0x2000 + 16*part + 9`), then measures the actual stereo RMS of a note on each part's own
+MIDI channel. Roland's encoding is **0 = hard right, 7 = centre, 14 = hard left**.
+
+| Part | RAM byte | Means | Display | Measured |
+| --- | --- | --- | --- | --- |
+| 1 | 4 | 3 right | `3>` | 58 % right |
+| 2 | 10 | 3 left | `<3` | 27 % right |
+| 3 | 6 | 1 right | `1>` | 56 % right |
+| 4 | 8 | 1 left | `<1` | 45 % right |
+| 5 | 2 | 5 right | `5>` | 82 % right |
+| 6 | 12 | 5 left | `<5` | 13 % right |
+| 7 | 0 | 7 right | `7>` | 86 % right |
+| 8 | 14 | 7 left | `<7` | 8 % right |
+
+Eight for eight, byte and audio agreeing with the documented display. **A factory D-110 is
+not centred and is not meant to be** — Roland fans the parts so a multitimbral setup does
+not collapse into mono. Part 1, which is what a host playing on channel 2 reaches, is three
+steps right. To centre it, use PART → PARAMETER GROUP to Pan; the value is inside the
+mirrored Timbre Temporary block, so the change reaches the sound engine as well as the
+display.
+
 Partial reserve sums to **32**, the D-110's whole polyphony: `4+4+4+4+3+3+3+2 = 27` for the
 eight voice parts, with the remaining **5** reserved for the rhythm part.
 

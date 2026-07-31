@@ -227,3 +227,384 @@ characterise.
 **D-10 checked too, and it is clean**: both firmware versions show candidate byte
 pairs only inside a `scall` dispatch table, and disassembling around them
 produces garbage — data, not instructions.
+
+---
+
+## 2026-07-31, later the same day — the real dispatch routine, the real busy value, and a SECOND stall behind the first
+
+Resuming exactly where the note above left off: "trace a complete note lifecycle." This
+is what that trace found, all measured against the running firmware or read straight out
+of the ROM with `disasm_tool`, not inferred.
+
+**`r52` was never a hardware voice number — it never should have been fed to the status
+byte at all.** It is the mainline's own logical wait-context id, used only to address
+`f440[]`. The status byte's bits 0-4 name a **hardware voice slot**, a completely
+different number space, and every encoding mode tried against r52 in the prior session
+was doomed regardless of the bit-7/±1 arithmetic, because the input was wrong before the
+arithmetic ever ran.
+
+**The dispatch routine, ROM `0x3615`-`0x3657`, disassembled for the first time this
+session:**
+
+```
+3615  stb  50, ee00[54]     ; ee00[slot] = r50
+361A  stb  52, ee01[54]     ; ee01[slot] = r52's LOW BYTE  <-- the mapping
+361F  st   58, f240[54]     ; f240[slot] = r58 (word)
+3624  st   56, ee80[54]     ; ee80[slot] = r56 (word)
+3629  stb  b7, f201[54]
+...
+3646  ldb  70, #20
+3649  stb  70, edc0[54]     ; edc0[slot] = 0x20  (see correction below)
+364E  ld   70, #ffff
+3652  st   70, 0cc0[54]     ; 0cc0[slot] cleared
+```
+
+**`r54` (word, already slot*2) is the true hardware voice slot** for the whole
+dispatch — the same register indexes `ee00`/`ee01`/`f240`/`ee80`/`f201`/`edc0`/`0cc0`
+throughout. Critically, **dispatch itself records the reverse mapping**: `ee01[slot] =
+r52`. The completion handler never needs to be told r52 at all — given a slot, it can
+look up which context that slot belongs to, or (the direction the stub needs) given the
+context currently being waited on, it can find which slot to report by searching for
+the entry that matches.
+
+**Measured busy value is `0x40`, not the `0x20` the listing above shows** —
+`d110_la32_lifecycle_probe` (new tool, `plugin/la32_lifecycle_probe.cpp`) played one
+real note (channel 2, program default) with `StuckPolicy::Off` and dumped `rams`
+0x2D00-0x3000 before and after. Exactly two slots changed, both `80 -> 40` (one D-110
+note uses two LA32 partials) and both stayed at `40` — something between `0x364E` and
+wherever this routine actually ends must overwrite the `0x20` the partial listing shows;
+trust the runtime measurement over an incomplete disassembly. `kSlotBusyValue` is now
+`0x40`.
+
+**Fix applied to `StuckPolicy::La32Stub`** (`D110Core.cpp`): read `r52` as before (it is
+still needed — just not as the answer), then scan `rams 0x2DC0+2n` (busy == `0x40`)
+**cross-referenced against `rams 0x2E01+2n == r52`** to find the one slot that is both
+busy and actually backs the context the CPU is parked waiting for. Answering ANY busy
+slot (tried first, before this was understood) was not enough once more than one note is
+pending, i.e. any chord: the handler ran and genuinely consumed status bytes, but if it
+wasn't the right slot, the specific loop the CPU sits in never got its flag set.
+
+**Result, measured with `d110_hang_probe`'s policy comparison, before → after this
+session's fixes:**
+
+| | before (r52 fed directly as status) | after (r52 → slot cross-reference) |
+| --- | --- | --- |
+| handler 3138-3195 entered | 0 | 12,967 |
+| reads of 0x0C00 seen | 0 | 192,028 |
+| statuses actually handed over | 0 | 255 |
+
+So the handshake mechanism itself is now demonstrably correct and doing real work — a
+categorical improvement over every previous attempt, which never got the handler to run
+at all. **The panel still does not recover.** This is not the same finding as before;
+read on.
+
+### The second stall: a completely different loop, gated by a completely different flag
+
+Every policy that manages to release the *first* wait (`PokeRam`, `PulseExtInt`, and now
+the corrected `La32Stub`) converges on the exact same new PC histogram once it does:
+
+```
+PC 2677   15.1%     <- new stall, dominant
+PC 269A   13.9%
+PC 267C   11.9%
+PC 2681   11.9%
+PC 269E    8.6%
+```
+
+Disassembled (`disasm_tool ... 2648 26b0`):
+
+```
+2673  ld    78, #0070          ; outer loop: 78 = 0x70, 0x60, ..., 0x00 (8 parts)
+2677  ldb   70, f28c[78]       ; <-- the new stall sits here
+267C  cmpb  70, f284[78]
+2681  jc    269a                ; nothing to reclaim for this part -> next part
+2683  ldbze 52, f285[78]       ; r52 = head of this part's active-voice chain
+2688  sjmp  2697
+268A  ldb   70, f460[52]       ; <-- f460, NOT f440 - a different array entirely
+268F  jbs   70, 6, 2710        ; bit 6 set -> found a reclaimable voice, done
+2692  ldbze 52, f3c0[52]       ; follow the chain to the next context
+2697  jbc   52, 7, 268a        ; loop while not at the chain's end sentinel
+269A  sub   78, #0010
+269E  jc    2677                ; more parts to check -> loop
+```
+
+This is a **voice-reclamation scan**: for each of the 8 parts, walk the linked list of
+voice-contexts it currently has allocated (via `f3c0[]`, the chain the D-70/D-110 project
+notes already named without disassembling) looking for one whose `f460[]` entry has **bit
+6** set. `f460[]` sits immediately after `f440[]` in RAM (`docs` already knew this much,
+from `D110Core.h`'s comment on why `kVoiceFlagSpan` is 32 and not 64) but **nothing found
+so far writes to it** — not the completion handler at `0x32DC`-`0x3614`, which only
+touches `f440[]` (`0x35DF`) and the `edc0`/`ee00`/`ee40`/`eec0`/`ef80` tables already
+described above.
+
+**Working hypothesis, not yet confirmed**: `f460[]` bit 6 is set by **note-off**
+processing, not by the sound board — i.e. it means "this voice's key has been released
+and it may be reclaimed the next time a part needs one," which is a mainline concern
+independent of LA32 completion. If that is right, this second stall may not need a sound
+board answer at all — it may just need note-off to reach the firmware fast enough
+relative to how many voices `hang_probe`'s chords consume (2 slots/note, 32 slots total,
+16 notes before starvation). Unconfirmed: the chord pattern already releases notes ~230ms
+after pressing them, which should be ample, so either the reclaim scan itself is not
+being reached (something upstream of `0x2673` still stuck) or `f460` needs something this
+session has not yet found.
+
+### Resume point
+
+1. Find what writes `f460[]` bit 6 — the same way dispatch was found this session:
+   search around note-off handling first, since the working hypothesis is that this is
+   a mainline consequence of releasing a key, not another sound-board answer.
+2. Once found, check whether it depends on anything the LA32 stub should also be
+   supplying, or whether it is purely a mainline consequence of note-off that should
+   "just work" once note-off reaches the firmware — in which case the second stall may
+   be a separate, unrelated bug (or simply not yet being exercised correctly by the test
+   harness) rather than another piece of the sound-board interface.
+3. `kSlotContextTable`/`kSlotStateTable`/`kSlotBusyValue` and the corrected `La32Stub` in
+   `D110Core.cpp` should be kept — they are a real, measured fix for the *first* stall,
+   independently of whether the second one turns out to be LA32-related at all.
+
+Tools added this session: `plugin/la32_lifecycle_probe.cpp` (`d110_la32_lifecycle` target)
+— boots, plays exactly one note, dumps the raw voice tables before/after. Reuse it with
+`StuckPolicy::La32Stub` engaged and a chord instead of one note to catch `f460[]` in the
+act, rather than disassembling further in the blind.
+
+### Update, same session: `f460[]` bit 6 DOES get set — the fix partially works, but is fragile
+
+The resume point above was followed. `plugin/la32_ctx_probe.cpp` (target `d110_la32_ctx`)
+adds a live write tap over the whole `f3c0`-`f480` window (`D110Core::kVoiceCtxTapBase` —
+**note this constant is a CPU program-space address, `0xF3C0`, not the rams array offset
+`0x33C0`; the first version of this tap used the rams offset directly and silently taped
+ROM instead, giving zero events every time — a reminder that this window has two valid
+numbers and code must be explicit about which one it's using**). With `StuckPolicy::La32Stub`
+engaged and 12 seconds of chords:
+
+```
+163 write events captured
+f3c0: 32   f400: 16   f420: 16   f440: 18   f460: 32   f480: 16
+f460[] writes with bit 6 SET: 16
+```
+
+So the full chain — dispatch → LA32 completion → `f440[]` chain walk (`0x24DA`, entered
+via `ldbze 54,f440[52]` / `lcall 0x303E` / `ldbze 54,ee40[54]`, looping to `0xFF`) →
+`f460[]` bit 6 set at `0x24FB` — **genuinely completes, 16 times in 12 seconds of chords**.
+This is real, not a coincidence: `PC 24FB` (right after the `stb 70,f460[52]` at `0x24F6`)
+is exactly the block found earlier this session, and the addresses climb sequentially
+(`3460, 3461, 3462, …`) as successive logical contexts get serviced.
+
+**But the panel is still dead by the end of every test, chord or single-note, and the
+new `plugin/la32_realistic_test.cpp` (target `d110_la32_realistic`) shows it is not a
+question of stress alone**: single notes with realistic ~500ms gaps (nothing like a
+chord-stress pattern) died at **10 seconds** after only **2** successful LA32 services —
+worse than the chord run's 16, despite far lower voice demand per second. That
+inconsistency (16 successes under harder load, 2 under lighter load) says the remaining
+bug is timing/ordering-sensitive, not simply "too many notes, too few voices" — something
+about which context happens to be at the wait loop when the stub fires, or a corrupted
+chain state after the first failure, likely still explains the eventual stall.
+
+**Where this leaves the fix**: `StuckPolicy::La32Stub` with the `r52`→slot
+cross-reference is a real, measured improvement over every prior attempt — the handshake
+mechanism is provably correct at the byte level and completes real voice lifecycles some
+of the time. It is not yet reliable enough to flip on by default; `forwardNotesToFirmware`
+should stay off in shipped defaults until a session traces WHY only 2 of presumably many
+more attempted contexts complete in the realistic-timing case, e.g. by adding sequence
+numbers/timestamps to the `f460` write log and comparing against dispatch events in the
+same run, rather than assuming duration or note count is the deciding factor.
+
+### Update, same session: the mechanism is PROVEN correct — the remaining bug is thread-timing-sensitive, not load-sensitive
+
+Two more tools settled the question the section above left open. `plugin/la32_ctx_probe.cpp`
+was extended with a second write tap over the DISPATCH tables too
+(`D110Core::kDispatchTapBase = 0xEDC0` — again a CPU address, not the `0x2DC0` rams
+offset) so dispatch and completion land in one merged, naturally time-ordered log (both
+taps fire on the single CPU thread, so append order already IS execution order — no
+sequence numbers needed).
+
+**Run with the same gentle, realistic single-note pattern `la32_realistic_test.cpp` uses
+(not chords)**: all 32 hardware slots got dispatched, and **all 16 logical contexts
+completed cleanly** — `f440[]` written, `f460[]` bit 6 set, in order, context 0 through
+15 — then the trace ends mid-way through context 0 being reused for a 17th note. **Run
+twice, byte-for-byte identical both times.** This rules out "only some fraction of
+dispatched voices ever complete" and rules out flaky/random hardware-style races: the
+completion chain traced in the section above is not just mechanically correct, it
+reproducibly completes note after note under realistic play.
+
+**Yet `plugin/la32_realistic_test.cpp` — the SAME note pattern, same `StuckPolicy::La32Stub`
+— reproducibly dies after only 2 completions**, both with an 8s boot-settle and with a 12s
+one (ruling out a race against the firmware's own boot-time test note, the first
+hypothesis tried). `ramGeneration()` stops climbing at the same point notes stop
+completing, confirming the CPU is genuinely wedged, not merely ignoring the panel.
+
+**The one remaining structural difference between the two binaries**: `la32_ctx_probe`
+calls `setVoiceCtxTap(true)`, which does not change any emulated CPU state (the tap never
+writes to `data`) but does make every write in the `0x2DC0-0x2FFF`/`0x33C0-0x34FF` windows
+take a mutex-and-vector-push instead of an early-return — real wall-clock overhead on a
+hot path. **Both outcomes are internally deterministic (reproduce exactly), but differ
+from each other** — which points at the relative real-time interleaving between the host
+thread feeding MIDI via `processBlock` and MAME's own real-time-throttled CPU thread as
+the actual variable, not note density, not boot timing, and not randomness. Extra
+overhead on the CPU thread shifts that interleaving enough to avoid whatever exact
+ordering corrupts things after context 1 or 2 in the unmodified case.
+
+**This is a real, characterized finding, not a dead end, but it is a different KIND of bug
+than everything above** — a cross-thread timing sensitivity in exactly when EXTINT/the
+status byte get delivered relative to what the firmware's mainline code is doing at that
+instant, not a wrong address or wrong value. Chasing it further needs deterministic
+single-stepping (comparing the exact instruction stream around the second and third note
+between a run that lives and one that dies) rather than more real-time wall-clock
+experiments, which by nature can only observe outcomes, not force a specific interleaving.
+That is a bigger investment than this session's remaining budget — a clean resume point
+for later, not a wall.
+
+**Practical takeaway for now**: keep `forwardNotesToFirmware` off by default (unchanged
+from v0.9.3). The LA32 handshake is proven correct in isolation; what remains is a
+timing-interleaving bug in how reliably that correct mechanism gets exercised under real
+threading, which is a meaningfully narrower problem than where this session started
+("nothing about the sound board is emulated at all").
+
+### Update, same session, later: found a genuine MAME core bug — the "timing race" above was actually this
+
+The user asked whether the freeze reproduces on the exact button combo they use (EDIT+ENTER
+into ROM Play, ENTER to play the demo song "Macho Memory") rather than only the synthetic
+MIDI tests. It does, identically — `plugin/demo_song_repro.cpp` (new tool this session)
+confirmed the PC sits at `0x29E9`/`0x29EE` the same way. But running `StuckPolicy::La32Stub`
+against it (self-contained - the demo song is the firmware playing itself, no host MIDI
+thread involved at all) surfaced something the earlier cross-thread-timing theory didn't
+predict: the handler entered the `0x3138` prologue **~22,000 times** for only 2 real
+completions, almost always bailing at `0x313D`.
+
+A live tap on the actual EXTINT line state (`D110Core::Port2Sample`, via the public
+`device_execute_interface::input_line_state()` - `i8x9x_device::port2_r()` itself is
+protected) settled it: **`m_stuckIntHigh` read false on essentially all 22,951 samples**
+taken while the handler was mid-bail. We were not holding the line. Something else was
+re-triggering the interrupt continuously regardless of our own bookkeeping.
+
+**The cause is in MAME's own MCS-96 core, not this plugin.** `cpu/mcs96/mcs96ops.lst`,
+the source the interpreter is generated from, dispatches an interrupt like this:
+
+```
+for(level = 7; level >= 0 && !(PSW & pending_irq & (1<<level)); level--);
+if(level >= 0) {
+    if(level != 7)
+        pending_irq &= ~(1<<level);
+    ...
+```
+
+**Level 7 is `IRQ_EXTINT` (`i8x9x.h`, `IRQ_EXTINT = 0x80`) — the one level explicitly
+excluded from having its pending bit cleared when taken.** `i8x9x_device::execute_set_input`
+only ever *sets* that bit on the rising edge (`pending_irq |= IRQ_EXTINT`); nothing clears
+it on the falling edge either. So once the first edge is raised, that bit stays latched
+forever, and the CPU re-takes the "same" stale interrupt on every opportunity, completely
+independent of what the external line is actually doing - which is exactly what the
+23,000-entry bail storm was.
+
+**Fixed without touching MAME**, same way every other intervention in this project works
+- through public APIs on a running machine: `mcs96_device::MCS96_INT_PENDING` is a public
+state slot (the same debug-state mechanism `IOC1` is already read through). Clearing bit
+`0x80` there in the same place the line itself is dropped:
+
+```cpp
+const uint64_t pending = m_cpu->state_int(mcs96_device::MCS96_INT_PENDING);
+m_cpu->set_state_int(mcs96_device::MCS96_INT_PENDING, pending & ~uint64_t(0x80));
+```
+
+**Result, the same demo song, before → after:**
+
+| | before | after |
+| --- | --- | --- |
+| handler prologue (`0x3138`) entries in 10s | ~22,000 (bail storm) | 3 |
+| LA32 services completed | 2 | **20**, holding steady over a 45s run |
+| screen | frozen from the start | shows the active-part indicator (a real voice sounding) for the whole run |
+
+This retroactively reframes the "cross-thread timing" finding from earlier in this
+document: what looked like sensitivity to relative thread interleaving was very likely
+this same pending-bit bug being coincidentally masked or exposed by how much wall-clock
+overhead shifted exactly when a stray bail happened to occur, not a genuine race in this
+plugin's own code. The `r52`→slot cross-reference fix and the busy-value/context-table
+corrections earlier in this document are unaffected and still correct - they are what
+made these 20 real completions possible in the first place.
+
+**SOLVED, same session, final update**: broadened the slot scan to accept EITHER busy
+value (`kSlotBusyValue = 0x40` or `kSlotBusyValueAlt = 0x20`) matched against the owning
+context. Reasoning: comparing all 32 slots' `edc0` values during the demo song showed most
+actively-sounding voices sit at `0x20` ("dispatched and playing, not currently awaiting
+anything") while only a voice genuinely mid-handshake shows `0x40` - a wait reached via the
+reset/reclaim loop at ROM `0x29BB` (walks `ee40[]`, zeroes `0x0C00`/`0x0C80`/`eec0`/`ef00`
+per slot but never touches `edc0`) leaves the slot at its stale prior value, which could be
+either. Accepting both fixed it completely:
+
+- **Demo song**: plays continuously for a full 60s run, `la32Services` climbing without
+  ever plateauing (60 → 3944), progressing through three songs back to back ("Macho
+  Memory" → "Jah May Kah!" → "Sugar Plum" - real D-110 demo song names), panel responsive
+  at the end.
+- **Stress-chord test** (`d110_hang_probe`'s policy comparison, the harness built
+  specifically to kill the panel fast): survived the full 30s test window, was previously
+  dying in 0-3s.
+- **Realistic single-note test** (`d110_la32_realistic`): 120 notes over 60s, `la32Services`
+  climbing steadily throughout, panel responsive at the end.
+
+**Shipped as the new default**: `D110AudioProcessor::setPoweredOn()` now calls
+`core.setStuckPolicy(D110Core::StuckPolicy::La32Stub)` unconditionally, and
+`forwardNotes` (`PluginProcessor.h`) defaults to `true` instead of `false` - the tradeoff
+that flag used to represent (part indicators vs. a live panel) no longer exists. VST3 and
+Standalone rebuilt and reinstalled with this change.
+
+**Old, now superseded — kept for the record**: "after 20 clean completions the demo song wedges again, deterministically,
+`PC` back at `0x29E9`/`0x29EE` with no further EXTINT activity at all (3 line-state samples in
+a 45-second run, i.e. genuinely no further servicing is being attempted - the slot scan is
+presumably no longer finding a match for whatever context is now being awaited). This is
+very likely the SAME "second stall" characterised earlier in this document (the `f460[]`
+voice-reclaim chain) or a related bookkeeping desync, now visible on its own without the
+pending-bit noise obscuring it. Next step: rerun the `f460`/dispatch merged trace
+(`plugin/la32_ctx_probe.cpp`) against the demo song specifically (it was only ever run
+against synthetic MIDI so far) to see what state the tables are in right at completion #20."
+
+### Update, same session, one layer further: it's a THIRD stall, inside dispatch itself
+
+Added `D110Core::osdRecordUnresolvedContext`/`lastUnresolvedContext_` (a tiny diagnostic:
+whenever the slot scan runs and finds nothing, remember which `r52` it was looking for)
+and dumped `edc0[]`/`ee01[]` live at the moment of the stall. Ground truth:
+
+```
+unresolved wait context: r52 = 1, stuck for 27321 consecutive ticks
+  slot  2: edc0=20  ee01(owner)=01      <- the context DOES have an owning slot...
+```
+
+**Slot 2 does belong to context 1 - but its `edc0` is `0x20`, not the `0x40` the scan
+requires.** This is not a bug in the scan. Re-reading the last dispatch events captured
+before the stall:
+
+```
+PC 29D7  eec0[2] = 06
+PC 29DF  ef00[2] = 06
+                                          <- and then NOTHING for slot 2, ever again
+```
+
+`0x20` and `0x40` are two DIFFERENT states, not "not yet 0x40 vs 0x40" as first assumed:
+comparing against the demo song's other 31 slots, MOST active, sounding voices sit at
+`0x20` - only the ones currently, momentarily awaiting an LA32 answer show `0x40`. So
+`0x20` = "dispatched and playing, not currently waiting on anything" and `0x40` =
+"between dispatch and being answered." Context 1 is being **reused** for a new note (its
+slot was previously assigned and had already settled at `0x20` from an earlier note), and
+the new dispatch for this reuse got as far as `eec0[2]=06; ef00[2]=06` and then simply
+never continued - never reaching its own `edc0=0x40` transition, let alone completing.
+
+**This means the true blocker is one layer deeper than anything answered so far**:
+dispatching a REUSED context depends on something - almost certainly reclaiming the
+hardware slot(s) the previous occupant of context 1 held, i.e. the exact "second stall"
+`f460[]`/`f3c0` chain machinery documented earlier in this file - and that reclaim itself
+seems to be what's actually stuck, with the OUTER symptom (parked at `0x29E9` for r52=1)
+just being where the CPU happens to sit while the deeper dependency is unmet. The `0x3061`-
+`0x30E3` dispatch subroutine (the one that successfully carried slots 13/24/25/31 through
+to `edc0=0x40` earlier in the same run) evidently branches into something that can itself
+block, and that inner block is what needs disassembling next - not another slot-scan tweak.
+
+### Where this leaves things — SOLVED
+
+Superseded by the section above ("SOLVED, same session, final update"): the third layer
+was the busy-value scan being too narrow (`0x40` only), not another stall. With both busy
+values accepted, the demo song, the stress-chord test, and the realistic single-note test
+all play indefinitely with the panel staying responsive. `StuckPolicy::La32Stub` and
+`forwardNotesToFirmware` are both on by default as of this session - this is a shipped
+feature now, not a workaround toggle. Kept the whole investigation trail above rather than
+cleaning it up, because the wrong turns (r52-as-voice-number, premature EXTINT clearing
+that turned out to be a MAME core bug, the 0x40-only scan) are exactly what the next
+LA32-shaped problem on a sibling machine (D-10, D-20, MT-32) will need to avoid repeating.

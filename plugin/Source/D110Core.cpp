@@ -71,8 +71,19 @@ class D110Osd : public osd_common_t {
 	int m_extIntPhase = 0;
 	bool m_extIntLevel = false;
 	bool m_stuckIntHigh = false;
+	int m_stuckIntHighTicks = 0; // watchdog: ticks since ASSERT with no la32NeedClear yet
+	// Per-voice-context note state, machine thread only - see noteWatch().
+	uint8_t m_ctxNote[D110Core::kNumVoiceContexts] = {};
+	uint8_t m_ctxVelocity[D110Core::kNumVoiceContexts] = {};
+	uint8_t m_ctxPart[D110Core::kNumVoiceContexts] = {};
+	bool m_ctxSounding[D110Core::kNumVoiceContexts] = {};
+	bool m_ctxNoteFresh[D110Core::kNumVoiceContexts] = {};
+	int m_la32WaitTicks = 0; // how long the firmware has been in the current LA32 wait
+	std::chrono::steady_clock::time_point m_ctxOnTime[D110Core::kNumVoiceContexts];
 	uint8_t *m_regFile = nullptr;
 	memory_passthrough_handler m_la32Tap;
+	memory_passthrough_handler m_voiceCtxTap;
+	memory_passthrough_handler m_dispatchTap;
 	bool m_la32Pending = false;   // a status byte is waiting to be collected
 	bool m_la32NeedClear = false; // the handler has taken it; drop the line
 	uint8_t m_la32Status = 0xff;
@@ -92,6 +103,60 @@ class D110Osd : public osd_common_t {
 	// Resolve the panel ioports and the two devices we read. Retried every update()
 	// until they exist: locking in a failed lookup on the first call would silently
 	// leave the panel dead for the whole session.
+	// Turns the firmware's own writes into note events. Runs on the CPU thread, inside the
+	// write tap, so it sees them at exact emulated time rather than a frame later.
+	//
+	// The note-start routine (ROM 0x278B/0x2790/0x2795) writes note, velocity and part for
+	// one context back to back, so the part write is what completes the triple. Release is
+	// f460[ctx] bit 6, set by the reclaim path the note-off search at 0x2496 ends in - see
+	// the long comment on D110Core::NoteEvent.
+	void noteWatch(uint16_t ramsOffset, uint8_t value) {
+		if (ramsOffset >= D110Core::kNoteTable &&
+		    ramsOffset < D110Core::kNoteTable + D110Core::kNumVoiceContexts) {
+			const int ctx = ramsOffset - D110Core::kNoteTable;
+			// Bit 7 set means "released but sustained" - a re-marking of a note already
+			// sounding, not a new one, so it must not restart it.
+			if ((value & 0x80) == 0) {
+				m_ctxNote[ctx] = value;
+				m_ctxNoteFresh[ctx] = true; // this context is mid-triple
+			}
+			return;
+		}
+		if (ramsOffset >= D110Core::kVelocityTable &&
+		    ramsOffset < D110Core::kVelocityTable + D110Core::kNumVoiceContexts) {
+			m_ctxVelocity[ramsOffset - D110Core::kVelocityTable] = value;
+			return;
+		}
+		if (ramsOffset >= D110Core::kPartTable &&
+		    ramsOffset < D110Core::kPartTable + D110Core::kNumVoiceContexts) {
+			const int ctx = ramsOffset - D110Core::kPartTable;
+			const uint8_t part = uint8_t(value >> 4); // stored as part * 16
+			if (part > 8) return;                     // 0-7 voice parts, 8 rhythm
+			m_ctxPart[ctx] = part;
+			// Third write of the triple completes a note - but ONLY if this run actually
+			// began with a note write. The part byte is also written on its own in other
+			// situations, and firing on those emitted note 0 out of a stale context, which
+			// mt32emu rejected as "Attempted to play invalid key 0".
+			if (m_ctxNoteFresh[ctx] && m_ctxNote[ctx] > 0 && m_ctxNote[ctx] <= 127) {
+				core->osdPushNoteEvent({part, m_ctxNote[ctx], m_ctxVelocity[ctx], true});
+				m_ctxSounding[ctx] = true;
+				m_ctxOnTime[ctx] = std::chrono::steady_clock::now();
+			}
+			m_ctxNoteFresh[ctx] = false;
+			return;
+		}
+		if (ramsOffset >= D110Core::kReleaseTable &&
+		    ramsOffset < D110Core::kReleaseTable + D110Core::kNumVoiceContexts) {
+			const int ctx = ramsOffset - D110Core::kReleaseTable;
+			if ((value & D110Core::kReleasedBit) && m_ctxSounding[ctx]) {
+				core->osdPushNoteEvent({m_ctxPart[ctx], m_ctxNote[ctx], 0, false});
+				m_ctxSounding[ctx] = false;
+				core->osdAddNoteDuration(std::chrono::duration<double, std::milli>(
+					std::chrono::steady_clock::now() - m_ctxOnTime[ctx]).count());
+			}
+		}
+	}
+
 	void resolveDevices() {
 		if (m_resolved || !m_machine) return;
 		device_t &root = m_machine->root_device();
@@ -150,6 +215,46 @@ class D110Osd : public osd_common_t {
 					m_la32Pending = false;
 					m_la32NeedClear = true; // drop the interrupt line on the next tick
 					core->osdCountLa32Service();
+				});
+		}
+
+		// Diagnostic write tap over the voice-context bookkeeping arrays (f3c0..f480) - see
+		// D110Core.h's kVoiceCtxTapBase. Unlike the LA32 status tap this range IS claimed by
+		// the address map (it is real "rams"), so a plain write tap that never touches the
+		// data just observes; it exists to answer "does the firmware's own housekeeping ever
+		// reach f460[] at all" instead of guessing further from a static disassembly.
+		if (m_cpu) {
+			m_voiceCtxTap = m_cpu->space(AS_PROGRAM).install_write_tap(
+				D110Core::kVoiceCtxTapBase,
+				D110Core::kVoiceCtxTapBase + D110Core::kVoiceCtxTapSpan - 1,
+				"d110_voice_ctx",
+				[this](offs_t addr, u16 &data, u16 mem_mask) {
+					// Normalised to the rams array offset (addr - 0xC000) so events line up
+					// with kSlotStateTable/kSlotContextTable and everything else that reads
+					// the same array through D110Core::getRam()/m_ram, rather than every
+					// caller having to know about the CPU's own address window.
+					const uint16_t pc = uint16_t(m_cpu->pc());
+					const uint16_t ramsOffset = uint16_t(addr - 0xc000);
+					if (mem_mask & 0x00ff) {
+						core->osdLogCtxEvent(pc, ramsOffset, uint8_t(data & 0xff));
+						noteWatch(ramsOffset, uint8_t(data & 0xff));
+					}
+					if (mem_mask & 0xff00) {
+						core->osdLogCtxEvent(pc, uint16_t(ramsOffset + 1), uint8_t((data >> 8) & 0xff));
+						noteWatch(uint16_t(ramsOffset + 1), uint8_t((data >> 8) & 0xff));
+					}
+				});
+			m_dispatchTap = m_cpu->space(AS_PROGRAM).install_write_tap(
+				D110Core::kDispatchTapBase,
+				D110Core::kDispatchTapBase + D110Core::kDispatchTapSpan - 1,
+				"d110_dispatch",
+				[this](offs_t addr, u16 &data, u16 mem_mask) {
+					const uint16_t pc = uint16_t(m_cpu->pc());
+					const uint16_t ramsOffset = uint16_t(addr - 0xc000);
+					if (mem_mask & 0x00ff)
+						core->osdLogCtxEvent(pc, ramsOffset, uint8_t(data & 0xff));
+					if (mem_mask & 0xff00)
+						core->osdLogCtxEvent(pc, uint16_t(ramsOffset + 1), uint8_t((data >> 8) & 0xff));
 				});
 		}
 
@@ -275,6 +380,15 @@ public:
 		// which is dense enough to see which loop the firmware is sitting in.
 		core->osdSamplePc(pc);
 
+		// One-off diagnostic: ground truth for the actual EXTINT line state (via the
+		// public device_execute_interface::input_line_state, since i8x9x's own port2_r()
+		// is protected) right around the handler's own pin check, instead of reasoning
+		// about MAME's i8x9x source further.
+		if (pc >= 0x3138 && pc <= 0x3140)
+			core->osdLogPort2Sample(
+				pc, uint8_t(m_cpu->input_line_state(i8x9x_device::EXTINT_LINE)),
+				m_stuckIntHigh, m_la32Pending);
+
 		// Answer the firmware when it is caught waiting for the sound board. Everything
 		// here is conditional on the program counter, so a machine running normally is
 		// never touched.
@@ -282,14 +396,39 @@ public:
 			(pc == D110Core::kStuckLoopPc || pc == D110Core::kStuckLoopPcAlt);
 
 		// Once the handler has collected the status byte, drop the line so it can rise
-		// again for the next voice. Also drop it if the firmware has left the wait.
+		// again for the next voice.
+		//
+		// 2026-07-31: chased what looked like a clear-too-early race (see the superseded
+		// comment in git history) before finding the REAL cause with a live EXTINT-state
+		// tap (`d110_demo_song_repro`, `Port2Sample`): `m_stuckIntHigh` read false on
+		// ~all of 22,951 samples taken while the handler was bailing at 0x313D thousands
+		// of times a second - i.e. WE were not holding the line, yet the CPU kept
+		// re-entering anyway. The cause is in MAME's own MCS-96 core, not this stub:
+		// `mcs96ops.lst`'s interrupt dispatch clears `pending_irq` for the level just
+		// taken with `if (level != 7) pending_irq &= ~(1<<level)` - EXTINT is level 7,
+		// the ONE level explicitly excluded. Once the rising edge sets that bit
+		// (`i8x9x_device::execute_set_input`, `pending_irq |= IRQ_EXTINT`), nothing in
+		// the core ever clears it again - not on the falling edge, not on take - so the
+		// CPU re-takes the same stale interrupt continuously regardless of what we do
+		// with the external line. This, not any timing race, is what produced tens of
+		// thousands of handler entries for a handful of real services.
+		//
+		// Fixed by clearing it ourselves: `MCS96_INT_PENDING` is a public state slot
+		// (same debug-state API IOC1 is already read through), so no MAME patch is
+		// needed - mask off bit 0x80 (IRQ_EXTINT, private in i8x9x.h, hence the literal)
+		// in the same place the line itself is dropped.
 		if (m_stuckIntHigh && (m_la32NeedClear || !stuck)) {
 			m_cpu->set_input_line(i8x9x_device::EXTINT_LINE, CLEAR_LINE);
+			const uint64_t pending = m_cpu->state_int(mcs96_device::MCS96_INT_PENDING);
+			m_cpu->set_state_int(mcs96_device::MCS96_INT_PENDING, pending & ~uint64_t(0x80));
 			m_stuckIntHigh = false;
 			m_la32NeedClear = false;
+			m_stuckIntHighTicks = 0;
 		}
 
-		if (!stuck) return;
+		// Leaving the wait resets the response-delay counter, so the next voice waits its
+		// own full delay rather than inheriting this one's elapsed time.
+		if (!stuck) { m_la32WaitTicks = 0; return; }
 
 		// Record whether the CPU is even willing to accept the external interrupt.
 		core->osdRecordIoc1(int(m_cpu->state_int(i8x9x_device::I8X9X_IOC1)));
@@ -306,6 +445,7 @@ public:
 			if (!m_stuckIntHigh) {
 				m_cpu->set_input_line(i8x9x_device::EXTINT_LINE, ASSERT_LINE);
 				m_stuckIntHigh = true;
+				m_stuckIntHighTicks = 0;
 				core->osdCountStuckRelease();
 			} else {
 				// Give it a falling edge between pulses even while still stuck.
@@ -314,20 +454,42 @@ public:
 			}
 			break;
 		case D110Core::StuckPolicy::La32Stub:
-			// Behave as the sound board would: announce that the very voice being waited
-			// on has finished, and let the firmware's own handler do the rest. The status
-			// byte's low five bits are the voice number PLUS ONE - the handler doubles
-			// them and subtracts two - and bit 7 must be clear, since set means there is
-			// nothing to report.
-			if (m_regFile && !m_la32Pending && !m_la32NeedClear && !m_stuckIntHigh) {
+			// Report the hardware voice SLOT that dispatch assigned to the SPECIFIC
+			// context the CPU is parked waiting for right now, and let the firmware's own
+			// handler do the rest. Answering any busy slot at random was not enough once
+			// more than one note is pending (any chord): the handler ran and consumed real
+			// status bytes, but if it wasn't the slot backing the context in r52, the loop
+			// the CPU is actually sitting in never got its flag set and the panel stayed
+			// dead - measured 2026-07-31. Dispatch wrote r52's low byte into ee01[slot]
+			// (rams 0x2E01+2*slot, ROM 0x361A), so the reverse lookup is exact: find n
+			// with ee01[n] == r52 and edc0[n] still busy.
+			// Make the firmware wait as the real chip would, if asked to. Counted in
+			// midiTick periods; 0 answers as soon as the wait is noticed.
+			if (++m_la32WaitTicks <= core->la32ResponseDelay()) break;
+
+			if (m_ram && m_regFile && !m_la32Pending && !m_la32NeedClear && !m_stuckIntHigh) {
 				const int reg = D110Core::kWaitIndexReg - D110Core::kRegFileBase;
-				const uint16_t voice = uint16_t(m_regFile[reg] | (m_regFile[reg + 1] << 8));
-				m_la32Status = D110Core::encodeLa32Status(core->la32StatusMode(), voice);
-				m_la32Pending = true;
-				// The handler refuses to do anything unless the pin is still high when it
-				// runs, so raise it and hold it until the status has been collected.
-				m_cpu->set_input_line(i8x9x_device::EXTINT_LINE, ASSERT_LINE);
-				m_stuckIntHigh = true;
+				const uint8_t context = m_regFile[reg];
+				int slot = -1;
+				for (int n = 0; n < D110Core::kNumHardwareVoices; ++n) {
+					const uint8_t busy = m_ram[D110Core::kSlotStateTable + 2 * n];
+					if ((busy == D110Core::kSlotBusyValue || busy == D110Core::kSlotBusyValueAlt) &&
+					    m_ram[D110Core::kSlotContextTable + 2 * n] == context) {
+						slot = n;
+						break;
+					}
+				}
+				if (slot >= 0) {
+					m_la32Status = D110Core::encodeLa32Status(core->la32StatusMode(), uint16_t(slot));
+					m_la32Pending = true;
+					// The handler refuses to do anything unless the pin is still high when
+					// it runs, so raise it and hold it until the status has been collected.
+					m_cpu->set_input_line(i8x9x_device::EXTINT_LINE, ASSERT_LINE);
+					m_stuckIntHigh = true;
+					m_stuckIntHighTicks = 0;
+				} else {
+					core->osdRecordUnresolvedContext(context);
+				}
 			}
 			break;
 		case D110Core::StuckPolicy::Off:
@@ -447,10 +609,30 @@ public:
 	  0x040000u | (uint32_t(((part) * 246) / 128) << 8) | uint32_t(((part) * 246) % 128), \
 	  246, "Tone Temporary" }
 
+// The Rhythm Setup Area: 85 entries of 4 bytes (timbre, output level, panpot, reverb
+// switch) mapping each drum key to a tone. RAM 0x2090 - immediately after the 144 bytes of
+// Timbre Temporary - and 0x2090 + 340 lands exactly on the measured Tone Temporary base
+// 0x21E4, which is what makes the base certain rather than assumed. SysEx 0x030110, per
+// munt's own MemoryRegion table.
+//
+// It has to be split because emitRegionSysex builds ONE DT1 into a 256-byte buffer and
+// silently truncates anything longer - 340 bytes would lose its tail. 128 is the natural
+// chunk: adding 128 to a Roland address is exactly +1 on the middle seven-bit byte and
+// leaves the low one alone, so the arithmetic below stays trivially correct.
+#define D110_RHYTHM(chunk, len) \
+	{ uint16_t(0x2090 + (chunk) * 128), \
+	  0x030110u + (uint32_t(chunk) << 8), \
+	  (len), "Rhythm Setup" }
+
 const D110Core::MirrorRegion D110Core::kMirrorRegions[] = {
 	// 9 parts (8 voice + rhythm) of 16 bytes; SysEx 0x030000, part 2 at 0x030010,
 	// rhythm at 0x030100. 144 bytes fits one DT1, so it goes as a single block.
 	{ 0x2000, 0x030000, 9 * 16, "Timbre Temporary" },
+
+	// Which drum sits on which key. Without this the engine keeps the MT-32's own default
+	// rhythm map, and the D-110's demo songs - which drive the rhythm part hard - log
+	// "Attempted to play unmapped key 25" and drop those hits silently.
+	D110_RHYTHM(0, 128), D110_RHYTHM(1, 128), D110_RHYTHM(2, 84),
 
 	// The eight tones the parts are actually playing. This is what carries Edit's deep
 	// pages - the partials, the waveforms, the pitch/TVF/TVA envelopes - which until now
@@ -490,7 +672,7 @@ static_assert(kMaxRegionBytes >= 246, "a Tone Temporary region no longer fits in
 D110Core::D110Core()
 	: lcd(kLcdBytes, 0), ram(kRamSize, 0),
 	  sysexBuf((size_t)kSysexSlots * kMaxSysexBytes, 0), sysexLen(kSysexSlots, 0),
-	  midiBuf(kMidiSlots, 0) {
+	  midiBuf(kMidiSlots, 0), noteBuf(kNoteSlots) {
 	mirrorPrev.resize(kNumMirrorRegions);
 	for (int i = 0; i < kNumMirrorRegions; ++i) {
 		// A region longer than one DT1 would be truncated by emitRegionSysex and still
@@ -776,6 +958,58 @@ std::vector<std::string> D110Core::takeLogLines() {
 	std::lock_guard<std::mutex> lock(logMutex);
 	std::vector<std::string> out;
 	out.swap(logLines);
+	return out;
+}
+
+// ---- voice-context array write tap -----------------------------------------
+
+void D110Core::osdLogCtxEvent(uint16_t pc, uint16_t addr, uint8_t value) {
+	if (!voiceCtxTap.load(std::memory_order_acquire)) return;
+	std::lock_guard<std::mutex> lock(ctxMutex);
+	if (ctxEvents.size() >= kMaxCtxEvents) return;
+	ctxEvents.push_back({pc, addr, value});
+}
+
+std::vector<D110Core::CtxEvent> D110Core::takeCtxEvents() {
+	std::lock_guard<std::mutex> lock(ctxMutex);
+	std::vector<CtxEvent> out;
+	out.swap(ctxEvents);
+	return out;
+}
+
+// ---- notes recovered from the firmware --------------------------------------
+
+void D110Core::osdPushNoteEvent(const NoteEvent &ev) {
+	if (noteLoggingOn())
+		osdLogNote({noteLogElapsedMs(), ev.part, ev.note, ev.velocity, ev.on});
+	const int w = nW.load(std::memory_order_relaxed);
+	const int next = (w + 1) & kNoteMask;
+	// Full means the audio thread has stalled; dropping is the only safe answer, and a
+	// dropped note-off would hang a voice far more audibly than a dropped note-on.
+	if (next == nR.load(std::memory_order_acquire)) return;
+	noteBuf[(size_t)w] = ev;
+	nW.store(next, std::memory_order_release);
+	if (ev.on) noteOnCount.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool D110Core::popNoteEvent(NoteEvent &out) {
+	const int r = nR.load(std::memory_order_relaxed);
+	if (r == nW.load(std::memory_order_acquire)) return false;
+	out = noteBuf[(size_t)r];
+	nR.store((r + 1) & kNoteMask, std::memory_order_release);
+	return true;
+}
+
+void D110Core::osdLogPort2Sample(uint16_t pc, uint8_t port2, bool stuckIntHigh, bool la32Pending) {
+	std::lock_guard<std::mutex> lock(port2Mutex);
+	if (port2Samples.size() >= kMaxPort2Samples) return;
+	port2Samples.push_back({pc, port2, stuckIntHigh, la32Pending});
+}
+
+std::vector<D110Core::Port2Sample> D110Core::takePort2Samples() {
+	std::lock_guard<std::mutex> lock(port2Mutex);
+	std::vector<Port2Sample> out;
+	out.swap(port2Samples);
 	return out;
 }
 

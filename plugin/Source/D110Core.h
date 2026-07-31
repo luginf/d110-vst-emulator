@@ -207,6 +207,22 @@ public:
 	// How many times the stub has handed the firmware's handler a status byte.
 	uint64_t la32Services() const { return la32Count.load(std::memory_order_acquire); }
 	void osdCountLa32Service() { la32Count.fetch_add(1, std::memory_order_relaxed); }
+	// Diagnostic (2026-07-31): the last r52 context the slot scan looked for and could NOT
+	// find a busy, matching hardware slot for, plus how many consecutive ticks it has been
+	// unresolved. Answers "is the firmware waiting for a voice that was never (or no
+	// longer) marked busy" directly, instead of inferring it from a trace.
+	void osdRecordUnresolvedContext(uint8_t context) {
+		if (context == lastUnresolvedContext.load(std::memory_order_relaxed))
+			unresolvedStreak.fetch_add(1, std::memory_order_relaxed);
+		else {
+			lastUnresolvedContext.store(context, std::memory_order_relaxed);
+			unresolvedStreak.store(1, std::memory_order_relaxed);
+		}
+	}
+	uint8_t lastUnresolvedContext_() const {
+		return uint8_t(lastUnresolvedContext.load(std::memory_order_acquire));
+	}
+	uint64_t unresolvedStreak_() const { return unresolvedStreak.load(std::memory_order_acquire); }
 	// Every read of the status register that reached the tap, whether or not there was
 	// anything to hand over. Distinguishes "the tap is not installed" from "the firmware
 	// never got as far as reading".
@@ -217,6 +233,47 @@ public:
 	static constexpr int kWaitIndexReg = 0x52;
 	static constexpr int kRegFileBase = 0x18;
 
+	// 2026-07-31: r52 turned out to be the WRONG source for "which voice". It is the
+	// mainline's own logical wait-context index, used only to address f440[] - not the
+	// hardware voice slot the sound board would report. Traced from the dispatch routine
+	// at ROM 0x3615 (`stb 50, ee00[54]` / `stb 52, ee01[54]` / ... / `stb #20, edc0[54]`):
+	// register 54 (word, already slot*2) IS the hardware voice slot, and dispatch records
+	// the logical context (r52's value at dispatch time) into ee01[slot] for the handler to
+	// cross-reference later - so the handler never needs us to know r52 at all, only the
+	// TRUE slot number. rams 0x2DC0 + 2*slot ("edc0[slot]" at CPU address 0xEDC0, which is
+	// rams offset - 0xC000) marks a dispatched voice awaiting completion and reverts to
+	// 0x80 (idle) once the handler has serviced it - so the live table itself says which
+	// slot(s) are genuinely pending, one scan at a time, chords included.
+	//
+	// The busy value is 0x40, NOT the 0x20 the disassembly listing at 0x3646 seemed to say -
+	// `d110_la32_lifecycle_probe` played one real note and read the table back afterwards:
+	// exactly two slots (0 and 1 - one D-110 note uses two LA32 partials) flipped 80 -> 40
+	// and stayed there. Something between 0x364E and the unread rest of that routine must
+	// overwrite the 0x20 the listing shows with 0x40 before the CPU is done dispatching;
+	// trust the measurement over the partial disassembly.
+	static constexpr uint16_t kSlotStateTable = 0x2DC0;
+	static constexpr int kNumHardwareVoices = 32;
+	static constexpr uint8_t kSlotBusyValue = 0x40;
+	// 2026-07-31, demo song: most SUSTAINING voices sit at 0x20, not 0x40 - only a voice
+	// genuinely mid-handshake shows 0x40. A wait reached via the reset loop at ROM 0x29BB
+	// (walks ee40[], zeroes 0x0C00/0x0C80/eec0/ef00 for each slot, but never touches edc0)
+	// left its slot at the stale 0x20 from before, and the scan found nothing until this
+	// was accepted too - measured with `d110_demo_song_repro`'s unresolved-context dump.
+	static constexpr uint8_t kSlotBusyValueAlt = 0x20;
+	static constexpr uint8_t kSlotIdleValue = 0x80;
+
+	// Scanning for ANY busy slot is not enough once more than one note is pending at
+	// once (any chord): the wrong slot can be answered while the loop the CPU is
+	// ACTUALLY parked in (a specific r52 context) never gets its flag set, so the panel
+	// stays dead even though the handler is genuinely running and genuinely consuming
+	// status bytes - measured 2026-07-31, `d110_hang_probe`'s policy comparison. Dispatch
+	// (`stb 52, ee01[54]`, ROM 0x361A) records r52's LOW BYTE into ee01[slot], so the
+	// reverse lookup is exact: given the r52 the wait loop is polling right now, the slot
+	// to report is whichever n has ee01[n] == (r52 & 0xff). ee01 sits one byte past
+	// ee00/kSlotWordTable, i.e. rams 0x2E01 + 2*n (CPU 0xEE01, minus the same 0xC000 the
+	// rest of this window uses).
+	static constexpr uint16_t kSlotContextTable = 0x2E01;
+
 	// How to encode the voice number in the status byte. The handler treats bit 7 as an
 	// event class and derives the index differently on each path - with bit 7 clear it
 	// doubles the low bits and subtracts two, with bit 7 set and bit 5 clear it doubles
@@ -226,6 +283,15 @@ public:
 	//   1  v & 0x1F            bit 7 clear, index comes out as v-1
 	//   2  0x80 | (v & 0x1F)   bit 7 set, bit 5 clear, index v
 	//   3  0x80 | ((v+1)&0x1F) bit 7 set, bit 5 clear, index v+1
+	// How long the stub makes the firmware wait before answering, in midiTick periods
+	// (1/3125 s each, so 1 tick = 0.32 ms). The real LA32 took real time to accept a voice;
+	// the stub answers as fast as it can notice, which is far quicker. If the firmware's
+	// sequencer paces itself off those waits at all, the demo songs run too fast - which is
+	// exactly what they do. This knob exists to settle that by experiment rather than
+	// argument: sweep it and watch the note-on rate.
+	void setLa32ResponseDelay(int ticks) { la32Delay.store(ticks, std::memory_order_release); }
+	int la32ResponseDelay() const { return la32Delay.load(std::memory_order_acquire); }
+
 	void setLa32StatusMode(int mode) { la32Mode.store(mode, std::memory_order_release); }
 	int la32StatusMode() const { return la32Mode.load(std::memory_order_acquire); }
 	static uint8_t encodeLa32Status(int mode, uint16_t voice);
@@ -241,6 +307,128 @@ public:
 	void osdLogLine(const char *line);
 	// Takes everything captured so far and empties the buffer.
 	std::vector<std::string> takeLogLines();
+
+	// --- notes recovered from the firmware itself ------------------------------
+	// The firmware plays its own demo songs (ROM Play) internally and does NOT transmit
+	// them - measured: its serial TX emitted one 0x00 byte in 40 seconds. So the demo song
+	// moved the part indicators and produced silence, because mt32emu never heard a note.
+	//
+	// It does, however, write every note it starts into its own voice-context arrays, and
+	// those are readable. Confirmed by controlled experiment (plugin/note_source_probe.cpp):
+	// playing note 60 velocity 100 on channel 2 produced f400[ctx]=0x3C, f420[ctx]=0x64,
+	// f3a0[ctx]=0x00; note 36 velocity 40 on channel 5 produced 0x24, 0x28, 0x30. So:
+	//
+	//   f400[ctx]  (rams 0x3400 + ctx)  MIDI note number; bit 7 set later means
+	//                                   "key released but held by the sustain pedal"
+	//   f420[ctx]  (rams 0x3420 + ctx)  velocity
+	//   f3a0[ctx]  (rams 0x33A0 + ctx)  part * 16 - so 0x00 = part 1, 0x30 = part 4,
+	//                                   0x80 = the rhythm part (index 8)
+	//
+	// Written consecutively by one routine (ROM 0x278B/0x2790/0x2795), so the third write
+	// completes the triple. The release side is ROM 0x2496's note-off search, which walks
+	// the part's voice chain for a context whose f400 matches the note being released and
+	// ends at the reclaim path that sets f460[ctx] bit 6 - that bit is the note-off signal,
+	// whichever path sets it (ordinary release, voice stealing or all-notes-off).
+	//
+	// Events are queued here by the machine thread and drained by the audio thread, which
+	// turns them into mt32emu playMsgOnPart() calls. That makes the firmware the single
+	// source of truth for what is sounding, exactly as the hardware is.
+	struct NoteEvent {
+		uint8_t part;     // 0-7 voice parts, 8 rhythm - matches mt32emu's part numbering
+		uint8_t note;
+		uint8_t velocity; // 0 on a note-off
+		bool on;
+	};
+	static constexpr uint16_t kNoteTable = 0x3400;      // f400[]
+	static constexpr uint16_t kVelocityTable = 0x3420;  // f420[]
+	static constexpr uint16_t kPartTable = 0x33A0;      // f3a0[]
+	static constexpr uint16_t kReleaseTable = 0x3460;   // f460[], bit 6 = reclaimed
+	static constexpr uint8_t kReleasedBit = 0x40;
+	static constexpr int kNumVoiceContexts = 32;
+	// Copies one pending event into `out` and returns true, or false when the queue is
+	// empty. Safe to call from the audio thread.
+	bool popNoteEvent(NoteEvent &out);
+	void osdPushNoteEvent(const NoteEvent &ev);
+	// How many note-ons the firmware has handed over - diagnostics, so "the demo song is
+	// silent" can be told apart from "the demo song is not playing".
+	uint64_t firmwareNoteOns() const { return noteOnCount.load(std::memory_order_acquire); }
+	uint64_t firmwareNoteOffs() const { return noteOffCount.load(std::memory_order_acquire); }
+	// Mean time a note was held, in milliseconds - the measurement that tells "the song is
+	// genuinely dense" apart from "every note is being cut to a click", which sounds like a
+	// runaway tempo even when the note rate is right.
+	double meanNoteMs() const {
+		const uint64_t n = noteOffCount.load(std::memory_order_acquire);
+		return n ? double(noteMsTotal.load(std::memory_order_acquire)) / double(n) : 0.0;
+	}
+	// Timestamped log of the first events, purely diagnostic: the shape of the stream is
+	// what distinguishes "one musical note is firing several times, once per partial" from
+	// "the sequencer itself is running fast". Both inflate the note rate; only the first
+	// puts several identical notes inside the same millisecond.
+	struct NoteLog { double ms; uint8_t part, note, velocity; bool on; };
+	void osdLogNote(const NoteLog &e) {
+		std::lock_guard<std::mutex> lock(noteLogMutex);
+		if (noteLog.size() < 400) noteLog.push_back(e);
+	}
+	std::vector<NoteLog> takeNoteLog() {
+		std::lock_guard<std::mutex> lock(noteLogMutex);
+		std::vector<NoteLog> out;
+		out.swap(noteLog);
+		return out;
+	}
+	void startNoteLog() {
+		std::lock_guard<std::mutex> lock(noteLogMutex);
+		noteLog.clear();
+		noteLogStart = std::chrono::steady_clock::now();
+		noteLogging = true;
+	}
+	double noteLogElapsedMs() const {
+		return std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - noteLogStart).count();
+	}
+	bool noteLoggingOn() const { return noteLogging; }
+
+	void osdAddNoteDuration(double ms) {
+		noteMsTotal.fetch_add(uint64_t(ms), std::memory_order_relaxed);
+		noteOffCount.fetch_add(1, std::memory_order_relaxed);
+	}
+
+	// --- diagnostics: the voice-context bookkeeping arrays, live ---------------
+	// f3c0/f400/f440/f460/f480 (CPU 0xF3C0-0xF4FF, rams 0x33C0-0x34FF - the same
+	// "addr - 0xC000" mapping as the sound-board window) are where the second stall
+	// (docs/la32_interface.md, "a SECOND stall behind the first") lives: the
+	// voice-reclaim scan at 0x2673 waits on f460[] bit 6, which nothing in the LA32
+	// completion handler ever sets. This is a WRITE tap - unlike setLogUnmapped, it
+	// works on a range the address map already claims - so it can say whether the
+	// firmware's own housekeeping ever reaches these arrays at all while La32Stub is
+	// answering the first wait, instead of guessing further from a static disassembly.
+	// CPU-visible address, NOT the rams array index - fixed_r/fixed_w route CPU
+	// 0xC000-0xFFFF to rams[addr-0xC000], and a write tap on the program space has to be
+	// installed at the address the CPU actually issues (0xF3C0), not the rams offset
+	// (0x33C0) - a first attempt used the rams offset directly and silently tapped ROM
+	// space instead, which of course the CPU never writes to (0 events, every time).
+	static constexpr uint16_t kVoiceCtxTapBase = 0xF3A0;
+	static constexpr uint16_t kVoiceCtxTapSpan = 0x160; // covers f3a0..f4ff
+	// Second window, same tap machinery, same osdLogCtxEvent stream (both taps run on the
+	// single CPU thread, so appends land in true chronological order without needing a
+	// separate sequence number): the DISPATCH tables (edc0/ee00/ee01/eec0/ef80, CPU
+	// 0xEDC0-0xEFFF, rams 0x2DC0-0x2FFF - "addr - 0xC000" again). Watching dispatch and
+	// completion in one merged, time-ordered log is what answering "why does only some
+	// fraction of dispatched voices ever complete" needs.
+	static constexpr uint16_t kDispatchTapBase = 0xEDC0;
+	static constexpr uint16_t kDispatchTapSpan = 0x240; // covers edc0..efff
+	void setVoiceCtxTap(bool on) { voiceCtxTap.store(on, std::memory_order_release); }
+	bool voiceCtxTapEnabled() const { return voiceCtxTap.load(std::memory_order_acquire); }
+	struct CtxEvent { uint16_t pc; uint16_t addr; uint8_t value; };
+	void osdLogCtxEvent(uint16_t pc, uint16_t addr, uint8_t value);
+	std::vector<CtxEvent> takeCtxEvents();
+
+	// One-off diagnostic (2026-07-31): is port2 bit 2 genuinely low when the handler bails
+	// at 0x313D, or is something else going on? Logged only for PC in [0x3138,0x3140],
+	// with our own bookkeeping (m_stuckIntHigh) alongside the CPU's own port2_r() so the
+	// two can be compared directly instead of reasoning about MAME's i8x9x source further.
+	struct Port2Sample { uint16_t pc; uint8_t port2; bool stuckIntHigh; bool la32Pending; };
+	void osdLogPort2Sample(uint16_t pc, uint8_t port2, bool stuckIntHigh, bool la32Pending);
+	std::vector<Port2Sample> takePort2Samples();
 
 	// --- diagnostics: where is the CPU actually spending its time? -------------
 	// Samples the program counter densely while the machine runs. When the firmware
@@ -353,12 +541,36 @@ private:
 	std::atomic<uint64_t> stuckCount{0};
 	std::atomic<int> stuckIoc1{-1};
 	std::atomic<uint64_t> la32Count{0}, la32ReadCount{0};
+	std::atomic<int> lastUnresolvedContext{-1};
+	std::atomic<uint64_t> unresolvedStreak{0};
 	std::atomic<int> la32Mode{0};
+	std::atomic<int> la32Delay{0};
 
 	std::atomic<bool> logUnmapped{false};
 	mutable std::mutex logMutex;
 	std::vector<std::string> logLines;
 	static constexpr size_t kMaxLogLines = 200000;
+
+	// Note events recovered from the firmware: machine thread produces, audio thread
+	// consumes. Fixed slots so the audio thread never allocates or blocks.
+	static constexpr int kNoteSlots = 512;
+	static constexpr int kNoteMask = kNoteSlots - 1;
+	std::vector<NoteEvent> noteBuf;
+	std::atomic<int> nW{0}, nR{0};
+	std::atomic<uint64_t> noteOnCount{0}, noteOffCount{0}, noteMsTotal{0};
+	mutable std::mutex noteLogMutex;
+	std::vector<NoteLog> noteLog;
+	std::chrono::steady_clock::time_point noteLogStart;
+	bool noteLogging = false;
+
+	std::atomic<bool> voiceCtxTap{false};
+	mutable std::mutex ctxMutex;
+	std::vector<CtxEvent> ctxEvents;
+	static constexpr size_t kMaxCtxEvents = 200000;
+
+	mutable std::mutex port2Mutex;
+	std::vector<Port2Sample> port2Samples;
+	static constexpr size_t kMaxPort2Samples = 50000;
 
 	// PC histogram: written only by the machine thread, read under the mutex.
 	std::atomic<bool> pcSampling{false};

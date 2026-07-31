@@ -165,6 +165,102 @@ target_link_libraries(d110_la32_probe PRIVATE
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_la32_probe PRIVATE /ignore:4099 /FORCE:MULTIPLE)
 
+# One-shot: play a single note, freeze it (no interrupt answered), dump the raw voice
+# bookkeeping tables - ground truth for what StuckPolicy::La32Stub's slot scan should see.
+add_executable(d110_la32_lifecycle la32_lifecycle_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_la32_lifecycle PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_la32_lifecycle PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_la32_lifecycle PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_la32_lifecycle PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Live write tap over the voice-context bookkeeping arrays (f3c0..f480), engaged
+# together with StuckPolicy::La32Stub - answers whether the firmware's own housekeeping
+# ever reaches f460[] bit 6 at all (the second stall) instead of guessing from statics.
+add_executable(d110_la32_ctx la32_ctx_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_la32_ctx PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_la32_ctx PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_la32_ctx PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_la32_ctx PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Practical question hang_probe/longrun_test don't ask: with La32Stub engaged, does the
+# panel survive NORMAL playing (single notes, realistic gaps), not deliberate chord-stress.
+add_executable(d110_la32_realistic la32_realistic_test.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_la32_realistic PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_la32_realistic PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_la32_realistic PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_la32_realistic PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Reproduces the user's own reported steps directly - EDIT+ENTER into ROM Play, ENTER to
+# play the demo song - instead of only inferring from synthetic MIDI tests that it hits
+# the same freeze. Also checks whether La32Stub fares differently here, since the demo
+# song runs entirely on MAME's own thread with no host MIDI injection at all.
+add_executable(d110_demo_song_repro demo_song_repro.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_demo_song_repro PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_demo_song_repro PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_demo_song_repro PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_demo_song_repro PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Does a factory reset actually restore the documented per-part pan fan, and does that
+# byte reach the sound engine as a real stereo shift? Answers the "panning feels wrong /
+# it won't return to defaults" question by measurement rather than by listening.
+add_executable(d110_pan_verify pan_verify.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_pan_verify PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_pan_verify PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_pan_verify PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_pan_verify PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# The demo song is silent because the firmware plays it internally and never transmits it.
+# This checks whether the notes are nevertheless recoverable from the firmware's own RAM
+# (f400 = note, f420 = velocity, f3a0 = part?), which would let the bridge carry them.
+add_executable(d110_note_source note_source_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_note_source PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_note_source PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_note_source PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_note_source PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Renders the demo song to a WAV so "is there any sound at all" is answered by a file the
+# user can listen to, not by inference.
+add_executable(d110_demo_wav demo_wav_render.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_demo_wav PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_demo_wav PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_demo_wav PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_demo_wav PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
 # Checks that an imported SysEx bank actually reaches the control board, rather than only
 # the sound engine - where the next RAM mirror silently undid it.
 add_executable(d110_sysex_test sysex_test.cpp

@@ -160,17 +160,22 @@ public:
 	// does not emulate for any Roland LA machine. The firmware does not crash; it stays
 	// alive (its RAM keeps changing) but never returns to scanning the front panel, so
 	// within a few seconds of playing every button and the whole display go dead while the
-	// sound carries on. plugin/longrun_test.cpp reproduces it in about four seconds and
-	// shows the panel surviving indefinitely once notes are withheld.
+	// sound carries on. plugin/longrun_test.cpp reproduced it in about four seconds and
+	// showed the panel surviving indefinitely once notes were withheld.
 	//
-	// Turning it on lights the part indicators on the top LCD row, which is the only thing
-	// it buys, and costs the panel. Offered as a choice rather than removed, because on a
-	// track where nothing is touched after setup it is a reasonable trade.
+	// 2026-07-31: fixed for real (docs/la32_interface.md) - D110Core::StuckPolicy::La32Stub
+	// (set unconditionally in setPoweredOn()) supplies the sound board's missing side of
+	// the handshake. Validated against a stress-chord test (30s survived, was 0-3s), a
+	// realistic single-note test (120 notes over 60s, panel responsive throughout) and the
+	// real firmware demo song (three songs back to back). Default is ON: lights the part
+	// indicators, tracks Program Changes, and keeps the panel usable while playing - what
+	// this flag traded away before now costs nothing. Left as a switch, not removed, in
+	// case a host or a future ROM revision needs the old behaviour.
 	void setForwardNotesToFirmware(bool shouldForward) { forwardNotes = shouldForward; }
 	bool getForwardNotesToFirmware() const { return forwardNotes; }
 
 private:
-	std::atomic<bool> forwardNotes{false};
+	std::atomic<bool> forwardNotes{true};
 	// Opens the synth from whatever is currently in controlRomData/pcmRomData.
 	bool openSynthIfReady();
 	// Scans getAutoRomFolder() for a Control ROM and PCM ROM by content (not filename) and

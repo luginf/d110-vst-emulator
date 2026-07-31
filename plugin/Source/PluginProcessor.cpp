@@ -146,6 +146,15 @@ void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
 			return;
 		}
 		powerBlocked = false;
+		// The real sound-board interface, measured and fixed 2026-07-31 (see
+		// docs/la32_interface.md): a wrong voice number, a MAME MCS-96 core bug (EXTINT's
+		// pending-interrupt bit never clearing on take), and a too-narrow busy-value scan
+		// were the three things standing between this and working audio-driven playback.
+		// All three fixed; validated against a stress-chord test (30s, was 0-3s), a
+		// realistic single-note test (120 notes over 60s) and the real demo song (three
+		// songs back to back, panel responsive throughout). Safe to leave on unconditionally
+		// - it only ever acts while the firmware is genuinely parked waiting for it.
+		core.setStuckPolicy(D110Core::StuckPolicy::La32Stub);
 		if (virgin) core.factoryReset();
 	} else {
 		// Stopping is what makes MAME write its NVRAM out, so this is where the state
@@ -516,6 +525,24 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 			synth->playSysex(sysex, static_cast<MT32Emu::Bit32u>(len));
 	}
 
+	// The other half of the same idea, for notes rather than parameters: the firmware tells
+	// us which note it started on which part, and the engine plays it. This is what makes
+	// the instrument's OWN demo songs audible - it generates those internally from ROM and
+	// never transmits them, so before this they moved the part indicators in silence. It
+	// also means host notes are voiced by the same path the panel is showing, with the
+	// firmware's own key ranges, part assignment and voice allocation applied, instead of
+	// the two halves being fed separately and drifting apart.
+	//
+	// playMsgOnPart addresses the part directly (0-7 voice, 8 rhythm), which is exactly
+	// what the firmware hands over, so no channel-to-part mapping has to be re-derived here.
+	{
+		D110Core::NoteEvent ev;
+		while (core.popNoteEvent(ev)) {
+			if (ev.part > 8) continue;
+			synth->playMsgOnPart(ev.part, ev.on ? 0x9 : 0x8, ev.note, ev.velocity);
+		}
+	}
+
 	if (static_cast<int>(interleavedScratch.size()) < numSamples * 2)
 		interleavedScratch.resize(static_cast<size_t>(numSamples) * 2);
 
@@ -578,6 +605,17 @@ void D110AudioProcessor::handleIncomingMidiMessage(const juce::MidiMessage &mess
 	const auto *raw = message.getRawData();
 	const auto size = message.getRawDataSize();
 	if (size <= 0) return;
+
+	// When the firmware is voicing the notes, it must not be done twice. The firmware has
+	// already been handed this message above; it will allocate a voice and report the note
+	// back through popNoteEvent(), which is where it reaches the engine. Sending it here as
+	// well would play every note twice - once with the firmware's own key range, transpose
+	// and part assignment applied, once without. Everything that is NOT a note still goes
+	// straight through, because the engine needs controllers, bend and program changes in
+	// its own right.
+	if (forwardNotes.load(std::memory_order_relaxed) && core.isRunning() &&
+	    (message.isNoteOnOrOff() || message.isAftertouch()))
+		return;
 
 	const juce::uint8 status = raw[0];
 	const juce::uint8 data1 = size > 1 ? raw[1] : 0;
@@ -812,7 +850,10 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 		openSynthIfReady();
 	}
 
-	forwardNotes = xml->getBoolAttribute("forwardNotes", false);
+	// Default true (2026-07-31): an older saved project predates this attribute and never
+	// made a choice either way, so it should pick up today's default rather than be pinned
+	// to the workaround the fix above made unnecessary.
+	forwardNotes = xml->getBoolAttribute("forwardNotes", true);
 
 	// Put the project's own firmware memory back, while the machine is certainly not
 	// running - the plugin always comes up powered off, and MAME reads these files once at
