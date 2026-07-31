@@ -13,6 +13,12 @@ whose LA engine is mature and accurate. The two halves are joined by mirroring t
 own parameter memory into the sound engine as Roland exclusive messages, so an edit made on the
 panel is audible - see [`docs/sysex_address_map.md`](docs/sysex_address_map.md).
 
+**The firmware also decides every note you hear.** Notes are not handed to the sound engine
+directly: they go into the firmware, which applies its own key ranges, part assignment and
+voice allocation, and the plugin reads back which note it started on which part. That is what
+lets the instrument's **own ROM demo songs play** - hold EDIT and ENTER for ROM Play, then
+ENTER - since the firmware generates those internally and never transmits them.
+
 The panel itself is a photograph of the hardware, with invisible hit-regions at its own pixel
 coordinates; only the LCD and the MIDI MESSAGE lamp are drawn, and the LCD's glyphs come from
 the emulated controller's own mask character ROM. See
@@ -53,9 +59,12 @@ the patches and edits come back with it, rather than whatever a shared folder la
   process-wide singleton, so a second running machine corrupts the host's heap - measured, not
   assumed. A second instance therefore refuses to power on and says so, instead of crashing your
   DAW. Loading several is fine; only one may be on.
-- Playing on channel 9 or 10 sounds part 8 and the rhythm part correctly, but their two
-  indicators on the LCD do not light. MAME emulates no LA32, so firmware logic that reads voice
-  state back from the sound chip has nothing to read.
+- The real D-110 has eight **individual outputs** as well as the stereo mix, and a per-part
+  assignment for them. This plugin is stereo only: the sound engine models the MT-32, which had
+  no individual outputs at all, so there is nothing to route them from.
+- Some voices are released by the firmware without the explicit marker this plugin watches for,
+  so a few notes rely on the engine's own voice management to reclaim them rather than getting a
+  note-off of their own.
 - Master tune, reverb and master volume are deliberately not mirrored - see
   [`docs/sysex_address_map.md`](docs/sysex_address_map.md) for exactly why each one is excluded.
 
