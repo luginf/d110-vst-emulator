@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <tuple>
 #include <utility>
 #include <string>
 #include <thread>
@@ -121,14 +122,18 @@ void report(D110AudioProcessor &proc, const char *what) {
 		std::printf("    записей в SO нет (потеряно %llu)\n", (unsigned long long)dropped);
 		return;
 	}
-	std::map<std::pair<uint16_t, uint8_t>, int> tally;
-	for (const auto &w : writes) ++tally[{w.pc, w.value}];
+	std::map<std::tuple<uint16_t, uint16_t, uint8_t>, int> tally;
+	for (const auto &w : writes) ++tally[{w.addr, w.pc, w.value}];
 	std::printf("    записей %zu, потеряно %llu, первая на %.0f мс\n", writes.size(),
 	            (unsigned long long)dropped, writes.front().ms);
-	for (const auto &kv : tally)
-		std::printf("      из 0x%04X  значение %02X  (программа %d, R.SW %d, лампа %d)  x%d\n",
-		            kv.first.first, kv.first.second, (kv.first.second >> 1) & 3,
-		            (kv.first.second >> 3) & 1, kv.first.second & 1, kv.second);
+	for (const auto &kv : tally) {
+		const uint16_t addr = std::get<0>(kv.first);
+		const uint16_t pc = std::get<1>(kv.first);
+		const uint8_t v = std::get<2>(kv.first);
+		std::printf("      по 0x%04X из 0x%04X  значение %02X"
+		            "  (программа %d, R.SW %d, лампа %d)  x%d\n",
+		            addr, pc, v, (v >> 1) & 3, (v >> 3) & 1, v & 1, kv.second);
+	}
 }
 
 // Обращения по адресам, которые карта памяти не покрывает, сведённые по адресу. Так в своё
@@ -177,6 +182,34 @@ int main() {
 	render(proc, 3.0);
 	report(proc, "простой 3 с");
 	reportUnmapped(proc, "простой 3 с");
+
+	// Лампа MIDI MESSAGE. Проверяются ОБА направления: что она загорается на потоке байт
+	// и что потом гаснет. Проверки только на загорание мало - лампа, залипшая навсегда,
+	// прошла бы её так же успешно, как исправная.
+	{
+		std::printf("\n--- лампа MIDI MESSAGE ---\n");
+		std::printf("    до подачи MIDI: %s\n", proc.getCore().midiLampOn() ? "ГОРИТ" : "погашена");
+		// Замеры идут ЧАСТО и внутри потока, а не по одному на ноту: выдержка лампы
+		// сравнима с промежутком между нотами, и один замер на ноту попадает всегда в
+		// одну и ту же фазу - первая версия этой проверки так и намерила 1 из 12 на
+		// исправной лампе.
+		int litDuring = 0, samplesDuring = 0;
+		for (int i = 0; i < 12; ++i) {
+			juce::MidiBuffer m;
+			m.addEvent(juce::MidiMessage::noteOn(2, 60 + (i % 5), 0.8f), 0);
+			m.addEvent(juce::MidiMessage::noteOff(2, 60 + (i % 5)), 200);
+			for (int k = 0; k < 10; ++k) {
+				render(proc, 0.01, k == 0 ? m : juce::MidiBuffer{});
+				if (proc.getCore().midiLampOn()) ++litDuring;
+				++samplesDuring;
+			}
+		}
+		std::printf("    во время потока MIDI: горела в %d из %d замеров\n", litDuring,
+		            samplesDuring);
+		render(proc, 0.5);
+		std::printf("    через 0.5 с тишины: %s\n",
+		            proc.getCore().midiLampOn() ? "ГОРИТ - не гаснет" : "погашена");
+	}
 
 	// Нота с хоста. Лампа MIDI - бит 0 этого же регистра, так что записи здесь ОБЯЗАНЫ
 	// быть; это контроль на исправность захвата, а не только измерение.
@@ -259,8 +292,8 @@ int main() {
 			std::printf("    при загрузке записей в SO нет\n");
 		} else {
 			for (const auto &w : writes)
-				std::printf("    из 0x%04X значение %02X -> программа %d, R.SW %d\n", w.pc,
-				            w.value, (w.value >> 1) & 3, (w.value >> 3) & 1);
+				std::printf("    по 0x%04X из 0x%04X значение %02X -> программа %d, R.SW %d\n",
+				            w.addr, w.pc, w.value, (w.value >> 1) & 3, (w.value >> 3) & 1);
 		}
 	}
 

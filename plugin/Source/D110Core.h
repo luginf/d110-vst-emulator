@@ -312,21 +312,39 @@ public:
 	// Takes everything captured so far and empties the buffer.
 	std::vector<std::string> takeLogLines();
 
-	// --- the MIDI MESSAGE lamp, driven by the firmware --------------------------
-	// The real lamp is bit 0 of the SO register at 0x0200 - `so_w()` in MAME's
-	// roland_d10.cpp says so outright ("bit 0 = led"). Before the firmware ran properly
-	// the panel had to borrow mt32emu's getDisplayState() instead, which is a different
-	// thing wearing the same name: it blinks on any MIDI message and stays lit while any
-	// voice part sounds, whereas the hardware lamp does whatever this firmware decides.
-	// Reading the register the hardware actually drives is the difference between showing
-	// the instrument and imitating it.
-	bool midiLampOn() const { return soLampOn.load(std::memory_order_acquire); }
-	void osdSetMidiLamp(bool on) { soLampOn.store(on, std::memory_order_release); }
-	// False until the firmware has written the register even once, so the panel can fall
-	// back rather than showing a confidently wrong dark lamp during boot.
-	bool midiLampValid() const { return soLampSeen.load(std::memory_order_acquire); }
-	void osdMarkMidiLampSeen() { soLampSeen.store(true, std::memory_order_release); }
+	// --- лампа MIDI MESSAGE ------------------------------------------------------
+	// Горит, пока на вход MIDI приходят байты, и гаснет примерно через кTMidiLampHoldMs
+	// после последнего. Это ждущий мультивибратор на выходе оптрона входа MIDI - схемное
+	// решение, обычное для Roland тех лет, - а не регистр, которым правит прошивка.
+	//
+	// Прошивка ею не управляет, и это измерено, а не выведено из общих соображений
+	// (plugin/so_trace_probe.cpp, цель d110_so_trace). За весь сеанс прошивка пишет во
+	// внешние защёлки пять раз, все при загрузке - по 0x0200 из ПЗУ 0x2106 и 0x2D28, по
+	// 0x0280 из 0x1C94, 0x1CC1 и 0x20FF, - и бит 0 сброшен в каждой. В выводы портов 1 и
+	// 2 самого процессора (файл регистров 0x0F и 0x10) она не пишет НИ РАЗУ. При приходе
+	// MIDI не пишется ничего и никуда. Значит зажигать лампу прошивке нечем.
+	//
+	// Раньше здесь читался бит 0 защёлки SO - так его называет комментарий в so_w() из
+	// roland_d10.cpp. Бит этот всегда ноль, поэтому лампа не загоралась никогда, а панель
+	// при этом считала показание достоверным и уверенно рисовала её погашенной.
+	static constexpr int64_t kMidiLampHoldMs = 90;
+	static int64_t nowMs() {
+		return std::chrono::duration_cast<std::chrono::milliseconds>(
+		           std::chrono::steady_clock::now().time_since_epoch()).count();
+	}
+	bool midiLampOn() const {
+		const int64_t last = lastMidiByteMs.load(std::memory_order_acquire);
+		return last != 0 && nowMs() - last < kMidiLampHoldMs;
+	}
+	// Осталось для панели: раньше это значило "прошивка хоть раз написала регистр".
+	// Теперь источник известен всегда, и запасной путь панели не нужен.
+	bool midiLampValid() const { return true; }
 	static constexpr uint16_t kSoRegister = 0x0200;
+	// Тот же адрес с точностью до A7. Карта памяти в MAME описывает защёлку SO ровно по
+	// 0x0200, и записи по 0x0280 в неё не попадают - они видны только в журнале
+	// неотображённых обращений. Если на плате дешифратор грубее (а адрес рядом и больше
+	// ничем не занят), это одна и та же защёлка, и половина её записей сейчас теряется.
+	static constexpr uint16_t kSoRegisterAlias = 0x0280;
 
 	// Весь байт SO, а не только бит лампы. По разбору MAME (`so_w` в roland_d10.cpp):
 	// бит 0 - светодиод, биты 1-2 - номер программы ревербератора (это A13/A14 ПЗУ
@@ -346,8 +364,8 @@ public:
 	// адрес и открывает вход в прошивку для дизассемблера (plugin/disasm_tool.cpp).
 	// Захват может переполниться, поэтому у него есть свой счётчик потерь, и печатать его
 	// обязан каждый, кто читает записи.
-	struct SoWrite { double ms; uint16_t pc; uint8_t value; };
-	void osdLogSoWrite(uint16_t pc, uint8_t value);
+	struct SoWrite { double ms; uint16_t pc; uint16_t addr; uint8_t value; };
+	void osdLogSoWrite(uint16_t pc, uint16_t addr, uint8_t value);
 	std::vector<SoWrite> takeSoWrites();
 	uint64_t soWritesDropped() const {
 		std::lock_guard<std::mutex> lock(soMutex);
@@ -709,7 +727,9 @@ private:
 	std::atomic<uint64_t> partByteHist[16] = {};
 	std::atomic<uint64_t> regionEmits[kMaxMirrorRegions] = {};
 	std::atomic<int> soloPart{-1};
-	std::atomic<bool> soLampOn{false}, soLampSeen{false};
+	// Момент, когда в приёмник процессора ушёл последний байт MIDI, в миллисекундах
+	// монотонных часов. Ноль означает "ещё ни одного".
+	std::atomic<int64_t> lastMidiByteMs{0};
 	std::atomic<uint64_t> soByteHist[256] = {};
 	std::atomic<int> soLast{-1};
 	mutable std::mutex soMutex;

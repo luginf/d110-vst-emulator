@@ -85,6 +85,8 @@ class D110Osd : public osd_common_t {
 	memory_passthrough_handler m_voiceCtxTap;
 	memory_passthrough_handler m_dispatchTap;
 	memory_passthrough_handler m_soTap;
+	memory_passthrough_handler m_soAliasTap;
+	memory_passthrough_handler m_portTap;
 	bool m_la32Pending = false;   // a status byte is waiting to be collected
 	bool m_la32NeedClear = false; // the handler has taken it; drop the line
 	uint8_t m_la32Status = 0xff;
@@ -285,14 +287,33 @@ class D110Osd : public osd_common_t {
 			// range whose end has its low bit clear ("did you mean 201?"), fatally, which
 			// takes the whole machine down at boot. 0x0201 belongs to nothing in the D-110
 			// map, and the callback only acts on the low byte anyway.
+			auto soWatch = [this](offs_t addr, u16 &data, u16 mem_mask) {
+				if (!(mem_mask & 0x00ff)) return;
+				core->osdCountSoWrite(uint8_t(data & 0xff));
+				core->osdLogSoWrite(uint16_t(m_cpu->pc()), uint16_t(addr), uint8_t(data & 0xff));
+			};
 			m_soTap = m_cpu->space(AS_PROGRAM).install_write_tap(
-				D110Core::kSoRegister, D110Core::kSoRegister + 1, "d110_so_led",
-				[this](offs_t, u16 &data, u16 mem_mask) {
-					if (!(mem_mask & 0x00ff)) return;
-					core->osdCountSoWrite(uint8_t(data & 0xff));
-					core->osdLogSoWrite(uint16_t(m_cpu->pc()), uint8_t(data & 0xff));
-					core->osdSetMidiLamp((data & 0x01) != 0);
-					core->osdMarkMidiLampSeen();
+				D110Core::kSoRegister, D110Core::kSoRegister + 1, "d110_so_led", soWatch);
+			// Второй перехват на псевдониме - см. kSoRegisterAlias. Карта памяти его не
+			// покрывает, но перехват ставится поверх карты, а не внутри неё.
+			m_soAliasTap = m_cpu->space(AS_PROGRAM).install_write_tap(
+				D110Core::kSoRegisterAlias, D110Core::kSoRegisterAlias + 1, "d110_so_alias",
+				soWatch);
+
+			// Выводы портов 1 и 2 самого процессора. У MCS-96 они живут не в памяти, а в
+			// файле регистров (пространство AS_DATA): 0x0F - порт 1, 0x10 - порт 2.
+			// Драйвер D-110 не подключает ни out_p1_cb, ни out_p2_cb, поэтому всё, что
+			// прошивка туда пишет, уходит в несвязанный обработчик и пропадает бесследно -
+			// увидеть это можно только перехватом. Диапазон берётся с 0x0E по 0x11: шина
+			// шестнадцатибитная, и MAME требует, чтобы конец диапазона был нечётным.
+			m_portTap = m_cpu->space(AS_DATA).install_write_tap(
+				0x0e, 0x11, "d110_cpu_ports",
+				[this](offs_t addr, u16 &data, u16 mem_mask) {
+					const uint16_t pc = uint16_t(m_cpu->pc());
+					if (mem_mask & 0x00ff)
+						core->osdLogSoWrite(pc, uint16_t(addr), uint8_t(data & 0xff));
+					if (mem_mask & 0xff00)
+						core->osdLogSoWrite(pc, uint16_t(addr + 1), uint8_t((data >> 8) & 0xff));
 				});
 		}
 
@@ -1084,13 +1105,13 @@ bool D110Core::popNoteEvent(NoteEvent &out) {
 	return true;
 }
 
-void D110Core::osdLogSoWrite(uint16_t pc, uint8_t value) {
+void D110Core::osdLogSoWrite(uint16_t pc, uint16_t addr, uint8_t value) {
 	std::lock_guard<std::mutex> lock(soMutex);
 	if (!soTracing) return;
 	if (soTrace.size() >= kMaxSoWrites) { ++soDropped; return; }
 	soTrace.push_back({std::chrono::duration<double, std::milli>(
 	                       std::chrono::steady_clock::now() - soTraceStart).count(),
-	                   pc, value});
+	                   pc, addr, value});
 }
 
 std::vector<D110Core::SoWrite> D110Core::takeSoWrites() {
@@ -1154,6 +1175,8 @@ bool D110Core::popMidiByte(uint8_t &out) {
 	out = midiBuf[(size_t)r];
 	mR.store((r + 1) & kMidiMask, std::memory_order_release);
 	midiOutCount.fetch_add(1, std::memory_order_relaxed);
+	// Байт дошёл до приёмника - лампа MIDI MESSAGE перезапускается отсюда, см. midiLampOn().
+	lastMidiByteMs.store(nowMs(), std::memory_order_release);
 	return true;
 }
 
