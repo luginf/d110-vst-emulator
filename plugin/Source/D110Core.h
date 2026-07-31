@@ -383,7 +383,10 @@ public:
 	struct NoteLog { double ms; uint8_t part, note, velocity; bool on; };
 	void osdLogNote(const NoteLog &e) {
 		std::lock_guard<std::mutex> lock(noteLogMutex);
-		if (noteLog.size() < 400) noteLog.push_back(e);
+		// Generous, because a short cap silently truncates the run: at 400 entries a
+		// 20-second capture ended around the twelve-second mark, and a part that enters
+		// after that looked like a part that never plays at all.
+		if (noteLog.size() < 20000) noteLog.push_back(e);
 	}
 	std::vector<NoteLog> takeNoteLog() {
 		std::lock_guard<std::mutex> lock(noteLogMutex);

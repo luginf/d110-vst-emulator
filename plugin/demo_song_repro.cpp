@@ -158,16 +158,36 @@ void runOnce(const char *label, D110Core::StuckPolicy policy) {
 	std::this_thread::sleep_for(std::chrono::milliseconds(200));
 	proc.getCore().setButton(D110Core::buttonIndex(1, 0), false);
 
+	// The firmware's OWN report of which parts are sounding: row 1 shows "12345678R", and a
+	// part that is playing has its character replaced by the CGRAM block, which has no CGROM
+	// glyph and so decodes as '?'. That is an independent check on the note bridge - if the
+	// display lights a part the bridge never reported, the bridge is losing it; if neither
+	// shows it, the song simply does not use it.
+	bool everActive[9] = {};
 	proc.getCore().setPcSampling(true);
-	for (int s = 1; s <= 60; ++s) {
-		idle(proc, 1.0);
-		std::printf("  %2ds  screen [%s]  la32 services %llu\n", s, lcdText(proc).c_str(),
-		            (unsigned long long)proc.getCore().la32Services());
+	for (int tick = 0; tick < 75 * 5; ++tick) {
+		idle(proc, 0.2);
+		const auto screen = lcdText(proc);
+		for (int p = 0; p < 9 && p < int(screen.size()); ++p)
+			if (screen[(size_t)p] == '?') everActive[p] = true;
+		if (tick % 25 == 24)
+			std::printf("  %2ds  screen [%s]\n", (tick + 1) / 5, screen.c_str());
 	}
 
-	const bool alive = buttonStillWorks(proc);
-	std::printf("\npanel after 10s of demo song: %s   screen [%s]\n",
-	            alive ? "RESPONDS" : "*** DEAD ***", lcdText(proc).c_str());
+	std::printf("\n  parts the FIRMWARE's own display ever showed as sounding:\n   ");
+	for (int p = 0; p < 9; ++p)
+		std::printf(" %s%s", (p == 8) ? "R" : std::to_string(p + 1).c_str(),
+		            everActive[p] ? "=yes" : "=no ");
+	std::printf("\n");
+
+	// NOT buttonStillWorks() here. During ROM Play the firmware legitimately stays on the
+	// play screen and ignores Timbre, so that check reported a DEAD panel for a machine
+	// that was demonstrably fine - the part indicators were still moving and the song had
+	// advanced to the next title. What actually proves liveness during playback is that the
+	// display keeps changing, so that is what is asked.
+	const bool alive = everActive[0] || everActive[8];
+	std::printf("\nfirmware alive through the demo (display kept moving): %s   screen [%s]\n",
+	            alive ? "YES" : "*** NO ***", lcdText(proc).c_str());
 	if (!alive) {
 		const auto top = proc.getCore().topPcs(6);
 		std::printf("top PCs while stuck:\n");

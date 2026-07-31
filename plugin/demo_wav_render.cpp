@@ -8,6 +8,7 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <thread>
@@ -130,7 +131,7 @@ int main(int argc, char **argv) {
 	{
 		const uint64_t onBefore = proc.getCore().firmwareNoteOns();
 		const uint64_t offBefore = proc.getCore().firmwareNoteOffs();
-		auto seg = renderRealTime(proc, 20.0, false);
+		auto seg = renderRealTime(proc, 75.0, false);
 		const uint64_t ons = proc.getCore().firmwareNoteOns() - onBefore;
 		const uint64_t offs = proc.getCore().firmwareNoteOffs() - offBefore;
 		std::printf("  note-ons %llu (%.1f/s), note-offs %llu\n",
@@ -141,9 +142,30 @@ int main(int argc, char **argv) {
 		std::printf("  peak %.3f  rms %.5f\n", seg.peak, seg.rms);
 		writeWav(outDir.getChildFile("d110_demo_song.wav"), seg.audio);
 
-		std::printf("\n  first note events (ms, part, note, vel, on/off):\n");
+		// Which parts actually receive anything. A demo song is written to show the
+		// instrument off, so a part that never appears is a question, not a style choice.
 		const auto log = proc.getCore().takeNoteLog();
-		for (size_t i = 0; i < log.size() && i < 60; ++i)
+		int perPart[9] = {};
+		int lowest[9], highest[9];
+		for (int p = 0; p < 9; ++p) { lowest[p] = 128; highest[p] = -1; }
+		for (const auto &e : log) {
+			if (!e.on || e.part > 8) continue;
+			++perPart[e.part];
+			lowest[e.part] = std::min<int>(lowest[e.part], e.note);
+			highest[e.part] = std::max<int>(highest[e.part], e.note);
+		}
+		std::printf("\n  note-ons per part (from %d logged events):\n", int(log.size()));
+		for (int p = 0; p < 9; ++p) {
+			const char *what = (p == 8) ? "rhythm" : "voice ";
+			if (perPart[p] == 0)
+				std::printf("    part %d (%s): -- nothing --\n", p + 1, what);
+			else
+				std::printf("    part %d (%s): %4d note-ons, notes %d..%d\n", p + 1, what,
+				            perPart[p], lowest[p], highest[p]);
+		}
+
+		std::printf("\n  first note events (ms, part, note, vel, on/off):\n");
+		for (size_t i = 0; i < log.size() && i < 30; ++i)
 			std::printf("    %8.1f  part %d  note %3d  vel %3d  %s\n", log[i].ms, log[i].part,
 			            log[i].note, log[i].velocity, log[i].on ? "ON" : "off");
 	}
