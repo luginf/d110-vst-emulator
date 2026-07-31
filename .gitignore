@@ -26,3 +26,6 @@ docs/manuals/
 plugin/Source/cfg/
 cfg/
 nvram/
+
+# Build logs from scripts/*.bat
+build_logs/

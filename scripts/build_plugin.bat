@@ -1,0 +1,38 @@
+@echo off
+REM Rebuild and install the D-110 Emulator plugin (VST3 + Standalone) plus the
+REM console test harnesses used to verify it.
+REM
+REM Run scripts\build_mame.bat FIRST if anything in the shared MAME tree changed
+REM - this script only relinks against whatever libs are already there.
+REM
+REM The install check at the end exists because the VST3 post-build copy into
+REM "C:\Program Files\Common Files\VST3" fails silently while a DAW holds the
+REM DLL open, leaving an old plugin installed while the build reports success.
+call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+set PATH=C:\Program Files\Python312;%PATH%;C:\msys64\mingw64\bin;C:\msys64\usr\bin
+cd /d C:\Users\bd260\Projects\D110-VST\plugin\build
+if not exist "%~dp0..\build_logs" mkdir "%~dp0..\build_logs"
+
+cmake --build . --config Release --target D110Emulator_VST3 > "%~dp0..\build_logs\plugin_vst3.log" 2>&1
+echo VST3_EXIT=%ERRORLEVEL%
+cmake --build . --config Release --target D110Emulator_Standalone > "%~dp0..\build_logs\plugin_standalone.log" 2>&1
+echo STANDALONE_EXIT=%ERRORLEVEL%
+cmake --build . --config Release --target d110_core_test d110_longrun_test > "%~dp0..\build_logs\tests.log" 2>&1
+echo TESTS_EXIT=%ERRORLEVEL%
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "foreach ($l in @('plugin_vst3','plugin_standalone','tests')) {" ^
+  "  $p = Join-Path '%~dp0..\build_logs' ($l + '.log');" ^
+  "  if (Test-Path $p) { $e = @(Select-String -Path $p -Pattern 'error C|error LNK|error MSB');" ^
+  "    if ($e.Count -gt 0) { Write-Host ($l + '=' + $e.Count + ' ERRORS'); $e | Select-Object -First 6 | ForEach-Object { Write-Host ('  ' + $_.Line.Trim()) } }" ^
+  "    else { Write-Host ($l + '=ok') } } }"
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$built = 'C:\Users\bd260\Projects\D110-VST\plugin\build\D110Emulator_artefacts\Release\VST3\D-110 Emulator.vst3\Contents\x86_64-win\D-110 Emulator.vst3';" ^
+  "$inst  = 'C:\Program Files\Common Files\VST3\D-110 Emulator.vst3\Contents\x86_64-win\D-110 Emulator.vst3';" ^
+  "if (-not (Test-Path $built)) { Write-Host 'INSTALLED=unknown (built bundle not found)'; exit }" ^
+  "if (-not (Test-Path $inst))  { Write-Host 'INSTALLED=MISSING'; exit }" ^
+  "$b = Get-Item $built; $i = Get-Item $inst;" ^
+  "$dt = [Math]::Abs(($b.LastWriteTime - $i.LastWriteTime).TotalSeconds);" ^
+  "if ($b.Length -eq $i.Length -and $dt -lt 120) { Write-Host ('INSTALLED=fresh (' + $i.LastWriteTime + ')') }" ^
+  "else { Write-Host ('INSTALLED=STALE - built ' + $b.LastWriteTime + ' but installed ' + $i.LastWriteTime + ' -- close the DAW and run this script again') }"

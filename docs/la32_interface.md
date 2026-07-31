@@ -170,3 +170,60 @@ engineering is not.
 Every Roland LA machine in MAME is in the same position — there is no LA32 anywhere in the
 tree. A working control-side interface here is the piece that would let the D-10, D-20 and
 MT-32 family be driven the same way.
+
+---
+
+## 2026-07-31 — the CPU core underneath was fixed, and it touches this window
+
+Two bugs were found in MAME's **shared** MCS-96 CPU core while working on the
+D-70 (same `src/devices/cpu/mcs96`, same shared tree). Both are now fixed, and
+this project has been rebuilt against them. What that did and did not change
+here, all measured:
+
+**Rebuilt and re-verified**: `d110_core_test` boots the firmware in-process, the
+MSM6222B dot matrix decodes to real screens, the buttons still drive the menus,
+`Average speed: 99.96%`. VST3 and Standalone rebuilt and installed.
+
+**The panel freeze is UNCHANGED, and that is the expected result.** `d110_longrun_test`
+still reports exactly what it did before: silent = survived, notes forwarded =
+**DIED at 4s**, notes withheld = survived over 45 s. The D-70's freeze was the
+HSO CAM bug; **this one is not** — it is the LA32 wait documented above, and the
+2×2 in this file still stands. Do not conflate the two.
+
+**But the second bug does land in this driver's code path, exactly once.**
+`fe7f mulb indexed_2b` read its byte operand through `any_r16`, which masks the
+address down to even, so a byte at an odd address was fetched from its even
+neighbour. A scan of the whole firmware (`D70-VST/tools/mcs96_mulb_scan.py`)
+finds **one** real instance, and it is real code, not a data coincidence:
+
+```
+3990: ldbze 76, 1b[56]        ; index = [struct+0x1B]
+3994: mulb  74, 1709[76]      ; reg74 *= table1709[index]     <-- the defect
+399A: add   70, 74
+...
+39CE: add   70, #0808 ; shr 70, #04     ; clamp and scale
+39E2: stb   70, 0c41[54]      ; <<< WRITES INTO THE LA32 REGISTER WINDOW
+```
+
+The surrounding routine builds a value out of key follow (`ldb 75,45` then
+`subb 75,#3c` — the key minus middle C), a bias-point difference from the table
+at `0x16F8`, and a depth from the signed curve at `0x1709`
+(`55 2A 15 10 0A 05 02 00 FE FB F6 F0 EB …`, i.e. +85 … −21 centred on zero).
+The base `0x1709` is **odd**, so whenever the index came out even the firmware
+multiplied by the neighbouring table entry — one step off, roughly half the time.
+
+**Audible effect today: none, and here is why.** The value goes to `0x0C41+`,
+inside the `0x0C00–0x0DFF` sound-board window — the LA32, which MAME does not
+emulate and which this plugin routes around via mt32emu. The other store,
+`39DD: stb 70, f1c0[54]`, is RAM `0x31C0`, above the parameter regions the SysEx
+bridge mirrors, so it is not forwarded either.
+
+**Why it still matters:** the emulated firmware now computes this correctly, and
+it is a *pitch-shaped* quantity (key follow + bias + fine offset, clamped) headed
+for the LA32. Anyone resuming the LA32 interface work above would otherwise have
+been reading half-wrong values out of the very window they are trying to
+characterise.
+
+**D-10 checked too, and it is clean**: both firmware versions show candidate byte
+pairs only inside a `scall` dispatch table, and disassembling around them
+produces garbage — data, not instructions.
