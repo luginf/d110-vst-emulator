@@ -261,6 +261,14 @@ target_link_libraries(d110_demo_wav PRIVATE
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_demo_wav PRIVATE /ignore:4099 /FORCE:MULTIPLE)
 
+# Renders the LCD at several settings to PNG so the result can be looked at beside the
+# reference photo. Calibration only - not part of the plugin's render path.
+add_executable(d110_lcd_check lcd_render_check.cpp)
+target_compile_definitions(d110_lcd_check PRIVATE
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_lcd_check PRIVATE juce::juce_gui_basics juce::juce_graphics)
+
 # Checks that an imported SysEx bank actually reaches the control board, rather than only
 # the sound engine - where the next RAM mirror silently undid it.
 add_executable(d110_sysex_test sysex_test.cpp

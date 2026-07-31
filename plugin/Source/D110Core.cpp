@@ -84,6 +84,7 @@ class D110Osd : public osd_common_t {
 	memory_passthrough_handler m_la32Tap;
 	memory_passthrough_handler m_voiceCtxTap;
 	memory_passthrough_handler m_dispatchTap;
+	memory_passthrough_handler m_soTap;
 	bool m_la32Pending = false;   // a status byte is waiting to be collected
 	bool m_la32NeedClear = false; // the handler has taken it; drop the line
 	uint8_t m_la32Status = 0xff;
@@ -117,6 +118,14 @@ class D110Osd : public osd_common_t {
 			// Bit 7 set means "released but sustained" - a re-marking of a note already
 			// sounding, not a new one, so it must not restart it.
 			if ((value & 0x80) == 0) {
+				// A context can be handed straight to a new note without its previous
+				// occupant ever being released - the firmware steals voices, and the
+				// reclaim path that sets f460 bit 6 is not on that route. Releasing the
+				// old note here is what keeps the two sides balanced; without it a stolen
+				// note was left sounding and only stopped when mt32emu happened to steal
+				// the voice for itself (measured: 1185 note-ons against 707 note-offs).
+				if (m_ctxSounding[ctx] && m_ctxNote[ctx] != value)
+					releaseContext(ctx);
 				m_ctxNote[ctx] = value;
 				m_ctxNoteFresh[ctx] = true; // this context is mid-triple
 			}
@@ -148,13 +157,20 @@ class D110Osd : public osd_common_t {
 		if (ramsOffset >= D110Core::kReleaseTable &&
 		    ramsOffset < D110Core::kReleaseTable + D110Core::kNumVoiceContexts) {
 			const int ctx = ramsOffset - D110Core::kReleaseTable;
-			if ((value & D110Core::kReleasedBit) && m_ctxSounding[ctx]) {
-				core->osdPushNoteEvent({m_ctxPart[ctx], m_ctxNote[ctx], 0, false});
-				m_ctxSounding[ctx] = false;
-				core->osdAddNoteDuration(std::chrono::duration<double, std::milli>(
-					std::chrono::steady_clock::now() - m_ctxOnTime[ctx]).count());
-			}
+			if (value & D110Core::kReleasedBit) releaseContext(ctx);
 		}
+	}
+
+	// Ends whatever this context was sounding, if anything. Two routes reach it: the
+	// firmware marking the voice reclaimed (f460 bit 6), and the context being handed
+	// straight to a new note without that ever happening, which is how voice stealing
+	// looks from here.
+	void releaseContext(int ctx) {
+		if (!m_ctxSounding[ctx]) return;
+		core->osdPushNoteEvent({m_ctxPart[ctx], m_ctxNote[ctx], 0, false});
+		m_ctxSounding[ctx] = false;
+		core->osdAddNoteDuration(std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - m_ctxOnTime[ctx]).count());
 	}
 
 	void resolveDevices() {
@@ -255,6 +271,19 @@ class D110Osd : public osd_common_t {
 						core->osdLogCtxEvent(pc, ramsOffset, uint8_t(data & 0xff));
 					if (mem_mask & 0xff00)
 						core->osdLogCtxEvent(pc, uint16_t(ramsOffset + 1), uint8_t((data >> 8) & 0xff));
+				});
+		}
+
+		// The MIDI MESSAGE lamp, straight off the register the hardware drives it from.
+		// The driver's own so_w() documents the layout ("bit 0 = led") but discards the
+		// value, so a tap is how the panel gets to see it without patching MAME.
+		if (m_cpu) {
+			m_soTap = m_cpu->space(AS_PROGRAM).install_write_tap(
+				D110Core::kSoRegister, D110Core::kSoRegister, "d110_so_led",
+				[this](offs_t, u16 &data, u16 mem_mask) {
+					if (!(mem_mask & 0x00ff)) return;
+					core->osdSetMidiLamp((data & 0x01) != 0);
+					core->osdMarkMidiLampSeen();
 				});
 		}
 

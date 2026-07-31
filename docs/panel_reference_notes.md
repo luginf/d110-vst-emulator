@@ -70,6 +70,19 @@ kDotH        2.700  (= 3.28*s)
 | ink (dark dots, averaged) | `#053A02`, darkest `#002B00` |
 | bezel outside the glass | `#0A0D08` |
 
+**The panel deliberately does NOT use the sampled glass value.** The photograph was taken
+under room light with the camera stopped down so the glyphs would not blow out, which drags
+the whole field dark; rendered at that value the display read as a *failing* one rather than
+a working module. What ships is `#6AB81F` glass over `#05230A` ink, arrived at by rendering
+the same screen at several settings and comparing each against `lcd_reference.png` directly
+(`plugin/lcd_render_check.cpp`, target `d110_lcd_check`, writes the candidates as PNGs).
+
+The other half of that fix is the **gap between dots**, which matters more than the colour.
+It used to be about a fifth of a dot, which broke every stroke into separate squares. On the
+reference photograph the dots within a stroke visibly run together, so the gap is now around
+a tenth, and the supersampling factor went 4 → 8 to keep the smaller gap clean. Glyph shapes
+are unchanged - they still come from the machine's own mask CGROM.
+
 **It is a positive display: dark ink on a lit green field** — the opposite of the
 TX81Z's bright-dots-on-dark-glass. And **there is no visible unlit dot grid**: a
 blank cell profiles as a smooth 72 → 92 luminance ramp (camera vignetting) with

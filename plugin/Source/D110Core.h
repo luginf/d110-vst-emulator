@@ -308,6 +308,22 @@ public:
 	// Takes everything captured so far and empties the buffer.
 	std::vector<std::string> takeLogLines();
 
+	// --- the MIDI MESSAGE lamp, driven by the firmware --------------------------
+	// The real lamp is bit 0 of the SO register at 0x0200 - `so_w()` in MAME's
+	// roland_d10.cpp says so outright ("bit 0 = led"). Before the firmware ran properly
+	// the panel had to borrow mt32emu's getDisplayState() instead, which is a different
+	// thing wearing the same name: it blinks on any MIDI message and stays lit while any
+	// voice part sounds, whereas the hardware lamp does whatever this firmware decides.
+	// Reading the register the hardware actually drives is the difference between showing
+	// the instrument and imitating it.
+	bool midiLampOn() const { return soLampOn.load(std::memory_order_acquire); }
+	void osdSetMidiLamp(bool on) { soLampOn.store(on, std::memory_order_release); }
+	// False until the firmware has written the register even once, so the panel can fall
+	// back rather than showing a confidently wrong dark lamp during boot.
+	bool midiLampValid() const { return soLampSeen.load(std::memory_order_acquire); }
+	void osdMarkMidiLampSeen() { soLampSeen.store(true, std::memory_order_release); }
+	static constexpr uint16_t kSoRegister = 0x0200;
+
 	// --- notes recovered from the firmware itself ------------------------------
 	// The firmware plays its own demo songs (ROM Play) internally and does NOT transmit
 	// them - measured: its serial TX emitted one 0x00 byte in 40 seconds. So the demo song
@@ -558,6 +574,7 @@ private:
 	std::vector<NoteEvent> noteBuf;
 	std::atomic<int> nW{0}, nR{0};
 	std::atomic<uint64_t> noteOnCount{0}, noteOffCount{0}, noteMsTotal{0};
+	std::atomic<bool> soLampOn{false}, soLampSeen{false};
 	mutable std::mutex noteLogMutex;
 	std::vector<NoteLog> noteLog;
 	std::chrono::steady_clock::time_point noteLogStart;

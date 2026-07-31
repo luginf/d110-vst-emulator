@@ -1,16 +1,37 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
+// MidiInput/MidiOutput and MidiDeviceInfo live here, not in juce_audio_processors: the
+// panel opens a port itself so an external editor can reach the module the way it would
+// reach the hardware, beside whatever the host routes in.
+#include <juce_audio_devices/juce_audio_devices.h>
 #include <mt32emu/mt32emu.h>
 #include "D110Core.h"
 #include <array>
 #include <memory>
 #include <thread>
 
-class D110AudioProcessor : public juce::AudioProcessor {
+class D110AudioProcessor : public juce::AudioProcessor,
+                           private juce::MidiInputCallback {
 public:
 	D110AudioProcessor();
 	~D110AudioProcessor() override;
+
+	// --- MIDI ports chosen on the panel, independently of the host -------------
+	// A hardware module is driven from whatever is plugged into its MIDI IN, and an editor
+	// like MIDI Quest expects to reach it over a port rather than through the DAW's plugin
+	// routing. Opening a port directly is what makes that possible; the host's own MIDI
+	// keeps working alongside it, so this adds a route rather than replacing one.
+	static juce::Array<juce::MidiDeviceInfo> midiInputs() {
+		return juce::MidiInput::getAvailableDevices();
+	}
+	static juce::Array<juce::MidiDeviceInfo> midiOutputs() {
+		return juce::MidiOutput::getAvailableDevices();
+	}
+	void setMidiInputDevice(const juce::String &identifier);
+	void setMidiOutputDevice(const juce::String &identifier);
+	juce::String getMidiInputId() const { return selInputId; }
+	juce::String getMidiOutputId() const { return selOutputId; }
 
 	void prepareToPlay(double sampleRate, int samplesPerBlock) override;
 	void releaseResources() override;
@@ -176,6 +197,18 @@ public:
 
 private:
 	std::atomic<bool> forwardNotes{true};
+
+	// Messages arriving on the directly-opened port. They are queued here and merged into
+	// the next processBlock rather than acted on straight away, because that call arrives
+	// on the OS's own MIDI thread and both the engine and the control board expect their
+	// input from one place.
+	void handleIncomingMidiMessage(juce::MidiInput *, const juce::MidiMessage &) override;
+	std::unique_ptr<juce::MidiInput> osMidiIn;
+	std::unique_ptr<juce::MidiOutput> osMidiOut;
+	juce::String selInputId, selOutputId;
+	juce::CriticalSection osMidiLock;
+	juce::MidiMessageCollector osMidiCollector;
+
 	// Opens the synth from whatever is currently in controlRomData/pcmRomData.
 	bool openSynthIfReady();
 	// Scans getAutoRomFolder() for a Control ROM and PCM ROM by content (not filename) and

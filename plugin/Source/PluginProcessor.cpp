@@ -465,6 +465,7 @@ void D110AudioProcessor::rebuildSampleRateConverter() {
 void D110AudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
 	currentSampleRate = sampleRate;
 	interleavedScratch.resize(static_cast<size_t>(samplesPerBlock) * 2);
+	osMidiCollector.reset(sampleRate);
 	if (synth) rebuildSampleRateConverter();
 }
 
@@ -475,6 +476,16 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 	juce::ScopedNoDenormals noDenormals;
 	const int numSamples = buffer.getNumSamples();
 	buffer.clear();
+
+	// Anything that arrived on the directly-opened port joins the host's own stream here,
+	// so from this point on there is one queue and the rest of the method cannot tell the
+	// two apart - which is right, since the hardware cannot either.
+	{
+		juce::MidiBuffer fromPort;
+		osMidiCollector.removeNextBlockOfMessages(fromPort, numSamples);
+		for (const auto meta : fromPort)
+			midiMessages.addEvent(meta.getMessage(), meta.samplePosition);
+	}
 
 	if (!synth || !sampleRateConverter || !poweredOn.load()) {
 		return;
@@ -627,6 +638,31 @@ void D110AudioProcessor::handleIncomingMidiMessage(const juce::MidiMessage &mess
 	synth->playMsg(msg);
 }
 
+// ---- MIDI ports opened directly, beside the host's own routing ---------------
+
+void D110AudioProcessor::setMidiInputDevice(const juce::String &id) {
+	if (osMidiIn) { osMidiIn->stop(); osMidiIn.reset(); }
+	selInputId = {};
+	if (id.isEmpty()) return;
+	osMidiIn = juce::MidiInput::openDevice(id, this);
+	if (osMidiIn) { osMidiIn->start(); selInputId = id; }
+}
+
+void D110AudioProcessor::setMidiOutputDevice(const juce::String &id) {
+	std::unique_ptr<juce::MidiOutput> opened;
+	if (id.isNotEmpty()) opened = juce::MidiOutput::openDevice(id);
+	const juce::ScopedLock lock(osMidiLock);
+	osMidiOut = std::move(opened);
+	selOutputId = osMidiOut ? id : juce::String();
+}
+
+void D110AudioProcessor::handleIncomingMidiMessage(juce::MidiInput *, const juce::MidiMessage &m) {
+	// Handed to the collector rather than acted on here: this runs on the OS MIDI thread,
+	// and everything downstream - the engine's single-writer queue and the control board's
+	// serial input - is fed from processBlock.
+	osMidiCollector.addMessageToQueue(m);
+}
+
 void D110AudioProcessor::forwardMidiToFirmware(const juce::MidiMessage &message) {
 	if (!core.isRunning()) return;
 
@@ -670,11 +706,17 @@ D110AudioProcessor::LcdSnapshot D110AudioProcessor::getLcdSnapshot() const {
 		return snapshot;
 	}
 
-	// Only used for its boolean return value (whether the MIDI LED is lit) - the text buffer
-	// this also fills isn't used, since mt32emu's own text flashes transiently and reverts, and
-	// its internal buffer can leave stale bytes behind between different message lengths.
-	char unusedBuffer[21] = {};
-	snapshot.midiLedOn = synth->getDisplayState(unusedBuffer, false);
+	// The lamp comes off the firmware's own SO register when the control board is running -
+	// bit 0 of 0x0200, which is what drives it on the hardware. mt32emu's getDisplayState()
+	// is only the fallback for a powered-off or not-yet-booted machine: it answers a
+	// different question (has a MIDI message just arrived, is any voice part sounding)
+	// that merely looks similar.
+	if (core.midiLampValid()) {
+		snapshot.midiLedOn = core.midiLampOn();
+	} else {
+		char unusedBuffer[21] = {};
+		snapshot.midiLedOn = synth->getDisplayState(unusedBuffer, false);
+	}
 
 	// Row 1, exactly as the real unit draws it (see docs/lcd_reference.png): the eight Part slots
 	// and the Rhythm slot, then the mode word. A Part that currently has a partial playing in a
@@ -812,6 +854,10 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	xml->setAttribute("controlRomPath", controlRomPath);
 	xml->setAttribute("pcmRomPath", pcmRomPath);
 	xml->setAttribute("forwardNotes", forwardNotes.load());
+	// Ports are stored by identifier, not by name: names repeat across machines and change
+	// when a device is renamed, whereas the identifier is what openDevice actually wants.
+	xml->setAttribute("midiIn", selInputId);
+	xml->setAttribute("midiOut", selOutputId);
 
 	// The firmware's own memory - its patches, its timbres, its edits - so that a project
 	// recalls the sounds it was saved with instead of whatever the shared folder happens
@@ -854,6 +900,12 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 	// made a choice either way, so it should pick up today's default rather than be pinned
 	// to the workaround the fix above made unnecessary.
 	forwardNotes = xml->getBoolAttribute("forwardNotes", true);
+
+	// Reopening by identifier: if the device is not present on this machine the call simply
+	// finds nothing and the plugin stays on host MIDI alone, which is the right outcome for
+	// a project carried to a different computer.
+	setMidiInputDevice(xml->getStringAttribute("midiIn"));
+	setMidiOutputDevice(xml->getStringAttribute("midiOut"));
 
 	// Put the project's own firmware memory back, while the machine is certainly not
 	// running - the plugin always comes up powered off, and MAME reads these files once at

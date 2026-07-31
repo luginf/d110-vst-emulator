@@ -38,12 +38,18 @@ constexpr int kDotRows = 7; // the 8th cell row is never used on this display
 // There is deliberately no unlit dot grid: profiling a blank character cell on the
 // real hardware shows a smooth gradient with no periodicity at the dot pitch, i.e.
 // blank cells are plain glass. No halo either, for the same reason.
-const juce::Colour kGlassOn(0xff3e7515);  // averaged over blank, lit cells
-const juce::Colour kGlassOff(0xff1f3a0b); // backlight off: same hue, clearly dimmer
-const juce::Colour kInk(0xff0a2e05);
+// These are BRIGHTER than the raw averages taken off docs/lcd_reference.png, deliberately.
+// That photo was taken under room light with the camera stopped down so the glyphs would
+// not blow out, which lands the field around #3e7515 - far darker than the eye sees on a
+// lit module, and dark enough that the panel read as a failing display rather than a
+// working one. Rendered side by side with the photograph, these values match what the
+// reference actually looks like.
+const juce::Colour kGlassOn(0xff6ab81f);  // lit field
+const juce::Colour kGlassOff(0xff2c5210); // backlight off: same hue, clearly dimmer
+const juce::Colour kInk(0xff05230a);
 
 // Supersampling factor for the offscreen LCD render.
-constexpr int kLcdSuper = 4;
+constexpr int kLcdSuper = 8;
 
 // How a pressed cap is drawn. The panel is photographed head-on, so a cap
 // travelling into its recess recedes from the viewer: it shrinks slightly towards
@@ -198,7 +204,11 @@ void D110Panel::rebuildLcdImage()
 	// the same size.
 	auto px = [](float panelX) { return (panelX - kLcdX) * kLcdSuper; };
 	auto py = [](float panelY) { return (panelY - kLcdY) * kLcdSuper; };
-	constexpr float kDotGapX = 1.9f, kDotGapY = 2.1f; // in offscreen pixels
+	// In offscreen pixels, so they scale with kLcdSuper - and they are deliberately a much
+	// smaller FRACTION of a dot than they used to be. At the old ratio every stroke broke
+	// into separate squares and the display read as dying; on the reference photograph the
+	// dots of a stroke visibly run together, which is what these values reproduce.
+	constexpr float kDotGapX = 2.0f, kDotGapY = 2.2f;
 
 	g.setColour(kInk);
 	for (int line = 0; line < kLines; ++line)
@@ -424,9 +434,14 @@ void D110Panel::paintLcd(juce::Graphics &g) const
 	g.setColour(processor.isPoweredOn() ? kGlassOn : kGlassOff);
 	g.fillRect(kLcdX, kLcdY, kLcdW, kLcdH);
 
-	if (lcdImage.isValid())
+	if (lcdImage.isValid()) {
+		// The display is the one part of this panel anybody reads, and the window is often
+		// scaled well away from the artwork's own size, so it is worth resampling properly
+		// rather than at the default quality.
+		g.setImageResamplingQuality(juce::Graphics::highResamplingQuality);
 		g.drawImage(lcdImage, int(kLcdX), int(kLcdY), int(kLcdW), int(kLcdH),
 		            0, 0, lcdImage.getWidth(), lcdImage.getHeight(), false);
+	}
 }
 
 int D110Panel::buttonAt(juce::Point<float> p) const
@@ -559,8 +574,23 @@ void D110Panel::showOptionsMenu()
 	m.addSeparator();
 	m.addItem(2, "Reverb", true, reverbOn);
 	m.addItem(3, "Super Mode (unofficial, extra polyphony)", true, superOn);
-	m.addItem(5, "Show part activity on the LCD (panel stops responding while playing)",
+	m.addItem(5, "Let the firmware voice the notes (part indicators, its own key ranges)",
 	          true, processor.getForwardNotesToFirmware());
+	m.addSeparator();
+
+	// Direct MIDI ports, beside whatever the host routes in. This is how an external
+	// editor reaches the module the way it would reach the hardware.
+	const auto ins = D110AudioProcessor::midiInputs();
+	const auto outs = D110AudioProcessor::midiOutputs();
+	juce::PopupMenu inMenu, outMenu;
+	inMenu.addItem(300, "(none - host only)", true, processor.getMidiInputId().isEmpty());
+	for (int i = 0; i < ins.size(); ++i)
+		inMenu.addItem(400 + i, ins[i].name, true, processor.getMidiInputId() == ins[i].identifier);
+	outMenu.addItem(301, "(none)", true, processor.getMidiOutputId().isEmpty());
+	for (int i = 0; i < outs.size(); ++i)
+		outMenu.addItem(500 + i, outs[i].name, true, processor.getMidiOutputId() == outs[i].identifier);
+	m.addSubMenu("MIDI In", inMenu);
+	m.addSubMenu("MIDI Out", outMenu);
 	m.addSeparator();
 
 	if (processor.isSynthReady()) {
@@ -592,7 +622,19 @@ void D110Panel::showOptionsMenu()
 	m.addItem(107, "   POWER off, Ctrl+click WRITE/COPY, POWER on, then ENTER", false, false);
 
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
-		[this, reverb, superMode, reverbOn, superOn](int result) {
+		[this, reverb, superMode, reverbOn, superOn, ins, outs](int result) {
+			// The port lists are captured as they were when the menu opened, so an entry
+			// always means the device the user actually saw and picked.
+			if (result == 300) { processor.setMidiInputDevice({}); return; }
+			if (result == 301) { processor.setMidiOutputDevice({}); return; }
+			if (result >= 500 && result - 500 < outs.size()) {
+				processor.setMidiOutputDevice(outs[result - 500].identifier);
+				return;
+			}
+			if (result >= 400 && result - 400 < ins.size()) {
+				processor.setMidiInputDevice(ins[result - 400].identifier);
+				return;
+			}
 			switch (result) {
 			case 1:
 				fileChooser = std::make_unique<juce::FileChooser>(
