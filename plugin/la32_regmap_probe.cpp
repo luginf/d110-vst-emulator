@@ -50,6 +50,7 @@ constexpr int kBytesPerSlot = 2;
 struct Btn { const char *name; int port; int bit; };
 const Btn kButtons[] = {
 	{"Exit", 0, 7}, {"Timbre", 0, 5}, {"Number+", 0, 1}, {"Edit", 1, 7},
+	{"Number-", 1, 1},
 };
 
 void render(D110AudioProcessor &proc, double seconds) {
@@ -202,9 +203,14 @@ int main() {
 	// раньше (plugin/audio_test.cpp): Exit, Exit -> Timbre -> Edit открывается на странице
 	// «Tone =», и Number+ выбирает другой звук.
 	std::printf("=== D: нота 60, громкость 100, ДРУГОЙ тембр ===\n");
+	// Тембр выбирается от УПОРА, а не «плюс семь от того, что было». Память прошивки живёт
+	// между прогонами, поэтому относительный выбор уползает: в одном прогоне это был тембр
+	// 31, в следующем 38 - а тот берёт уже четыре партиала вместо двух, и сравнивать стало
+	// не с чем. От нижнего упора номер один и тот же всегда.
 	press(proc, "Exit", 2);
 	press(proc, "Timbre");
 	press(proc, "Edit");
+	press(proc, "Number-", 40);
 	press(proc, "Number+", 7);
 	render(proc, 1.0);
 	{
@@ -225,22 +231,20 @@ int main() {
 	bool usable = true;
 	for (const auto &r : runs)
 		if (r.cap.slots.empty() || r.cap.dropped) usable = false;
-	if (!usable) {
+	if (!usable)
 		std::printf("\nНе у всех прогонов определились слоты или захват переполнялся -\n"
-		            "сравнивать нечего. Таблица ниже не печатается, чтобы её не приняли\n"
-		            "за результат.\n");
-		proc.setPoweredOn(false);
-		proc.releaseResources();
-		return 1;
-	}
+		            "таблица сравнения пропускается, чтобы её не приняли за результат.\n"
+		            "Хроматика ниже от этого не зависит и всё равно снимается.\n");
 
 	std::vector<std::map<Key, std::vector<uint8_t>>> norm;
 	for (const auto &r : runs) norm.push_back(normalise(r.cap));
 
 	std::set<Key> all;
-	for (const auto &m : norm)
-		for (const auto &[k, v] : m) all.insert(k);
+	if (usable)
+		for (const auto &m : norm)
+			for (const auto &[k, v] : m) all.insert(k);
 
+	if (usable)
 	std::printf("\n=== что говорит каждый регистр (банк, партиал ноты, байт в слоте) ===\n");
 	std::printf("  банк   пар байт | A              | B (высота)     | C (сила)       "
 	            "| D (тембр)      | вывод\n");
@@ -268,11 +272,79 @@ int main() {
 		            show(norm[2], k).c_str(), show(norm[3], k).c_str(), verdict.c_str());
 	}
 
-	std::printf("\n  сводка:\n");
-	for (const auto &[v, n] : tally) std::printf("    %-28s %d\n", v.c_str(), n);
-	std::printf("\n  Регистр, помеченный ровно одним свойством, назван этим свойством и\n"
-	            "  ничем другим - остальные три раздражителя его не сдвинули. Помеченный\n"
-	            "  несколькими требует ещё одного опыта, а не толкования.\n");
+	if (usable) {
+		std::printf("\n  сводка:\n");
+		for (const auto &[v, n] : tally) std::printf("    %-28s %d\n", v.c_str(), n);
+		std::printf("\n  Регистр, помеченный ровно одним свойством, назван этим свойством и\n"
+		            "  ничем другим - остальные три раздражителя его не сдвинули. Помеченный\n"
+		            "  несколькими требует ещё одного опыта, а не толкования.\n");
+	}
+
+	// ---- хроматика: как регистр движется НА ПОЛУТОН ------------------------------------
+	// Сравнение потоков целиком выше объявило банк 0x0CC0 зависящим «от всего», и это
+	// артефакт длины: у прогонов разное число обновлений, поэтому векторы не равны, даже
+	// когда их начала совпадают поэлементно. А начала совпадают: у ноты 60 при силе 100 и
+	// при силе 40 первые значения одинаковы, а у ноты 72 отличаются ровно на 17.
+	//
+	// Множеством значений такой вопрос не решается - нужен закон. Тринадцать нот подряд, у
+	// каждой берётся ПЕРВОЕ осмысленное значение (ведущее FF пропускается), и шаг виден
+	// прямо в столбце.
+	std::printf("\n=== хроматика: первое значение каждого регистра, ноты 60..72 ===\n");
+	press(proc, "Exit", 2); // вернуться из меню правки тембра
+
+	auto firstReal = [](const std::vector<uint8_t> &v) -> int {
+		for (uint8_t x : v)
+			if (x != 0xFF) return x;
+		return -1;
+	};
+
+	std::vector<Key> watch;
+	for (uint16_t bank : {0x0C00, 0x0C40, 0x0C80, 0x0CC0, 0x0D00})
+		for (int p = 0; p < 2; ++p)
+			for (int b = 0; b < kBytesPerSlot; ++b) watch.push_back({bank, p, b});
+
+	std::printf("  нота |");
+	for (const auto &k : watch)
+		std::printf(" %04X.%d.%d", std::get<0>(k), std::get<1>(k), std::get<2>(k));
+	std::printf("\n");
+
+	std::map<Key, std::vector<int>> series;
+	for (int note = 60; note <= 72; ++note) {
+		// Слот опознаётся по переходу 0x80 -> занят, поэтому перед нотой он обязан успеть
+		// освободиться. У тембра из четырёх партиалов на ноту уходит четыре слота, и без
+		// этой паузы уже с пятой ноты свободных не оставалось - в прогоне подряд не
+		// определились восемь нот из тринадцати.
+		render(proc, 1.5);
+		const Capture cap = window(proc, note, 100, 0.35);
+		const auto n = normalise(cap);
+		std::printf("  %4d |", note);
+		for (const auto &k : watch) {
+			const auto it = n.find(k);
+			const int v = (it == n.end()) ? -1 : firstReal(it->second);
+			series[k].push_back(v);
+			if (v < 0) std::printf("       -");
+			else std::printf("      %02X", v);
+		}
+		std::printf("%s\n", cap.slots.empty() ? "   (слот не определился)" : "");
+	}
+
+	std::printf("\n  шаг на полутон (разности подряд идущих нот):\n");
+	for (const auto &k : watch) {
+		const auto &s = series[k];
+		bool anyMissing = false;
+		for (int v : s) if (v < 0) anyMissing = true;
+		if (anyMissing) continue;
+		std::printf("    %04X.%d.%d :", std::get<0>(k), std::get<1>(k), std::get<2>(k));
+		int total = 0;
+		for (size_t i = 1; i < s.size(); ++i) {
+			std::printf(" %+d", s[i] - s[i - 1]);
+			total += s[i] - s[i - 1];
+		}
+		std::printf("   всего за октаву %+d\n", total);
+	}
+	std::printf("\n  Регистр, у которого сумма за октаву не ноль, следует за клавишей.\n"
+	            "  Ровная единица на полутон - полутоновая шкала; 16 или 17 за октаву -\n"
+	            "  шкала другая, и какая именно, показывает сам ряд разностей.\n");
 
 	proc.setPoweredOn(false);
 	proc.releaseResources();
