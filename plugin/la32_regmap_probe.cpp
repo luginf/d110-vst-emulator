@@ -50,7 +50,7 @@ constexpr int kBytesPerSlot = 2;
 struct Btn { const char *name; int port; int bit; };
 const Btn kButtons[] = {
 	{"Exit", 0, 7}, {"Timbre", 0, 5}, {"Number+", 0, 1}, {"Edit", 1, 7},
-	{"Number-", 1, 1}, {"Group+", 0, 3},
+	{"Number-", 1, 1}, {"Group+", 0, 3}, {"Bank+", 0, 2},
 };
 
 void render(D110AudioProcessor &proc, double seconds) {
@@ -290,19 +290,31 @@ int main(int argc, char **argv) {
 	// Timbre -> Edit открывает параметры партии на странице «Tone =», ещё одно Edit
 	// проваливается в правку самого тембра, Group+ листает её страницы.
 	if (mode == Mode::Tone) {
-		struct Point { const char *name; int groupSteps; int presses; };
-		// Страницы правки тембра по порядку от входа. Что именно на каждой - зонд не
-		// предполагает: он печатает экран и показывает, какие байты тембра в ОЗУ сдвинулись.
-		const Point points[] = {
-			{"страница 0 (вход)", 0, 3},
-			{"страница 1", 1, 3},
-			{"страница 2", 2, 3},
-		};
+		// Страницы задаются аргументами: за прогон их помещается три-четыре. На страницу
+		// уходит два замера, на замер четыре слота при тембре из четырёх партиалов, а
+		// слотов 32 - дальше начинается переиспользование, и мерить нечем.
+		// Внутри правки тембра Bank+ выбирает ГРУППУ (Common или один из четырёх партиалов),
+		// а Group+ листает параметры внутри неё. У группы Common параметров ровно три - имя
+		// и две структуры, - и на страницах 3-5 в ОЗУ уже не двигалось ничего: Group+
+		// упирался в конец группы. До волновой формы и огибающих ведёт Bank+.
+		const int bankSteps = (argc > 2) ? std::atoi(argv[2]) : 0;
+		const int firstPage = (argc > 3) ? std::atoi(argv[3]) : 0;
+		const int pageCount = (argc > 4) ? std::atoi(argv[4]) : 3;
+		std::printf("группа: Bank+ x%d; страницы: с %d, числом %d\n", bankSteps, firstPage,
+		            pageCount);
+
+		struct Point { std::string name; int groupSteps; int presses; };
+		// Что именно на каждой странице - зонд не предполагает: он показывает, какие байты
+		// тембра в ОЗУ сдвинулись, и байт называет параметр сам.
+		std::vector<Point> points;
+		for (int p = 0; p < pageCount; ++p)
+			points.push_back({"страница " + std::to_string(firstPage + p), firstPage + p, 3});
 		for (const auto &pt : points) {
 			press(proc, "Exit", 2);
 			press(proc, "Timbre");
 			press(proc, "Edit");
 			press(proc, "Edit");
+			if (bankSteps) press(proc, "Bank+", bankSteps);
 			if (pt.groupSteps) press(proc, "Group+", pt.groupSteps);
 			render(proc, 0.6);
 			const auto ramBefore = ramOf(proc);
@@ -314,7 +326,7 @@ int main(int argc, char **argv) {
 			const auto ramAfter = ramOf(proc);
 			const Capture moved = window(proc, 60, 100, kWindow);
 
-			std::printf("\n=== %s ===\n", pt.name);
+			std::printf("\n=== %s ===\n", pt.name.c_str());
 			// Какие байты САМОГО тембра сдвинулись - это и есть подпись правки. Тембр
 			// партии 1 лежит в ОЗУ по 0x21E4, длиной 246 байт.
 			std::printf("  сдвинулось в тембре (ОЗУ 0x21E4+):");
