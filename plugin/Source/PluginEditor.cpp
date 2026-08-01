@@ -135,6 +135,8 @@ D110Panel::D110Panel(D110AudioProcessor &p)
 {
 	panelImage = juce::ImageCache::getFromMemory(BinaryData::panel_reference_png,
 	                                             BinaryData::panel_reference_pngSize);
+	cardImage = juce::ImageCache::getFromMemory(BinaryData::memory_card_m256d_png,
+	                                            BinaryData::memory_card_m256d_pngSize);
 
 	for (const auto &b : kButtons) {
 		const juce::Rectangle<float> face(b.x, b.y, b.w, b.h);
@@ -303,6 +305,18 @@ void D110Panel::timerCallback()
 		needsRepaint = true;
 	}
 
+	// Ход карты. Скорость взята так, чтобы весь путь занимал около полусекунды при 60 кадрах
+	// в секунду, а под конец движение замедлялось - карта подъезжает к упору, а не втыкается
+	// в него. Пока карта едет, перерисовываться надо каждый кадр.
+	if (cardTravel != cardTarget) {
+		const float step = 0.045f;
+		const float remaining = cardTarget - cardTravel;
+		const float ease = juce::jmax(0.25f, std::abs(remaining)); // мягче у обоих концов
+		cardTravel += juce::jlimit(-step, step, remaining) * ease * 2.0f;
+		if (std::abs(cardTarget - cardTravel) < 0.004f) cardTravel = cardTarget;
+		needsRepaint = true;
+	}
+
 	if (needsRepaint)
 		repaint(); // whole panel: a clipped repaint would silently drop the lamp
 }
@@ -318,6 +332,28 @@ void D110Panel::paint(juce::Graphics &g)
 	paintVolumeKnob(g);
 	paintMidiLamp(g);
 	paintLcd(g);
+	paintMemoryCard(g);
+}
+
+// Карта рисуется ПОСЛЕ панели, но с отсечением по низу щели - поэтому она никогда не
+// оказывается поверх лицевой стороны прибора, а появляется только из-под неё.
+//
+// Из щели она выходит НИЖНИМ краем вперёд: так и ведёт себя карта, которую выталкивают
+// вниз. Полный ход - от положения, где она целиком выше отсечения, до положения, где она
+// целиком ниже окна.
+void D110Panel::paintMemoryCard(juce::Graphics &g) const
+{
+	if (!cardImage.isValid() || cardTravel <= 0.0f) return;
+
+	const float span = float(getHeight()) - kCardSeatedY; // от спрятанной до ушедшей
+	const float y = kCardSeatedY + cardTravel * span;
+
+	juce::Graphics::ScopedSaveState clip(g);
+	g.reduceClipRegion(juce::Rectangle<int>(0, int(kSlotBottom), getWidth(),
+	                                        getHeight() - int(kSlotBottom)));
+	g.drawImage(cardImage,
+	            juce::Rectangle<float>(kCardX, y, kCardWidth, kCardHeight),
+	            juce::RectanglePlacement::stretchToFit);
 }
 
 // Where a cap's photographed image is drawn for a given press depth: shrunk about
@@ -481,6 +517,15 @@ void D110Panel::mouseDown(const juce::MouseEvent &e)
 	}
 
 	const auto p = e.position;
+
+	// Щель карты памяти. Область взята по обрамлению, а не по самому проёму: попасть мышью
+	// в полоску высотой тридцать точек трудно, а обрамление - это ровно то, что человек
+	// видит как «щель».
+	if (juce::Rectangle<float>(1588.0f, 109.0f, 260.0f, 52.0f).contains(p)) {
+		cardTarget = (cardTarget > 0.5f) ? 0.0f : 1.0f;
+		return;
+	}
+
 	const int idx = buttonAt(p);
 
 	if (idx == kPowerIndex) {

@@ -36,7 +36,8 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../munt/mt32emu" "${CMAKE_CURRENT_
 
 # The front panel IS the reference photograph - see docs/panel_reference_notes.md.
 juce_add_binary_data(D110PanelData
-    SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../docs/panel_reference.png")
+    SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../docs/panel_reference.png"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../docs/memory_card_m256d.png")
 
 juce_add_plugin(D110Emulator
     # Без этого JUCE ставит собственную версию по умолчанию, и хост показывает её вместо

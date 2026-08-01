@@ -73,6 +73,7 @@ private:
 	void paintPowerSwitch(juce::Graphics &) const;
 	void paintVolumeKnob(juce::Graphics &) const;
 	void paintMidiLamp(juce::Graphics &) const;
+	void paintMemoryCard(juce::Graphics &) const;
 
 	static juce::Rectangle<float> pressedRect(juce::Rectangle<float> face, float depth,
 	                                          float shrink, float drop);
@@ -82,6 +83,23 @@ private:
 	D110AudioProcessor &processor;
 
 	juce::Image panelImage;
+
+	// Карта памяти M-256D. Её фотография ВЫШЕ окна: 236 x 370 против панели в 256, - поэтому
+	// она не выглядывает из щели, а ПРОЕЗЖАЕТ мимо, как титры, и наклейка успевает пройти
+	// целиком. Одновременно видны 106 точек - промежуток между низом щели и низом панели.
+	//
+	// Геометрия снята с фотографии панели (docs/panel_reference_notes.md): проём щели
+	// 1600, 120, размером 236 x 30. Ширина карты в истинном масштабе прибора - те же 236,
+	// что и ширина проёма, и это совпадение служит проверкой масштаба.
+	juce::Image cardImage;
+	static constexpr float kCardX = 1600.0f;
+	static constexpr float kCardWidth = 236.0f;
+	static constexpr float kCardHeight = 370.0f;
+	static constexpr float kSlotBottom = 150.0f; // ниже этой линии карта только и видна
+	static constexpr float kCardSeatedY = kSlotBottom - kCardHeight; // спрятана над щелью
+	// Насколько карта выдвинута: 0 - сидит в приборе, 1 - ушла за нижний край окна.
+	float cardTravel = 0.0f;
+	float cardTarget = 0.0f;
 	juce::Image lcdImage;                    // offscreen dot-matrix render, rebuilt only on change
 	std::vector<juce::Image> capImages;      // one cut-out per button
 	std::vector<juce::Colour> recessColours; // the recess each cap sinks into
