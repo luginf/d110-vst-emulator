@@ -88,7 +88,8 @@ std::vector<uint8_t> ramOf(D110AudioProcessor &proc) {
 
 struct Capture {
 	std::vector<D110Core::SoWrite> writes;
-	std::vector<int> slots;                       // слоты, выделенные этой ноте
+	std::vector<int> slots;        // слоты этой ноты, взятые из её же записей
+	std::vector<int> slotsByTable; // они же по таблице состояний - только для сверки
 	std::map<uint16_t, std::vector<uint8_t>> byAddr;
 	uint64_t dropped = 0;
 };
@@ -132,11 +133,28 @@ Capture window(D110AudioProcessor &proc, int note, int velocity, double seconds)
 	c.dropped = proc.getCore().soWritesDropped();
 	c.writes = proc.getCore().takeSoWrites();
 	for (const auto &w : c.writes) c.byAddr[w.addr].push_back(w.value);
+
+	// Слоты берутся ИЗ САМИХ ЗАПИСЕЙ, по банку 0x0C00. Он пишется только при выдаче голоса,
+	// в отличие от банка огибающих 0x0CC0, который параллельно доигрывает прежние ноты, -
+	// значит слоты, затронутые в нём за это окно, и есть слоты этой ноты.
+	//
+	// Прежний признак - «запись в таблице состояний ушла от 0x80» - работал только для
+	// слотов, ни разу не использованных, потому что прошивка НИКОГДА не возвращает слот в
+	// 0x80: цикл освобождения по ПЗУ 0x29BB таблицу edc0 не трогает (la32_interface.md).
+	// Свободных слотов всего 32, четыре раздражителя занимали шестнадцать, и хроматика
+	// умирала после четвёртой ноты. Ждать дольше не помогало и помочь не могло.
+	for (const auto &[addr, vals] : c.byAddr)
+		if ((addr & 0xFFC0) == D110Core::kLa32TapBase)
+			c.slots.push_back((addr & 0x3F) / kBytesPerSlot);
+	c.slots.erase(std::unique(c.slots.begin(), c.slots.end()), c.slots.end());
+
+	// Таблица состояний остаётся как сверка: пока слоты ещё не кончились, оба способа
+	// обязаны называть одно и то же, и расхождение сразу видно.
 	for (int s = 0; s < D110Core::kNumHardwareVoices; ++s) {
 		const int off2 = D110Core::kSlotStateTable + 2 * s;
 		if (before[(size_t)off2] == D110Core::kSlotIdleValue &&
 		    during[(size_t)off2] != D110Core::kSlotIdleValue)
-			c.slots.push_back(s);
+			c.slotsByTable.push_back(s);
 	}
 	return c;
 }
@@ -225,7 +243,10 @@ int main() {
 		            r.cap.writes.size(), (unsigned long long)r.cap.dropped);
 		for (int s : r.cap.slots) std::printf(" %d", s);
 		if (r.cap.slots.empty()) std::printf(" (НИ ОДНОГО - слот не определился)");
-		std::printf("\n");
+		std::printf("   | по таблице состояний:");
+		for (int s : r.cap.slotsByTable) std::printf(" %d", s);
+		if (r.cap.slotsByTable.empty()) std::printf(" (пусто - свободные слоты кончились)");
+		std::printf("%s\n", r.cap.slots == r.cap.slotsByTable ? "   СОВПАЛО" : "");
 	}
 
 	bool usable = true;
