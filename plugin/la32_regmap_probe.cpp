@@ -354,14 +354,16 @@ int main(int argc, char **argv) {
 		// Страницы задаются аргументами: за прогон их помещается три-четыре. На страницу
 		// уходит два замера, на замер четыре слота при тембре из четырёх партиалов, а
 		// слотов 32 - дальше начинается переиспользование, и мерить нечем.
-		// Внутри правки тембра Bank+ выбирает ГРУППУ (Common или один из четырёх партиалов),
-		// а Group+ листает параметры внутри неё. У группы Common параметров ровно три - имя
-		// и две структуры, - и на страницах 3-5 в ОЗУ уже не двигалось ничего: Group+
-		// упирался в конец группы. До волновой формы и огибающих ведёт Bank+.
-		const int bankSteps = (argc > 2) ? std::atoi(argv[2]) : 0;
+		// Внутри правки тембра ПАРТИАЛ выбирает Part+, а Group+ листает параметры внутри
+		// него; снято разведкой (режим find, таблица в docs/la32_register_map.md). Bank+ не
+		// подходит - он водит курсор по имени тембра, что стоило одного прогона, потраченного
+		// на чужое допущение вместо измерения.
+		//
+		// Part+ 0 оставляет общую часть тембра: имя и две структуры.
+		const int partSteps = (argc > 2) ? std::atoi(argv[2]) : 0;
 		const int firstPage = (argc > 3) ? std::atoi(argv[3]) : 0;
 		const int pageCount = (argc > 4) ? std::atoi(argv[4]) : 3;
-		std::printf("группа: Bank+ x%d; страницы: с %d, числом %d\n", bankSteps, firstPage,
+		std::printf("партиал: Part+ x%d; страницы: с %d, числом %d\n", partSteps, firstPage,
 		            pageCount);
 
 		struct Point { std::string name; int groupSteps; int presses; };
@@ -375,7 +377,7 @@ int main(int argc, char **argv) {
 			press(proc, "Timbre");
 			press(proc, "Edit");
 			press(proc, "Edit");
-			if (bankSteps) press(proc, "Bank+", bankSteps);
+			if (partSteps) press(proc, "Part+", partSteps);
 			if (pt.groupSteps) press(proc, "Group+", pt.groupSteps);
 			render(proc, 0.6);
 			const auto ramBefore = ramOf(proc);
