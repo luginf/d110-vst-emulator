@@ -50,7 +50,7 @@ constexpr int kBytesPerSlot = 2;
 struct Btn { const char *name; int port; int bit; };
 const Btn kButtons[] = {
 	{"Exit", 0, 7}, {"Timbre", 0, 5}, {"Number+", 0, 1}, {"Edit", 1, 7},
-	{"Number-", 1, 1}, {"Group+", 0, 3}, {"Bank+", 0, 2},
+	{"Number-", 1, 1}, {"Group+", 0, 3}, {"Bank+", 0, 2}, {"Part+", 0, 4},
 };
 
 void render(D110AudioProcessor &proc, double seconds) {
@@ -245,7 +245,7 @@ void chromaticSweep(D110AudioProcessor &proc) {
 // использованные слоты, их всего 32, и как только они кончаются, в тот же банк начинают идти
 // обнуления при переиспользовании - неотличимые здесь от выдачи. Два опыта в одном прогоне
 // не помещаются, и попытка их совместить трижды портила измерение.
-enum class Mode { Sweep, Tone };
+enum class Mode { Sweep, Tone, Find };
 
 int main(int argc, char **argv) {
 	juce::ScopedJuceInitialiser_GUI juceInit;
@@ -253,8 +253,11 @@ int main(int argc, char **argv) {
 
 	Mode mode = Mode::Sweep;
 	if (argc > 1 && std::strcmp(argv[1], "tone") == 0) mode = Mode::Tone;
-	std::printf("режим: %s\n", mode == Mode::Sweep ? "хроматика и четыре раздражителя"
-	                                               : "точечные правки тембра");
+	if (argc > 1 && std::strcmp(argv[1], "find") == 0) mode = Mode::Find;
+	std::printf("режим: %s\n",
+	            mode == Mode::Sweep ? "хроматика и четыре раздражителя"
+	            : mode == Mode::Tone ? "точечные правки тембра"
+	                                 : "разведка страниц правки тембра");
 
 	D110AudioProcessor proc;
 	proc.prepareToPlay(kSampleRate, kBlock);
@@ -280,6 +283,64 @@ int main(int argc, char **argv) {
 		std::printf("  записей: %zu\n", w.size());
 		if (!w.empty())
 			std::printf("  !!! окно не молчит - всё ниже надо читать с поправкой на это\n");
+	}
+
+	// ---- разведка страниц правки тембра -------------------------------------------------
+	// Ищет, чем вообще доходят до параметров ПАРТИАЛОВ. Ничего о назначении кнопок не
+	// предполагает: жмёт значение и смотрит, какой байт тембра сдвинулся. Байт называет
+	// параметр сам. Тембр D-110 - это 10 байт имени, ещё четыре байта общей части (две
+	// структуры, приглушение партиалов, режим огибающей), а с байта 14 идут собственно
+	// четыре партиала по 58 байт.
+	//
+	// Нот здесь НЕ играется, и это важно: разведка не тратит голосовые слоты, поэтому всю
+	// сетку можно перебрать за один прогон, тогда как измерение регистров упирается в 32
+	// слота и требует опыта за запуск.
+	if (mode == Mode::Find) {
+		std::printf("  общая часть тембра - байты 0..13, партиалы - с 14-го\n");
+		std::printf("  Part+ | Group+ | сдвинувшийся байт тембра\n");
+		for (int part = 0; part <= 4; ++part) {
+			for (int group = 0; group <= 6; ++group) {
+				press(proc, "Exit", 2);
+				press(proc, "Timbre");
+				press(proc, "Edit");
+				press(proc, "Edit");
+				if (part) press(proc, "Part+", part);
+				if (group) press(proc, "Group+", group);
+				render(proc, 0.4);
+				const auto before = ramOf(proc);
+				press(proc, "Number+", 3);
+				render(proc, 0.5);
+				auto after = ramOf(proc);
+				// Значение могло стоять на верхнем упоре - и тогда «ничего не сдвинулось»
+				// означало бы не «страница пустая», а «прибавлять некуда». Память прошивки
+				// живёт между прогонами, а прошлые прогоны как раз прибавляли, так что к
+				// этому моменту упор - обычное дело. Пробуем в другую сторону.
+				bool moved = std::memcmp(&before[0x21E4], &after[0x21E4], 246) != 0;
+				const char *dir = "+";
+				if (!moved) {
+					press(proc, "Number-", 3);
+					render(proc, 0.5);
+					after = ramOf(proc);
+					moved = std::memcmp(&before[0x21E4], &after[0x21E4], 246) != 0;
+					dir = "-";
+				}
+				std::printf("  %5d | %6d | %s |", part, group, dir);
+				int moves = 0;
+				for (int i = 0; i < 246; ++i) {
+					const int off = 0x21E4 + i;
+					if (before[(size_t)off] == after[(size_t)off]) continue;
+					if (moves++ < 4)
+						std::printf(" байт%d(%d->%d)%s", i, before[(size_t)off],
+						            after[(size_t)off], i >= 14 ? " <== ПАРТИАЛ" : "");
+				}
+				if (!moves) std::printf(" (ничего ни вверх, ни вниз)");
+				std::printf("\n");
+			}
+		}
+		proc.setPoweredOn(false);
+		proc.releaseResources();
+		std::printf("\nготово\n");
+		return 0;
 	}
 
 	// ---- режим точечных правок тембра --------------------------------------------------
