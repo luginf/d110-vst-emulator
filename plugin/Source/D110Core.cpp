@@ -86,6 +86,8 @@ class D110Osd : public osd_common_t {
 	memory_passthrough_handler m_dispatchTap;
 	memory_passthrough_handler m_soTap;
 	memory_passthrough_handler m_soAliasTap;
+	memory_passthrough_handler m_extIoTap;
+	memory_passthrough_handler m_panelPortTap;
 	memory_passthrough_handler m_portTap;
 	bool m_la32Pending = false;   // a status byte is waiting to be collected
 	bool m_la32NeedClear = false; // the handler has taken it; drop the line
@@ -299,6 +301,34 @@ class D110Osd : public osd_common_t {
 			m_soAliasTap = m_cpu->space(AS_PROGRAM).install_write_tap(
 				D110Core::kSoRegisterAlias, D110Core::kSoRegisterAlias + 1, "d110_so_alias",
 				soWatch);
+
+			// Внешний ввод-вывод целиком - см. kExtIoTapBase. Пишется в тот же поток, что и
+			// защёлка SO, потому что вопрос один и тот же: какая подпрограмма какое значение
+			// куда положила. Оба байта шестнадцатибитной шины разбираются порознь: у
+			// ревербератора подключены только D1-D5, так что значение имеет смысл побитно и
+			// склеивать два байта в одно слово было бы враньём.
+			auto ioWatch = [this](offs_t addr, u16 &data, u16 mem_mask) {
+				const uint16_t pc = uint16_t(m_cpu->pc());
+				if (mem_mask & 0x00ff)
+					core->osdLogSoWrite(pc, uint16_t(addr), uint8_t(data & 0xff));
+				if (mem_mask & 0xff00)
+					core->osdLogSoWrite(pc, uint16_t(addr + 1), uint8_t((data >> 8) & 0xff));
+			};
+			// Порты опроса панели - см. kPanelPortTapBase. Карта их занимает только на
+			// чтение, записи в ней объявлены nopw(), поэтому увидеть их можно лишь так.
+			m_panelPortTap = m_cpu->space(AS_PROGRAM).install_write_tap(
+				D110Core::kPanelPortTapBase, D110Core::kPanelPortTapEnd, "d110_panel_ports",
+				ioWatch);
+
+			m_extIoTap = m_cpu->space(AS_PROGRAM).install_write_tap(
+				D110Core::kExtIoTapBase, D110Core::kExtIoTapEnd, "d110_ext_io",
+				[this](offs_t addr, u16 &data, u16 mem_mask) {
+					const uint16_t pc = uint16_t(m_cpu->pc());
+					if (mem_mask & 0x00ff)
+						core->osdLogSoWrite(pc, uint16_t(addr), uint8_t(data & 0xff));
+					if (mem_mask & 0xff00)
+						core->osdLogSoWrite(pc, uint16_t(addr + 1), uint8_t((data >> 8) & 0xff));
+				});
 
 			// Выводы портов 1 и 2 самого процессора. У MCS-96 они живут не в памяти, а в
 			// файле регистров (пространство AS_DATA): 0x0F - порт 1, 0x10 - порт 2.
@@ -1107,6 +1137,11 @@ bool D110Core::popNoteEvent(NoteEvent &out) {
 }
 
 void D110Core::osdLogSoWrite(uint16_t pc, uint16_t addr, uint8_t value) {
+	// Быстрый выход БЕЗ мьютекса. Перехват на портах опроса панели срабатывает несколько
+	// тысяч раз в секунду и делает это на потоке процессора - том самом, чьё расписание
+	// решает, успеет ли прошивка получить ответ от LA32 вовремя. Захват включён только в
+	// стендах, а в плагине выключен всегда, и тогда эта проверка - всё, что тут исполняется.
+	if (!soTracingOn.load(std::memory_order_acquire)) return;
 	std::lock_guard<std::mutex> lock(soMutex);
 	if (!soTracing) return;
 	if (soTrace.size() >= kMaxSoWrites) { ++soDropped; return; }

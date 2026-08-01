@@ -352,6 +352,20 @@ target_link_libraries(d110_reverb_path PRIVATE
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_reverb_path PRIVATE /ignore:4099 /FORCE:MULTIPLE)
 
+# Ищет адрес, по которому прошивка задаёт ТИП ревербератора: перехватывает весь свободный
+# внешний ввод-вывод 0x0400-0x0BFF, разворачивает восемь типов и сравнивает с контрольным
+# прогоном, где нажатия и нота те же, а тип не меняется.
+add_executable(d110_reverb_reg reverb_reg_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_reverb_reg PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_reverb_reg PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_reverb_reg PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_reverb_reg PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
 # Переживает ли правка тембра смену параметра партии на ОБЫЧНОМ патче - вопрос, на который
 # демо-песня ответить не может, потому что её группа тембра 5 с панели недостижима. Ставит
 # опыт дважды в одном прогоне, с подтверждением тембров и без него, чтобы у результата был

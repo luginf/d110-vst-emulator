@@ -346,6 +346,32 @@ public:
 	// ничем не занят), это одна и та же защёлка, и половина её записей сейчас теряется.
 	static constexpr uint16_t kSoRegisterAlias = 0x0280;
 
+	// Внешний ввод-вывод, которого нет в карте памяти MAME вообще: 0x0400-0x0BFF.
+	//
+	// По принципиальной схеме главной платы (docs/service_notes_findings.md) у микросхемы
+	// ревербератора IC5 есть собственный вход от процессора - пять бит данных D1-D5 и два
+	// строба STB0/STB1, - а стробы эти собраны из выходов вентильной матрицы IC16:
+	// STB0 = НЕ(EXIO1 · WL), STB1 = НЕ(EXIO2 · WL). Адреса, по которым матрица поднимает
+	// EXIO1 и EXIO2, внутри неё и на схеме не названы, но карта D-110 в MAME занимает
+	// только 0x0100, 0x0200, 0x021A-0x021D, 0x0300 и 0x0380, а журнал неотображённых
+	// обращений показывал ровно два необъяснённых адреса - 0x0400 и 0x0800. Перехват берёт
+	// весь промежуток целиком, чтобы ответ не зависел от того, угадана ли пара.
+	//
+	// Верхняя граница 0x0BFF намеренно не доходит до 0x0C00: там регистровый файл самой
+	// LA32 (512 адресов, что ровно её выводы A0-A8), по нему идёт поток на каждую ноту, и
+	// он утопил бы захват. Это ДРУГОЙ интерфейс, не ревербератора.
+	static constexpr uint16_t kExtIoTapBase = 0x0400;
+	static constexpr uint16_t kExtIoTapEnd = 0x0BFF;
+
+	// 0x021A-0x021D прошивка не только ЧИТАЕТ (опрос панели), но и ПИШЕТ, а карта в MAME
+	// объявляет их `portr("SC0").nopw()` - записи выбрасываются молча. Между тем именно
+	// туда уходят биты 1-3 типа ревербератора: подпрограмма ПЗУ 0x4C93 читает тип из ОЗУ
+	// 0x2D95, берёт `тип & 0x0E`, вставляет в теневой байт и пишет его по 0x021A, а
+	// оставшийся младший бит типа кладёт в бит 2 порта 0x0800. Перехват нужен, чтобы это
+	// вообще было видно, и он же показывает, что теряет драйвер.
+	static constexpr uint16_t kPanelPortTapBase = 0x021A;
+	static constexpr uint16_t kPanelPortTapEnd = 0x021D;
+
 	// Весь байт SO, а не только бит лампы. По разбору MAME (`so_w` в roland_d10.cpp):
 	// бит 0 - светодиод, биты 1-2 - номер программы ревербератора (это A13/A14 ПЗУ
 	// микросхемы BOSS, то есть всего четыре программы), бит 3 - "R. SW." на аналоговую
@@ -372,12 +398,18 @@ public:
 		return soDropped;
 	}
 	void startSoTrace() {
-		std::lock_guard<std::mutex> lock(soMutex);
-		soTrace.clear();
-		soDropped = 0;
-		soTraceStart = std::chrono::steady_clock::now();
-		soTracing = true;
+		{
+			std::lock_guard<std::mutex> lock(soMutex);
+			soTrace.clear();
+			soDropped = 0;
+			soTraceStart = std::chrono::steady_clock::now();
+			soTracing = true;
+		}
+		// Ставится последним и снимается первым: пока он ложный, osdLogSoWrite не берёт
+		// мьютекс вовсе - см. там же, почему на этом пути нельзя блокироваться.
+		soTracingOn.store(true, std::memory_order_release);
 	}
+	void stopSoTrace() { soTracingOn.store(false, std::memory_order_release); }
 
 	// --- notes recovered from the firmware itself ------------------------------
 	// The firmware plays its own demo songs (ROM Play) internally and does NOT transmit
@@ -746,6 +778,7 @@ private:
 	std::vector<SoWrite> soTrace;
 	std::chrono::steady_clock::time_point soTraceStart;
 	bool soTracing = false;
+	std::atomic<bool> soTracingOn{false};
 	uint64_t soDropped = 0;
 	static constexpr size_t kMaxSoWrites = 20000;
 	mutable std::mutex noteLogMutex;
