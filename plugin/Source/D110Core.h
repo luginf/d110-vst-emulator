@@ -372,6 +372,24 @@ public:
 	static constexpr uint16_t kPanelPortTapBase = 0x021A;
 	static constexpr uint16_t kPanelPortTapEnd = 0x021D;
 
+	// Регистровый файл самой LA32: 0x0C00-0x0DFF. Что это именно он, а не «какой-то кусок
+	// адресов», следует из таблицы выводов MB87136APF в сервисных заметках - у микросхемы
+	// девять адресных линий A0-A8, то есть ровно 512 регистров, и найденное зондом окно
+	// неотображённых обращений имеет ровно такой размер.
+	//
+	// Перехват стоит всегда, но пишет только когда включён захват, и поток нот через него
+	// плотный - поэтому у захвата есть фильтр по адресу (setTraceFilter): без него опрос
+	// панели, идущий тысячами записей в секунду по 0x021A, забил бы кольцо раньше, чем в
+	// него попала бы хоть одна нота.
+	static constexpr uint16_t kLa32TapBase = 0x0C00;
+	static constexpr uint16_t kLa32TapEnd = 0x0DFF;
+
+	// Ограничить захват записей одним диапазоном адресов. По умолчанию берётся всё.
+	void setTraceFilter(uint16_t lo, uint16_t hi) {
+		traceLo.store(lo, std::memory_order_release);
+		traceHi.store(hi, std::memory_order_release);
+	}
+
 	// Весь байт SO, а не только бит лампы. По разбору MAME (`so_w` в roland_d10.cpp):
 	// бит 0 - светодиод, биты 1-2 - номер программы ревербератора (это A13/A14 ПЗУ
 	// микросхемы BOSS, то есть всего четыре программы), бит 3 - "R. SW." на аналоговую
@@ -779,6 +797,7 @@ private:
 	std::chrono::steady_clock::time_point soTraceStart;
 	bool soTracing = false;
 	std::atomic<bool> soTracingOn{false};
+	std::atomic<uint16_t> traceLo{0x0000}, traceHi{0xFFFF};
 	uint64_t soDropped = 0;
 	static constexpr size_t kMaxSoWrites = 20000;
 	mutable std::mutex noteLogMutex;

@@ -352,6 +352,19 @@ target_link_libraries(d110_reverb_path PRIVATE
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_reverb_path PRIVATE /ignore:4099 /FORCE:MULTIPLE)
 
+# Карта регистров LA32: что прошивка кладёт в микросхему синтеза и какая ячейка что значит.
+# Три раздражителя, отличающиеся ровно одним свойством, плюс окно без ноты как контроль.
+add_executable(d110_la32_regmap la32_regmap_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_la32_regmap PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_la32_regmap PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_la32_regmap PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_la32_regmap PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
 # Доезжает ли заводской банк патчей до самой прошивки и что он меняет в её памяти. Разницу
 # «до и после» сравнивает с контрольным окном такой же длины БЕЗ импорта, потому что
 # прошивка непрерывно пишет в свои рабочие области и сама по себе.

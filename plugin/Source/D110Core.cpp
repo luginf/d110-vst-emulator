@@ -88,6 +88,7 @@ class D110Osd : public osd_common_t {
 	memory_passthrough_handler m_soAliasTap;
 	memory_passthrough_handler m_extIoTap;
 	memory_passthrough_handler m_panelPortTap;
+	memory_passthrough_handler m_la32WriteTap;
 	memory_passthrough_handler m_portTap;
 	bool m_la32Pending = false;   // a status byte is waiting to be collected
 	bool m_la32NeedClear = false; // the handler has taken it; drop the line
@@ -319,6 +320,12 @@ class D110Osd : public osd_common_t {
 			m_panelPortTap = m_cpu->space(AS_PROGRAM).install_write_tap(
 				D110Core::kPanelPortTapBase, D110Core::kPanelPortTapEnd, "d110_panel_ports",
 				ioWatch);
+
+			// Регистровый файл LA32 - см. kLa32TapBase. Единственный способ увидеть, что
+			// прошивка кладёт в микросхему синтеза: карта памяти D-110 это окно не
+			// занимает вовсе, а обращения по нему и есть весь её управляющий интерфейс.
+			m_la32WriteTap = m_cpu->space(AS_PROGRAM).install_write_tap(
+				D110Core::kLa32TapBase, D110Core::kLa32TapEnd, "d110_la32_regs", ioWatch);
 
 			m_extIoTap = m_cpu->space(AS_PROGRAM).install_write_tap(
 				D110Core::kExtIoTapBase, D110Core::kExtIoTapEnd, "d110_ext_io",
@@ -1142,6 +1149,8 @@ void D110Core::osdLogSoWrite(uint16_t pc, uint16_t addr, uint8_t value) {
 	// решает, успеет ли прошивка получить ответ от LA32 вовремя. Захват включён только в
 	// стендах, а в плагине выключен всегда, и тогда эта проверка - всё, что тут исполняется.
 	if (!soTracingOn.load(std::memory_order_acquire)) return;
+	if (addr < traceLo.load(std::memory_order_relaxed) ||
+	    addr > traceHi.load(std::memory_order_relaxed)) return;
 	std::lock_guard<std::mutex> lock(soMutex);
 	if (!soTracing) return;
 	if (soTrace.size() >= kMaxSoWrites) { ++soDropped; return; }
