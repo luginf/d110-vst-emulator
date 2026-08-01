@@ -63,7 +63,18 @@ MT-32 has no such concept. This does not block anything: when the firmware
 *applies* a patch it writes the resulting per-part assignment into the Timbre
 Temporary Area at `03 00 00`, which munt does model. So mirroring `0x030000`,
 `0x040000`, `0x050000`, `0x080000` and `0x100000` covers everything munt can
-actually render.
+actually render. munt says so out loud, incidentally: importing a patch bank makes
+it log `Sysex write to unrecognised address 060000` once per message, which is the
+engine correctly declining data that is not its business.
+
+> **Patch Memory in the firmware's RAM: base `0x0000`, stride 128, 64 entries** —
+> measured 2026-08-01 by `plugin/factory_bank_probe.cpp` (`d110_factory_bank`), which
+> imports a real factory patch bank and then searches the battery RAM for each of the
+> file's own 128-byte records. All 64 were found, at `0x0000`, `0x0080`, `0x0100` …
+> `0x1F80`. So the 8 KB below Timbre Temporary is Patch Memory, and
+> **RAM `0x0000` == SysEx `0x060000`**. Nothing mirrors it and nothing needs to — it is
+> recorded because "where does the firmware keep its patches" had been an open question
+> whenever a patch-level bug was suspected.
 
 ## And it is the same layout as the firmware's RAM
 
