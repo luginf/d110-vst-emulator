@@ -173,6 +173,72 @@ std::string show(const std::map<Key, std::vector<uint8_t>> &m, const Key &k, int
 	return s;
 }
 
+// Как регистр движется НА ПОЛУТОН.
+//
+// Сравнение потоков целиком объявило банк 0x0CC0 зависящим «от всего», и это артефакт
+// длины: у прогонов разное число обновлений, поэтому векторы не равны, даже когда их
+// НАЧАЛА совпадают поэлементно. А начала совпадают. Множеством значений такой вопрос не
+// решается - нужен закон, и его даёт ряд подряд идущих нот.
+//
+// Снимается ПЕРВОЙ, до всех прочих опытов, и это не порядок изложения, а необходимость:
+// слот опознаётся по тому, что прошивка его выдала, а выдаёт она сначала ни разу не
+// использованные. Их 32, и каждая нота занимает два-четыре. Если снимать хроматику после
+// четырёх раздражителей, свободные кончаются на четвёртой ноте - так и было три прогона
+// подряд, причём ни пауза между нотами, ни фильтр по адресу подпрограммы не помогали,
+// потому что дело не в них.
+void chromaticSweep(D110AudioProcessor &proc) {
+	std::printf("\n=== хроматика: первое значение каждого регистра, ноты 60..72 ===\n");
+
+	auto firstReal = [](const std::vector<uint8_t> &v) -> int {
+		for (uint8_t x : v)
+			if (x != 0xFF) return x;
+		return -1;
+	};
+
+	std::vector<Key> watch;
+	for (uint16_t bank : {0x0C00, 0x0C40, 0x0C80, 0x0CC0, 0x0D00})
+		for (int p = 0; p < 2; ++p)
+			for (int b = 0; b < kBytesPerSlot; ++b) watch.push_back({bank, p, b});
+
+	std::printf("  нота |");
+	for (const auto &k : watch)
+		std::printf(" %04X.%d.%d", std::get<0>(k), std::get<1>(k), std::get<2>(k));
+	std::printf("\n");
+
+	std::map<Key, std::vector<int>> series;
+	for (int note = 60; note <= 72; ++note) {
+		const Capture cap = window(proc, note, 100, 0.35);
+		const auto n = normalise(cap);
+		std::printf("  %4d |", note);
+		for (const auto &k : watch) {
+			const auto it = n.find(k);
+			const int v = (it == n.end()) ? -1 : firstReal(it->second);
+			series[k].push_back(v);
+			if (v < 0) std::printf("       -");
+			else std::printf("      %02X", v);
+		}
+		std::printf("   слоты:");
+		for (int s : cap.slots) std::printf(" %d", s);
+		std::printf("\n");
+	}
+
+	std::printf("\n  шаг на полутон (разности подряд идущих нот):\n");
+	for (const auto &k : watch) {
+		const auto &s = series[k];
+		bool anyMissing = false;
+		for (int v : s) if (v < 0) anyMissing = true;
+		if (anyMissing) continue;
+		std::printf("    %04X.%d.%d :", std::get<0>(k), std::get<1>(k), std::get<2>(k));
+		int total = 0;
+		for (size_t i = 1; i < s.size(); ++i) {
+			std::printf(" %+d", s[i] - s[i - 1]);
+			total += s[i] - s[i - 1];
+		}
+		std::printf("   всего за октаву %+d\n", total);
+	}
+	std::printf("  Регистр, у которого сумма за октаву не ноль, следует за клавишей.\n");
+}
+
 } // namespace
 
 int main() {
@@ -204,6 +270,8 @@ int main() {
 		if (!w.empty())
 			std::printf("  !!! окно не молчит - всё ниже надо читать с поправкой на это\n");
 	}
+
+	chromaticSweep(proc);
 
 	struct Run { const char *label; Capture cap; };
 	std::vector<Run> runs;
@@ -300,72 +368,6 @@ int main() {
 		            "  ничем другим - остальные три раздражителя его не сдвинули. Помеченный\n"
 		            "  несколькими требует ещё одного опыта, а не толкования.\n");
 	}
-
-	// ---- хроматика: как регистр движется НА ПОЛУТОН ------------------------------------
-	// Сравнение потоков целиком выше объявило банк 0x0CC0 зависящим «от всего», и это
-	// артефакт длины: у прогонов разное число обновлений, поэтому векторы не равны, даже
-	// когда их начала совпадают поэлементно. А начала совпадают: у ноты 60 при силе 100 и
-	// при силе 40 первые значения одинаковы, а у ноты 72 отличаются ровно на 17.
-	//
-	// Множеством значений такой вопрос не решается - нужен закон. Тринадцать нот подряд, у
-	// каждой берётся ПЕРВОЕ осмысленное значение (ведущее FF пропускается), и шаг виден
-	// прямо в столбце.
-	std::printf("\n=== хроматика: первое значение каждого регистра, ноты 60..72 ===\n");
-	press(proc, "Exit", 2); // вернуться из меню правки тембра
-
-	auto firstReal = [](const std::vector<uint8_t> &v) -> int {
-		for (uint8_t x : v)
-			if (x != 0xFF) return x;
-		return -1;
-	};
-
-	std::vector<Key> watch;
-	for (uint16_t bank : {0x0C00, 0x0C40, 0x0C80, 0x0CC0, 0x0D00})
-		for (int p = 0; p < 2; ++p)
-			for (int b = 0; b < kBytesPerSlot; ++b) watch.push_back({bank, p, b});
-
-	std::printf("  нота |");
-	for (const auto &k : watch)
-		std::printf(" %04X.%d.%d", std::get<0>(k), std::get<1>(k), std::get<2>(k));
-	std::printf("\n");
-
-	std::map<Key, std::vector<int>> series;
-	for (int note = 60; note <= 72; ++note) {
-		// Слот опознаётся по переходу 0x80 -> занят, поэтому перед нотой он обязан успеть
-		// освободиться. У тембра из четырёх партиалов на ноту уходит четыре слота, и без
-		// этой паузы уже с пятой ноты свободных не оставалось - в прогоне подряд не
-		// определились восемь нот из тринадцати.
-		render(proc, 1.5);
-		const Capture cap = window(proc, note, 100, 0.35);
-		const auto n = normalise(cap);
-		std::printf("  %4d |", note);
-		for (const auto &k : watch) {
-			const auto it = n.find(k);
-			const int v = (it == n.end()) ? -1 : firstReal(it->second);
-			series[k].push_back(v);
-			if (v < 0) std::printf("       -");
-			else std::printf("      %02X", v);
-		}
-		std::printf("%s\n", cap.slots.empty() ? "   (слот не определился)" : "");
-	}
-
-	std::printf("\n  шаг на полутон (разности подряд идущих нот):\n");
-	for (const auto &k : watch) {
-		const auto &s = series[k];
-		bool anyMissing = false;
-		for (int v : s) if (v < 0) anyMissing = true;
-		if (anyMissing) continue;
-		std::printf("    %04X.%d.%d :", std::get<0>(k), std::get<1>(k), std::get<2>(k));
-		int total = 0;
-		for (size_t i = 1; i < s.size(); ++i) {
-			std::printf(" %+d", s[i] - s[i - 1]);
-			total += s[i] - s[i - 1];
-		}
-		std::printf("   всего за октаву %+d\n", total);
-	}
-	std::printf("\n  Регистр, у которого сумма за октаву не ноль, следует за клавишей.\n"
-	            "  Ровная единица на полутон - полутоновая шкала; 16 или 17 за октаву -\n"
-	            "  шкала другая, и какая именно, показывает сам ряд разностей.\n");
 
 	proc.setPoweredOn(false);
 	proc.releaseResources();
