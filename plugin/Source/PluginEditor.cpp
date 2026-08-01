@@ -634,6 +634,10 @@ void D110Panel::showOptionsMenu()
 	m.addSeparator();
 	m.addItem(2, "Reverb", true, reverbOn);
 	m.addItem(3, "Super Mode (unofficial, extra polyphony)", true, superOn);
+	// Движок защиты от записи - он на самой карте, а не в приборе, поэтому и в меню он стоит
+	// отдельно от настроек эмулятора. Прошивка читает его как бит 0 порта состояния матрицы
+	// карты; см. docs/memory_card.md.
+	m.addItem(4, "Memory card write protect", true, processor.getCore().cardWriteProtect());
 	// Пункта «пусть ноты озвучивает прошивка» здесь нет намеренно. Это не настройка, а
 	// единственное поведение: ноты идут в прошивку, она применяет свои диапазоны клавиш,
 	// раскладку по партиям и распределение голосов, зажигает индикаторы в верхней строке
@@ -724,6 +728,9 @@ void D110Panel::showOptionsMenu()
 					superMode->setValueNotifyingHost(superOn ? 0.0f : 1.0f);
 					superMode->endChangeGesture();
 				}
+				break;
+			case 4:
+				processor.getCore().setCardWriteProtect(!processor.getCore().cardWriteProtect());
 				break;
 			default:
 				break;
