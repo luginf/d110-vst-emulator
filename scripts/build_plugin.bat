@@ -13,6 +13,14 @@ set PATH=C:\Program Files\Python312;%PATH%;C:\msys64\mingw64\bin;C:\msys64\usr\b
 cd /d C:\Users\bd260\Projects\D110-VST\plugin\build
 if not exist "%~dp0..\build_logs" mkdir "%~dp0..\build_logs"
 
+REM Regenerate the projects before building. An edit to CMakeLists.txt does not on its
+REM own make MSBuild rebuild anything, and the plugin's version travels to the compiler
+REM as a preprocessor definition - so the binary can keep announcing an older version
+REM while this script prints ok. The version check at the end is what actually catches
+REM that; this is only the first half.
+cmake . > "%~dp0..\build_logs\configure.log" 2>&1
+echo CONFIGURE_EXIT=%ERRORLEVEL%
+
 cmake --build . --config Release --target D110Emulator_VST3 > "%~dp0..\build_logs\plugin_vst3.log" 2>&1
 echo VST3_EXIT=%ERRORLEVEL%
 cmake --build . --config Release --target D110Emulator_Standalone > "%~dp0..\build_logs\plugin_standalone.log" 2>&1
@@ -47,6 +55,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "  if (Test-Path $p) { $e = @(Select-String -Path $p -Pattern 'error C|error LNK|error MSB');" ^
   "    if ($e.Count -gt 0) { Write-Host ($l + '=' + $e.Count + ' ERRORS'); $e | Select-Object -First 6 | ForEach-Object { Write-Host ('  ' + $_.Line.Trim()) } }" ^
   "    else { Write-Host ($l + '=ok') } } }"
+
+REM Does the built plugin announce the version this tree says it is? MSBuild can decide a
+REM target is up to date after CMakeLists.txt changed, and then the release goes out with a
+REM plugin that tells the host an older number - which happened, silently, with every other
+REM check in this script passing.
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$want = [regex]::Match((Get-Content 'C:\Users\bd260\Projects\D110-VST\plugin\CMakeLists.txt' -Raw), 'project\(D110Emulator VERSION ([0-9.]+)\)').Groups[1].Value;" ^
+  "$dll = 'C:\Users\bd260\Projects\D110-VST\plugin\build\D110Emulator_artefacts\Release\VST3\D-110 Emulator.vst3\Contents\x86_64-win\D-110 Emulator.vst3';" ^
+  "if (-not (Test-Path $dll)) { Write-Host 'VERSION=unknown (built plugin not found)'; exit }" ^
+  "$got = (Get-Item $dll).VersionInfo.FileVersion;" ^
+  "if ($got -eq $want) { Write-Host ('VERSION=' + $got) }" ^
+  "else { Write-Host ('VERSION=STALE - CMakeLists says ' + $want + ' but the built plugin says ' + $got); Write-Host '  MSBuild skipped the rebuild. Build the plugin targets with --clean-first and run this again.' }"
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$built = 'C:\Users\bd260\Projects\D110-VST\plugin\build\D110Emulator_artefacts\Release\VST3\D-110 Emulator.vst3\Contents\x86_64-win\D-110 Emulator.vst3';" ^

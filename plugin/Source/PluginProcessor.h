@@ -125,8 +125,10 @@ public:
 	// copies must be identical.
 	bool readEngineMemory(juce::uint32 packedAddress, juce::uint32 length, juce::uint8 *out);
 
-	// Where the firmware's battery RAM and memory card persist. Must be writable, so it is
-	// under the user's app data rather than beside the ROMs in Program Files.
+	// Where the firmware's battery RAM and memory card persist: beside the ROMs in the
+	// plugin's own data folder, as with the other synths in this series. That folder sits
+	// under Program Files and is not writable everywhere, so a write is tried once and the
+	// user's app data stands in when it fails - nvramIsBesideRoms() says which is in use.
 	//
 	// ONE memory, shared and permanent, exactly as the instrument has one set of batteries.
 	// It survives the host being closed, so the unit is found as it was left; a project

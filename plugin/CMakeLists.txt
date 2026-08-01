@@ -39,6 +39,9 @@ juce_add_binary_data(D110PanelData
     SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../docs/panel_reference.png")
 
 juce_add_plugin(D110Emulator
+    # Без этого JUCE ставит собственную версию по умолчанию, и хост показывает её вместо
+    # той, под которой выпущена сборка. Версия здесь одна и берётся из project() выше.
+    VERSION ${PROJECT_VERSION}
     COMPANY_NAME "DIY"
     IS_SYNTH TRUE
     NEEDS_MIDI_INPUT TRUE
