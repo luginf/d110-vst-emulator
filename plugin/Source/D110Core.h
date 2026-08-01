@@ -300,6 +300,65 @@ public:
 	int la32StatusMode() const { return la32Mode.load(std::memory_order_acquire); }
 	static uint8_t encodeLa32Status(int mode, uint16_t voice);
 
+	// --- карта памяти M-256D ---------------------------------------------------
+	// Присутствие карты железо НИКАК не сигнализирует: у прошивки нет ни линии, ни бита
+	// «карта вставлена». Она узнаёт карту тем, что ПИШЕТ в неё и читает обратно.
+	// Подпрограмма опознания, ПЗУ 0x770A (дизассемблировано, см. docs/memory_card.md):
+	//
+	//   770A  lcall 7d35             банк 0x30 - первые 16 КБ карты в окне 0x8000-0xBFFF
+	//   770D  ld 78, #7804           двенадцатибайтная подпись в ПЗУ
+	//   7718  ldb 70, [76]           байт карты
+	//   771B  cmpb 70, [78]          сверить с подписью; не сошлось - на 7746
+	//   7746  ldb 75, 70 / negb 75   дополнение прочитанного байта
+	//   774B  stb 75, [76]           записать его В КАРТУ
+	//   774E  cmpb 70, [76]          прочитать то же место обратно
+	//   7751  jne 7759               изменилось - запись прошла, карта ЕСТЬ (код 'C')
+	//   7753  cmpb 70, #ff           не изменилось. А исходный байт был 0xFF?
+	//   7756  jne 7759               нет - всё равно считать картой
+	//   7758  ret                    0xFF и не пишется - КАРТЫ НЕТ, код 0xFF
+	//
+	// Код 0xFF разбирается по 0x76E2 и выводит "Card Not Ready". То есть пустое гнездо
+	// для прошивки - это шина, которая читается как 0xFF и не принимает запись. Ровно это
+	// здесь и изображается: содержимое карты уносится в свой буфер, а разделяемая память
+	// "memcs" заливается 0xFF. Патчить MAME не нужно, драйверу знать ничего не надо.
+	//
+	// Защиту от записи прошивка читает отдельно и в другом банке: 0x7770 ставит банк 0x31
+	// и читает 0xBFFF, то есть смещение 0x7FFF от начала карты; ноль в бите 0 даёт
+	// "Memory Card Write Protected".
+	//
+	// ЭТОТ БАЙТ - НЕ ПАМЯТЬ КАРТЫ, а порт состояния вентильной матрицы IC21 (D65005G-062).
+	// По схеме главной платы (стр. 7 сервисных заметок) вывод 34 разъёма CN8 - `CST` - идёт
+	// на вход `SENS` матрицы и подтянут к питанию через R11 100K, а вывод 33 `VBB` - через
+	// компаратор 22a на вход `BATT`. Это единственные две линии карты, кроме шины, и читать
+	// их процессору больше неоткуда. Что адрес 0x7FFF не хранит, а сообщает, видно и по
+	// поведению: форматирование заливает всю карту и записывает туда 0x00, и если бы это была
+	// память, только что отформатированная карта немедленно оказывалась бы защищённой от
+	// записи - что и происходило, пока байт не стал портом (измерено d110_card roundtrip).
+	// Драйвер MAME отдаёт весь диапазон 0xC0000-0xC7FFF под ОЗУ и матрицу не моделирует
+	// вовсе, поэтому порт восстанавливается здесь перехватом чтения.
+	static constexpr int kCardSize = 0x8000;
+	static constexpr int kCardStatusOffset = 0x7fff;
+	// Чем читается пустое гнездо. Именно это значение прошивка и проверяет на 0x7753.
+	static constexpr uint8_t kCardAbsentByte = 0xff;
+	void setCardInserted(bool in) { cardWant.store(in, std::memory_order_release); }
+	bool cardInserted() const { return cardWant.load(std::memory_order_acquire); }
+	// Движок защиты от записи на самой карте. Читается как бит 0 порта состояния: ноль -
+	// защищена. Прочие биты порта прошивка не смотрит ни разу (во всём ПЗУ ровно одно
+	// чтение этого адреса, 0x7778), поэтому они отдаются единицами - так же, как их отдала
+	// бы неподключённая подтянутая линия.
+	void setCardWriteProtect(bool on) { cardProtect.store(on, std::memory_order_release); }
+	bool cardWriteProtect() const { return cardProtect.load(std::memory_order_acquire); }
+	uint8_t cardStatusByte() const { return cardWriteProtect() ? 0xfe : 0xff; }
+	// Заменить содержимое карты целиком (kCardSize байт). Стенд заливает им пустое гнездо,
+	// чистую карту и карту с защитой от записи, чтобы про каждое состояние высказалась сама
+	// прошивка, а не разбор её кода.
+	void setCardImage(const uint8_t *bytes);
+	// Текущее содержимое карты. Пока она вставлена, истина живёт в разделяемой памяти
+	// машины, поэтому снимок берётся оттуда, а не из буфера плагина.
+	bool getCardImage(uint8_t *out) const;
+	void osdApplyCard(uint8_t *shared);
+	void osdDetachCard(uint8_t *shared);
+
 	// --- diagnostics: what does the firmware talk to that is not there? --------
 	// The D-110's address map leaves nearly all of the low I/O page unmapped - only the
 	// bank register, the SO register, the two panel scan ports and the LCD are claimed.
@@ -768,6 +827,16 @@ private:
 	std::atomic<uint64_t> unresolvedStreak{0};
 	std::atomic<int> la32Mode{0};
 	std::atomic<int> la32Delay{0};
+
+	// Карта памяти. cardWant пишет любой поток, cardIsIn трогает только поток машины -
+	// он же единственный, кому позволено касаться разделяемой памяти MAME.
+	std::atomic<bool> cardWant{true};
+	std::atomic<bool> cardProtect{false};
+	std::atomic<bool> cardImageDirty{false};
+	bool cardIsIn = true;
+	mutable std::mutex cardMutex;
+	std::vector<uint8_t> cardImage;
+	const uint8_t *cardShared = nullptr; // разделяемая память "memcs", пока машина жива
 
 	std::atomic<bool> logUnmapped{false};
 	mutable std::mutex logMutex;

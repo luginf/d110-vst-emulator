@@ -62,6 +62,15 @@ and it is written when the plugin is switched off - so close the host and reopen
 patches are where you left them. Your project saves a copy too, so reloading a session brings
 back the sounds it was saved with rather than whatever the file has since become.
 
+**The memory card slot works.** Click the slot on the panel and the M-256D slides down and out,
+and the firmware notices: `Save to Card` then answers `Card Not Ready`. Click again and it seats
+itself, and the card's `Save` / `Load` / format functions behave as the hardware's do. There is
+no card-detect line on a real D-110 - the firmware recognises a card by writing a byte and
+reading it back, and an empty socket is a bus that reads `0xFF` and takes no writes - so that is
+exactly what an ejected card is here. The card keeps its own 32 KB file, separate from the
+instrument's battery RAM, and travels with your project the same way. See
+[`docs/memory_card.md`](docs/memory_card.md).
+
 ### Known limits
 
 - **Only one instance can be switched on at a time.** MAME reaches its machine through a
@@ -164,6 +173,10 @@ that has to keep working.
   the memory the last one left, and that a second instance refuses to power on.
 - `plugin/two_instance_test.cpp` - records what really happens when two machines run in one
   process. Diagnostic, not a fix.
+- `plugin/card_probe.cpp` - the memory card. Puts four different cards in the slot, each
+  differing from the next by one property, and prints what the firmware said about each; then
+  formats a blank card, saves to it, wipes the instrument with a factory reset and loads it back,
+  comparing three snapshots of the battery RAM. See [`docs/memory_card.md`](docs/memory_card.md).
 - `plugin/bridge_probe.cpp`, `core_test.cpp` - the harnesses used to map the firmware's RAM and
   to exercise the control board on its own.
 

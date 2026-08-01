@@ -10,6 +10,7 @@
 #include "emuopts.h"
 #include "render.h"
 #include "ioport.h"
+#include "machine/bankdev.h"
 #include "video/msm6222b.h"
 #include "cpu/mcs96/i8x9x.h"
 #include "frontend/mame/ui/menuitem.h"
@@ -94,6 +95,10 @@ class D110Osd : public osd_common_t {
 	bool m_la32NeedClear = false; // the handler has taken it; drop the line
 	uint8_t m_la32Status = 0xff;
 	uint8_t *m_ram = nullptr;
+	uint8_t *m_memcs = nullptr;
+	memory_passthrough_handler m_cardTap;
+	// Читает поток процессора, пишет update() - в MAME это один и тот же поток.
+	bool m_cardAbsent = false;
 	std::array<ioport_field *, D110Core::kNumButtons> m_buttonField{};
 	bool m_resolved = false;
 	std::vector<uint8_t> m_lcdScratch;
@@ -204,6 +209,36 @@ class D110Osd : public osd_common_t {
 		if (memory_share *share = root.memshare("rams"))
 			if (share->bytes() >= D110Core::kRamSize)
 				m_ram = static_cast<uint8_t *>(share->ptr());
+
+		// Карта памяти. Драйвер отводит ей 0xC0000-0xC7FFF в банковом пространстве и
+		// объявляет разделяемой памятью "memcs" - через неё и вставляется и извлекается
+		// карта, потому что для прошивки пустое гнездо это просто нечитаемая память.
+		// См. D110Core::osdApplyCard.
+		if (memory_share *share = root.memshare("memcs"))
+			if (share->bytes() >= D110Core::kCardSize)
+				m_memcs = static_cast<uint8_t *>(share->ptr());
+
+		// Пустое гнездо - это не «память, набитая 0xFF»: залить память мало, потому что
+		// залитая память ЗАПИСЬ ПРИНИМАЕТ, а прошивка узнаёт карту именно тем, что пишет в
+		// неё и читает обратно (ПЗУ 0x7746). Измерено: с одной только заливкой запись
+		// проходила, чтение возвращало записанное, и прошивка говорила "Illegal Card" -
+		// то есть видела карту. Перехват чтения возвращает 0xFF независимо от того, что
+		// туда записали, и этого достаточно: запись перехватывать не нужно, потому что
+		// проверка смотрит на прочитанное. Стоит на собственном пространстве банкового
+		// устройства, где карта занимает 0xC0000-0xC7FFF, - в окне процессора по этим же
+		// адресам лежат ещё и ПЗУ с пресетами.
+		//
+		// Тот же перехват отдаёт последний адрес окна как порт состояния матрицы IC21 -
+		// почему это порт, а не память карты, разобрано у D110Core::kCardStatusOffset.
+		if (address_map_bank_device *bank = root.subdevice<address_map_bank_device>("bank")) {
+			m_cardTap = bank->space(0).install_read_tap(
+				0xc0000, 0xc7fff, "d110_card",
+				[this](offs_t addr, u8 &data, u8) {
+					if (m_cardAbsent) { data = D110Core::kCardAbsentByte; return; }
+					if ((addr & 0x7fff) == D110Core::kCardStatusOffset)
+						data = core->cardStatusByte();
+				});
+		}
 
 		// The CPU's own serial receiver is the D-110's MIDI IN. The driver drives it the
 		// same way for its built-in test note, so this needs nothing MAME does not expose.
@@ -407,12 +442,15 @@ public:
 
 	virtual void update(bool) override {
 		if (m_machine && core->shouldStop()) {
+			core->osdDetachCard(m_memcs);
 			m_machine->schedule_exit();
 			return;
 		}
 		if (!m_machine) return;
 
 		resolveDevices();
+		core->osdApplyCard(m_memcs);
+		m_cardAbsent = !core->cardInserted();
 
 		// Re-assert the panel's desired state rather than replaying events. Applying a
 		// state that is already correct is free, and a switch can never be stranded
@@ -788,6 +826,7 @@ D110Core::D110Core()
 	: lcd(kLcdBytes, 0), ram(kRamSize, 0),
 	  sysexBuf((size_t)kSysexSlots * kMaxSysexBytes, 0), sysexLen(kSysexSlots, 0),
 	  midiBuf(kMidiSlots, 0), noteBuf(kNoteSlots) {
+	cardImage.assign((size_t)kCardSize, kCardAbsentByte);
 	mirrorPrev.resize(kNumMirrorRegions);
 	for (int i = 0; i < kNumMirrorRegions; ++i) {
 		// A region longer than one DT1 would be truncated by emitRegionSysex and still
@@ -940,6 +979,75 @@ bool D110Core::getLcd(uint8_t *out) const {
 	if (!lcdValid.load(std::memory_order_acquire)) return false;
 	std::lock_guard<std::mutex> lock(lcdMutex);
 	std::memcpy(out, lcd.data(), kLcdBytes);
+	return true;
+}
+
+// ---- карта памяти ---------------------------------------------------------
+
+// Вызывается раз в кадр из потока машины - единственного, которому позволено касаться
+// разделяемой памяти MAME. Пока карта вставлена, истина живёт именно там: прошивка пишет
+// в неё сама, и буфер плагина в это время не трогается вовсе. Он наполняется ровно в
+// момент извлечения - тем, что на карте к этому моменту оказалось.
+void D110Core::osdApplyCard(uint8_t *shared) {
+	if (!shared) return;
+	std::lock_guard<std::mutex> lock(cardMutex);
+
+	// Новая машина - другая разделяемая память, и состояние гнезда в неё надо перенести
+	// заново, даже если снаружи никто ничего не переключал. Иначе после перезапуска
+	// (заводской сброс - это он) извлечённая карта оказалась бы на месте.
+	const bool fresh = cardShared != shared;
+	cardShared = shared;
+
+	// Образ, поданный снаружи, имеет смысл только для вставленной карты: в пустое гнездо
+	// класть нечего. Если карту в этот же кадр ещё и вставляют, перенос сделает ветка ниже.
+	const bool newImage = cardImageDirty.exchange(false, std::memory_order_acq_rel);
+	if (newImage && cardIsIn) std::memcpy(shared, cardImage.data(), kCardSize);
+
+	const bool want = cardWant.load(std::memory_order_acquire);
+	if (want == cardIsIn && !fresh) return;
+
+	if (want) {
+		// На свежей машине содержимое карты уже поднято MAME из своего файла, и класть
+		// поверх него буфер плагина можно только если он новее.
+		if (!fresh || newImage) std::memcpy(shared, cardImage.data(), kCardSize);
+		else std::memcpy(cardImage.data(), shared, kCardSize);
+	} else {
+		if (!fresh) std::memcpy(cardImage.data(), shared, kCardSize);
+		std::memset(shared, kCardAbsentByte, kCardSize);
+	}
+	cardIsIn = want;
+}
+
+// Разделяемая память уходит вместе с машиной, поэтому содержимое карты снимается, пока оно
+// ещё существует. У извлечённой карты в машине лежат 0xFF, а настоящее содержимое - в
+// буфере; его надо вернуть на место, иначе MAME сохранит в свой файл пустое гнездо.
+// Состояние самого гнезда при этом НЕ трогается: выключение прибора карту не вставляет.
+void D110Core::osdDetachCard(uint8_t *shared) {
+	std::lock_guard<std::mutex> lock(cardMutex);
+	if (shared) {
+		if (cardIsIn) std::memcpy(cardImage.data(), shared, kCardSize);
+		else std::memcpy(shared, cardImage.data(), kCardSize);
+	}
+	cardShared = nullptr;
+}
+
+void D110Core::setCardImage(const uint8_t *bytes) {
+	{
+		std::lock_guard<std::mutex> lock(cardMutex);
+		std::memcpy(cardImage.data(), bytes, kCardSize);
+	}
+	cardImageDirty.store(true, std::memory_order_release);
+}
+
+bool D110Core::getCardImage(uint8_t *out) const {
+	std::lock_guard<std::mutex> lock(cardMutex);
+	// Вставленная карта живёт в машине, а не в буфере, и читать надо оттуда - иначе
+	// сохранение вернуло бы состояние на момент последнего извлечения.
+	if (cardIsIn && cardShared) {
+		std::memcpy(out, cardShared, kCardSize);
+		return true;
+	}
+	std::memcpy(out, cardImage.data(), kCardSize);
 	return true;
 }
 

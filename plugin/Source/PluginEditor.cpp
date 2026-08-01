@@ -149,6 +149,10 @@ D110Panel::D110Panel(D110AudioProcessor &p)
 	volumeDisc = cutOut({ kKnobCx - kKnobSpinR - 1.0f, kKnobCy - kKnobSpinR - 1.0f,
 	                      kKnobSpinR * 2.0f + 3.0f, kKnobSpinR * 2.0f + 3.0f });
 
+	// Окно можно закрыть и открыть заново, а карта всё это время остаётся там, где её
+	// оставили, - картинка обязана начинаться с того же положения, что и гнездо.
+	cardTravel = cardTarget = processor.getCore().cardInserted() ? 0.0f : 1.0f;
+
 	setSize(kRefW, kRefH);
 	startTimerHz(60);
 }
@@ -313,7 +317,11 @@ void D110Panel::timerCallback()
 		const float remaining = cardTarget - cardTravel;
 		const float ease = juce::jmax(0.25f, std::abs(remaining)); // мягче у обоих концов
 		cardTravel += juce::jlimit(-step, step, remaining) * ease * 2.0f;
-		if (std::abs(cardTarget - cardTravel) < 0.004f) cardTravel = cardTarget;
+		if (std::abs(cardTarget - cardTravel) < 0.004f) {
+			cardTravel = cardTarget;
+			// Карта села в разъём - только теперь она есть для прошивки.
+			if (cardTravel == 0.0f) processor.getCore().setCardInserted(true);
+		}
 		needsRepaint = true;
 	}
 
@@ -522,7 +530,14 @@ void D110Panel::mouseDown(const juce::MouseEvent &e)
 	// в полоску высотой тридцать точек трудно, а обрамление - это ровно то, что человек
 	// видит как «щель».
 	if (juce::Rectangle<float>(1588.0f, 109.0f, 260.0f, 52.0f).contains(p)) {
-		cardTarget = (cardTarget > 0.5f) ? 0.0f : 1.0f;
+		const bool ejecting = cardTarget < 0.5f;
+		cardTarget = ejecting ? 1.0f : 0.0f;
+		// Контакты размыкаются, как только карта тронулась из гнезда, а замыкаются лишь
+		// когда она села до конца, - поэтому извлечение объявляется сразу, а вставка ждёт
+		// конца хода (см. timerCallback). Прошивка узнаёт карту, ПИША в неё, так что
+		// «наполовину вставленная» карта для неё не отличается от вставленной, и делать
+		// вид, будто отличается, было бы враньём о железе.
+		if (ejecting) processor.getCore().setCardInserted(false);
 		return;
 	}
 

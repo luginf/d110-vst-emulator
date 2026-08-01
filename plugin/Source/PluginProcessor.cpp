@@ -912,8 +912,15 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	}
 	if (rams.getSize() == 0) rams = readNvramFile("rams");
 
-	// The memory card has no live window, so it can only come off disk.
-	const juce::MemoryBlock memcs = readNvramFile("memcs");
+	// Карта - по тому же правилу, что и батарейное ОЗУ: пока машина работает, файл на диске
+	// отстал, а живое содержимое лежит в ядре. Оно же отдаётся и для извлечённой карты, у
+	// которой в разделяемой памяти машины сейчас одни 0xFF.
+	juce::MemoryBlock memcs;
+	if (core.isRunning()) {
+		memcs.setSize(D110Core::kCardSize);
+		if (!core.getCardImage(static_cast<juce::uint8 *>(memcs.getData()))) memcs.reset();
+	}
+	if (memcs.getSize() == 0) memcs = readNvramFile("memcs");
 
 	xml->setAttribute("nvramRams", packBlock(rams));
 	xml->setAttribute("nvramMemcs", packBlock(memcs));

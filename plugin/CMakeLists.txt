@@ -409,6 +409,19 @@ target_link_libraries(d110_tone_edit_survives PRIVATE
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_tone_edit_survives PRIVATE /ignore:4099 /FORCE:MULTIPLE)
 
+# Чем прошивка отличает вставленную карту памяти от пустого гнезда. Подставляет ей четыре
+# разные карты и снимает с экрана, что она о каждой сказала.
+add_executable(d110_card card_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_card PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_card PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_card PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_card PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
 # Ищет момент, когда прошивка перепрограммирует микросхему ревербератора: пишет каждую
 # запись в регистр SO вместе с адресом подпрограммы, которая её сделала.
 add_executable(d110_so_trace so_trace_probe.cpp
