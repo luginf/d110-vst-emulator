@@ -50,7 +50,7 @@ constexpr int kBytesPerSlot = 2;
 struct Btn { const char *name; int port; int bit; };
 const Btn kButtons[] = {
 	{"Exit", 0, 7}, {"Timbre", 0, 5}, {"Number+", 0, 1}, {"Edit", 1, 7},
-	{"Number-", 1, 1},
+	{"Number-", 1, 1}, {"Group+", 0, 3},
 };
 
 void render(D110AudioProcessor &proc, double seconds) {
@@ -241,9 +241,20 @@ void chromaticSweep(D110AudioProcessor &proc) {
 
 } // namespace
 
-int main() {
+// Режимы. Опыт за запуск ровно один, и это вынужденно: прошивка выдаёт сначала ни разу не
+// использованные слоты, их всего 32, и как только они кончаются, в тот же банк начинают идти
+// обнуления при переиспользовании - неотличимые здесь от выдачи. Два опыта в одном прогоне
+// не помещаются, и попытка их совместить трижды портила измерение.
+enum class Mode { Sweep, Tone };
+
+int main(int argc, char **argv) {
 	juce::ScopedJuceInitialiser_GUI juceInit;
 	std::setvbuf(stdout, nullptr, _IONBF, 0);
+
+	Mode mode = Mode::Sweep;
+	if (argc > 1 && std::strcmp(argv[1], "tone") == 0) mode = Mode::Tone;
+	std::printf("режим: %s\n", mode == Mode::Sweep ? "хроматика и четыре раздражителя"
+	                                               : "точечные правки тембра");
 
 	D110AudioProcessor proc;
 	proc.prepareToPlay(kSampleRate, kBlock);
@@ -269,6 +280,91 @@ int main() {
 		std::printf("  записей: %zu\n", w.size());
 		if (!w.empty())
 			std::printf("  !!! окно не молчит - всё ниже надо читать с поправкой на это\n");
+	}
+
+	// ---- режим точечных правок тембра --------------------------------------------------
+	// Раздражитель «другой тембр» слишком груб: он двигает девять регистров разом и не
+	// говорит, который из них за что. Здесь тембр НЕ меняется - меняется по одному
+	// параметру внутри него, и сравнивается с замером, снятым той же нотой прямо перед
+	// правкой. Дорога в правку тембра снята раньше (plugin/audio_test.cpp): Exit, Exit ->
+	// Timbre -> Edit открывает параметры партии на странице «Tone =», ещё одно Edit
+	// проваливается в правку самого тембра, Group+ листает её страницы.
+	if (mode == Mode::Tone) {
+		struct Point { const char *name; int groupSteps; int presses; };
+		// Страницы правки тембра по порядку от входа. Что именно на каждой - зонд не
+		// предполагает: он печатает экран и показывает, какие байты тембра в ОЗУ сдвинулись.
+		const Point points[] = {
+			{"страница 0 (вход)", 0, 3},
+			{"страница 1", 1, 3},
+			{"страница 2", 2, 3},
+		};
+		for (const auto &pt : points) {
+			press(proc, "Exit", 2);
+			press(proc, "Timbre");
+			press(proc, "Edit");
+			press(proc, "Edit");
+			if (pt.groupSteps) press(proc, "Group+", pt.groupSteps);
+			render(proc, 0.6);
+			const auto ramBefore = ramOf(proc);
+
+			const Capture base = window(proc, 60, 100, kWindow);
+
+			press(proc, "Number+", pt.presses);
+			render(proc, 0.8);
+			const auto ramAfter = ramOf(proc);
+			const Capture moved = window(proc, 60, 100, kWindow);
+
+			std::printf("\n=== %s ===\n", pt.name);
+			// Какие байты САМОГО тембра сдвинулись - это и есть подпись правки. Тембр
+			// партии 1 лежит в ОЗУ по 0x21E4, длиной 246 байт.
+			std::printf("  сдвинулось в тембре (ОЗУ 0x21E4+):");
+			int moves = 0;
+			for (int i = 0; i < 246; ++i)
+				if (ramBefore[(size_t)(0x21E4 + i)] != ramAfter[(size_t)(0x21E4 + i)]) {
+					if (moves++ < 6)
+						std::printf(" +%d(%d->%d)", i, ramBefore[(size_t)(0x21E4 + i)],
+						            ramAfter[(size_t)(0x21E4 + i)]);
+				}
+			std::printf("%s\n", moves ? "" : "  НИЧЕГО - страница ничего не правит");
+			std::printf("  слоты до: ");
+			for (int s : base.slots) std::printf("%d ", s);
+			std::printf("| после: ");
+			for (int s : moved.slots) std::printf("%d ", s);
+			std::printf("| потеряно %llu/%llu\n", (unsigned long long)base.dropped,
+			            (unsigned long long)moved.dropped);
+
+			if (base.slots.empty() || moved.slots.empty()) {
+				std::printf("  слоты кончились - дальше в этом прогоне мерить нечего\n");
+				break;
+			}
+			const auto nb = normalise(base), nm = normalise(moved);
+			std::set<Key> keys;
+			for (const auto *m : {&nb, &nm})
+				for (const auto &[k, v] : *m) keys.insert(k);
+			std::printf("  регистры, сдвинувшиеся ОТ ЭТОЙ правки:\n");
+			int changed = 0;
+			// Сравниваются только ПЕРВЫЕ значения, а не векторы целиком. Банк огибающих
+			// обновляется, пока нота звучит, и число обновлений от прогона к прогону
+			// разное - сравнение целиком объявляет его изменившимся всегда, даже когда
+			// начала совпадают байт в байт. На эту ловушку здесь уже попадались дважды.
+			auto head = [](const std::vector<uint8_t> &v) {
+				return std::vector<uint8_t>(v.begin(),
+				                            v.begin() + std::min<size_t>(v.size(), 4));
+			};
+			for (const auto &k : keys) {
+				const auto ib = nb.find(k), im = nm.find(k);
+				if (ib != nb.end() && im != nm.end() && head(ib->second) == head(im->second))
+					continue;
+				++changed;
+				std::printf("    %04X.%d.%d : %-14s -> %s\n", std::get<0>(k), std::get<1>(k),
+				            std::get<2>(k), show(nb, k).c_str(), show(nm, k).c_str());
+			}
+			if (!changed) std::printf("    (ни одного)\n");
+		}
+		proc.setPoweredOn(false);
+		proc.releaseResources();
+		std::printf("\nготово\n");
+		return 0;
 	}
 
 	chromaticSweep(proc);
