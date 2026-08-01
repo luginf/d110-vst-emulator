@@ -37,10 +37,13 @@ pages are real and not decoration:
 - **Tone Temporary** - the tone itself: structure, partial mute, waveforms, and the pitch, TVF
   and TVA envelopes, for all eight parts. Editing `Tone Edit / Structure 1&2` moves the sound
   immediately. It is re-sent after every Timbre Temporary change, because writing a timbre
-  makes the sound engine reload that part's tone from one of its four MT-32 banks - and the
-  D-110's firmware uses tone groups those four banks cannot name. Without it, two parts of the
-  first demo song played a closed hi-hat instead of a lead and measured 21 dB down; see
-  [`docs/timbre_group_5.md`](docs/timbre_group_5.md).
+  makes the sound engine reload that part's tone from one of its four MT-32 banks - and a bank
+  holds the factory tone, not the one you just edited. Without it **any** tone edit is lost the
+  moment you touch a part parameter: measured on an ordinary patch, renaming a tone and then
+  moving Key Shift left the engine playing the factory sound again. On the first demo song the
+  same fault was audible rather than subtle, because that song's tone group is one the four
+  banks cannot name at all, so two parts played a closed hi-hat instead of a lead and measured
+  21 dB down. See [`docs/timbre_group_5.md`](docs/timbre_group_5.md).
 - **System** - partial reserve and the per-part MIDI channel map, so the SYSTEM page's channel
   assignment actually takes effect.
 
@@ -54,8 +57,10 @@ program changes sent by the DAW.
 > on its own thread at real time, so its MIDI arrives in bursts and its LCD reads race the
 > firmware. Confirmed working in a live DAW, which is the environment that matters.
 
-Each instance keeps its **own** firmware memory, and your project saves it. Reload a session and
-the patches and edits come back with it, rather than whatever a shared folder last held.
+The firmware's memory is **one file beside the ROMs**, as the instrument has one battery RAM,
+and it is written when the plugin is switched off - so close the host and reopen it and your
+patches are where you left them. Your project saves a copy too, so reloading a session brings
+back the sounds it was saved with rather than whatever the file has since become.
 
 ### Known limits
 
@@ -150,9 +155,13 @@ that has to keep working.
 - `plugin/tone_probe.cpp` - locates the Tone Temporary Area by reading the engine's copy of each
   tone back out and matching it against the firmware's RAM. An exact match is simultaneously the
   measurement and the null test.
+- `plugin/tone_edit_survives_probe.cpp` - edits a tone from the panel on an ordinary patch, then
+  changes a part parameter, and checks the sound engine still holds the edited tone. Finds both
+  menu pages by pressing buttons and watching which RAM byte moves, and runs the experiment twice
+  - with the tone re-assert on and off - so the result has a control that can show the failure.
 - `plugin/state_test.cpp` - edits a parameter, saves the plugin state, restores it into a fresh
-  instance, and checks the edit came back; also checks two instances get separate memory and that
-  the second refuses to power on.
+  instance, and checks the edit came back; also checks a plugin loaded with no saved state finds
+  the memory the last one left, and that a second instance refuses to power on.
 - `plugin/two_instance_test.cpp` - records what really happens when two machines run in one
   process. Diagnostic, not a fix.
 - `plugin/bridge_probe.cpp`, `core_test.cpp` - the harnesses used to map the firmware's RAM and

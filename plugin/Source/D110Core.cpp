@@ -932,7 +932,8 @@ void D110Core::osdSnapshotRam(const uint8_t *src) {
 		const auto &region = kMirrorRegions[i];
 		auto &prev = mirrorPrev[(size_t)i];
 		const uint8_t *now = src + region.ramOffset;
-		const bool mustReassert = timbreTempSent && region.reassertAfterTimbreTemp;
+		const bool mustReassert = timbreTempSent && region.reassertAfterTimbreTemp
+		                          && toneReassert.load(std::memory_order_relaxed);
 		if (!resync && !mustReassert && mirrorPrimed &&
 		    std::memcmp(prev.data(), now, region.length) == 0)
 			continue;

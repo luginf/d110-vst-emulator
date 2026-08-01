@@ -1,5 +1,5 @@
 ﻿cmake_minimum_required(VERSION 3.22)
-project(D110Emulator VERSION 0.9.8)
+project(D110Emulator VERSION 0.9.9)
 
 # C++20 because MAME's headers need it.
 set(CMAKE_CXX_STANDARD 20)
@@ -348,6 +348,21 @@ target_link_libraries(d110_reverb_path PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_reverb_path PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Переживает ли правка тембра смену параметра партии на ОБЫЧНОМ патче - вопрос, на который
+# демо-песня ответить не может, потому что её группа тембра 5 с панели недостижима. Ставит
+# опыт дважды в одном прогоне, с подтверждением тембров и без него, чтобы у результата был
+# контроль, умеющий показать отказ.
+add_executable(d110_tone_edit_survives tone_edit_survives_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_tone_edit_survives PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_tone_edit_survives PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_tone_edit_survives PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_tone_edit_survives PRIVATE /ignore:4099 /FORCE:MULTIPLE)
 
 # Ищет момент, когда прошивка перепрограммирует микросхему ревербератора: пишет каждую
 # запись в регистр SO вместе с адресом подпрограммы, которая её сделала.

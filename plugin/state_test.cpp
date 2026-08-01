@@ -1,12 +1,14 @@
 // Does a project actually recall its own instrument?
 //
-// Two things are checked, both of which used to be broken:
+// Three things are checked, all of which used to be broken:
 //   1. The firmware's patch and timbre memory travels in the plugin's state, so a saved
 //      project comes back with the sounds it was saved with rather than whatever the
-//      shared folder happens to hold now.
-//   2. Two instances get SEPARATE firmware memory, and the second one refuses to switch
-//      on rather than starting a second MAME machine - which, measured in
-//      two_instance_test.cpp, kills the host process outright.
+//      shared file happens to hold now.
+//   2. A plugin loaded with NO saved state finds the memory exactly as the last instance
+//      left it. That is why the memory is ONE shared file: a folder per instance reset the
+//      instrument every time the host was reopened, which is how the fault was reported.
+//   3. The second instance refuses to switch on rather than starting a second MAME machine -
+//      which, measured in two_instance_test.cpp, kills the host process outright.
 #include "Source/PluginProcessor.h"
 
 #include <cstdio>

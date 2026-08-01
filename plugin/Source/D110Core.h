@@ -597,6 +597,15 @@ public:
 	};
 	static const MirrorRegion kMirrorRegions[];
 	static const int kNumMirrorRegions;
+	// Только для проверочных стендов: снимает подтверждение тембров, описанное в
+	// MirrorRegion::reassertAfterTimbreTemp. Нужно, чтобы КОНТРОЛЬ и измерение шли в
+	// одном прогоне: с выключенным подтверждением правка тембра обязана быть затёрта, с
+	// включённым - обязана уцелеть. Проверка, умеющая показать только "уцелела", не
+	// доказывает ничего: она одинаково выглядит и когда исправление работает, и когда
+	// затирать было просто нечему. В самом плагине это всегда включено, и переключателя
+	// в интерфейсе нет.
+	void setToneReassert(bool on) { toneReassert.store(on, std::memory_order_release); }
+	bool toneReassertEnabled() const { return toneReassert.load(std::memory_order_acquire); }
 	// Взято с запасом, чтобы массив счётчиков ниже не приходилось трогать при добавлении
 	// региона; static_assert в .cpp держит их согласованными.
 	static constexpr int kMaxMirrorRegions = 32;
@@ -664,6 +673,7 @@ private:
 	// Previous contents of each mirrored region, so only real changes are sent.
 	std::vector<std::vector<uint8_t>> mirrorPrev;
 	bool mirrorPrimed = false;
+	std::atomic<bool> toneReassert{true};
 	std::atomic<bool> mirrorResync{false};
 	// The firmware scribbles all over its RAM while it boots, so the one-shot resync that
 	// brings the engine into line waits for it to settle rather than firing on the first
