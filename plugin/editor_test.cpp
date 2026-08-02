@@ -128,9 +128,12 @@ int main() {
 			{ "Rhythm Setup, запись 17, Output Level",
 			  D110Core::kRamRhythmTemp + 16 * D110Core::kRhythmRecord + 1, 100,
 			  [&proc](uint8_t v) { proc.sendRhythmParam(16, 1, v); } },
-			{ "System, Partial Reserve партии 2",
-			  D110Core::kRamSystem + 5, 32,
-			  [&proc](uint8_t v) { proc.sendSystemParam(5, v); } },
+			// Резерв партиалов сюда НЕ годится, и это свойство прибора: девять его значений
+			// обязаны в сумме давать ровно 32, поэтому одиночная прибавка отвергается, и
+			// проверка отправителя провалилась бы там, где отправитель ни при чём.
+			{ "System, Reverb Time",
+			  D110Core::kRamSystem + 2, 7,
+			  [&proc](uint8_t v) { proc.sendSystemParam(2, v); } },
 			{ "Timbre Memory, ячейка 6, Key Shift",
 			  D110Core::kRamTimbres + 5 * D110Core::kTimbreRecord + 2, 48,
 			  [&proc](uint8_t v) { proc.sendTimbreMemoryParam(5, 2, v); } },
@@ -284,6 +287,55 @@ int main() {
 			check(byteAt(proc, liveAt) == before,
 			      "контроль: правка ЧУЖОГО патча звук не трогает",
 			      "живой байт остался " + juce::String(byteAt(proc, liveAt)));
+		}
+	}
+
+	// --- 5. имя в ящике и имя на индикаторе обязаны совпадать ------------------
+	//
+	// «Какой тон играет партия» - это ПАРА байтов, группа и номер, а не один номер. Ящик
+	// показывает имя по паре из записи патча, прибор - по паре из живой области, и если
+	// перенести только один байт из двух, обе стороны останутся при своих: снизу «Fantasy»
+	// (b01), на индикаторе «AcouPiano 1» (a01). Номер сойдётся, группа нет.
+	//
+	// Проверяется именно расхождение пар, а не одного байта: сперва группы разводятся
+	// заведомо, потом правится номер - тем же вызовом, каким его правит колесо мыши.
+	std::printf("\n=== 5. ГРУППА И НОМЕР ТОНА ПЕРЕНОСЯТСЯ ВМЕСТЕ ===\n");
+	{
+		const int patch = proc.currentPatchNumber();
+		if (patch < 0) {
+			std::printf("  [FAIL] номер текущего патча не прочитан\n");
+			++g_failed;
+		} else {
+			constexpr int kPart = 0;
+			const int groupField = 31 + kPart * 12 + 0;
+			const int numberField = 31 + kPart * 12 + 1;
+			const size_t liveGroup = size_t(D110Core::kRamTimbreTemp)
+			                       + size_t(kPart) * D110Core::kTimbreTempRecord;
+
+			// Разводим заведомо: в записи патча группа b, в живой области группа a.
+			proc.sendPatchMemoryParam(patch, groupField, 1);
+			proc.sendTimbreTempParam(kPart, 0, 0);
+			render(proc, 1.4);
+			std::printf("  разведено: в патче группа %d, в живой области группа %d\n",
+			            byteAt(proc, D110Core::kRamPatches + patch * D110Core::kPatchRecord
+			                             + groupField),
+			            byteAt(proc, int(liveGroup)));
+
+			// А теперь - ровно то, что делает колесо над полем TONE нижней таблицы.
+			proc.editPatchField(patch, numberField, 0);
+			render(proc, 1.6);
+
+			const int patchGroup = byteAt(proc, D110Core::kRamPatches
+			                                        + patch * D110Core::kPatchRecord + groupField);
+			const int patchNumber = byteAt(proc, D110Core::kRamPatches
+			                                         + patch * D110Core::kPatchRecord + numberField);
+			const int liveG = byteAt(proc, int(liveGroup));
+			const int liveN = byteAt(proc, int(liveGroup) + 1);
+			std::printf("  после правки номера: патч (%d,%d), живая область (%d,%d)\n",
+			            patchGroup, patchNumber, liveG, liveN);
+			check(liveG == patchGroup && liveN == patchNumber,
+			      "живая область повторяет пару из патча",
+			      "иначе ящик и индикатор называют разные тона");
 		}
 	}
 

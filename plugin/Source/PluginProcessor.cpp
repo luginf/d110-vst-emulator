@@ -1060,6 +1060,25 @@ void D110AudioProcessor::editPatchField(int patch, int field, juce::uint8 value)
 	if (field >= 31 && field < 31 + 8 * 12) {
 		const int part = (field - 31) / 12;
 		const int offset = (field - 31) % 12;
+
+		// «Какой тон играет партия» - это ПАРА байтов, группа и номер, и переносить её
+		// надо парой. Перенос одного байта оставляет обе стороны при своих: в записи патча
+		// b01, в живой области a01 - номер сходится, группа нет, и ящик с индикатором
+		// называют разные тона. Измерено: развели группы, покрутили номер, получили патч
+		// (1,0) против живой области (0,0) (plugin/editor_test.cpp, раздел 5).
+		if (offset == 0 || offset == 1) {
+			std::vector<uint8_t> ram(D110Core::kRamSize, 0);
+			if (!core.getRam(ram.data())) return;
+			const size_t at = size_t(D110Core::kRamPatches)
+			                + size_t(patch) * D110Core::kPatchRecord + 31 + size_t(part) * 12;
+			// Второй байт пары берётся из самой записи патча: та, что в ОЗУ, ещё не знает о
+			// правке, которая только что ушла эксклюзивным сообщением, поэтому правимый байт
+			// подставляется вручную.
+			juce::uint8 pair[2] = { ram[at], ram[at + 1] };
+			pair[offset] = value & 0x7f;
+			sendAreaData(D110Core::kSysexTimbreTemp, part * D110Core::kTimbreTempRecord, pair, 2);
+			return;
+		}
 		sendTimbreTempParam(part, offset, value);
 		return;
 	}

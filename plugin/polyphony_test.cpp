@@ -221,6 +221,13 @@ int main() {
 		for (int i = 0; i < 9; ++i) proc.sendSystemParam(4 + i, i == 0 ? 32 : 0);
 		render(proc, 1.5);
 		chord("резерв 32 у прошивки И у движка");
+
+		// Вернуть заводской резерв. Девять значений связаны суммой 32, поэтому они уходят
+		// ОДНИМ сообщением: по одному прибор их отвергнет, и прибор при этом прав.
+		const uint8_t factory[9] = { 4, 4, 4, 4, 3, 3, 3, 2, 5 };
+		proc.sendAreaData(D110Core::kSysexSystem, 4, factory, 9);
+		render(proc, 1.5);
+		std::printf("  резерв возвращён к заводскому 4 4 4 4 3 3 3 2 5\n");
 	}
 	std::printf("\n");
 
