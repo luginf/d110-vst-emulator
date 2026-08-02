@@ -413,6 +413,22 @@ target_link_libraries(d110_tone_edit_survives PRIVATE
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_tone_edit_survives PRIVATE /ignore:4099 /FORCE:MULTIPLE)
 
+# Первый мост от регистров к звуку: снятое с прошивки состояние прогоняется через модель той
+# же микросхемы из munt. Включает её внутренние заголовки - библиотека статическая, символы на
+# месте, а публичного интерфейса у генератора волны нет и не задумано.
+add_executable(d110_la32_render la32_render.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_la32_render PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../munt/mt32emu/src"
+    "${CMAKE_CURRENT_BINARY_DIR}/mt32emu_build/src")
+target_compile_definitions(d110_la32_render PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_la32_render PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_la32_render PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
 # Что банк 0x0CC0 несёт во времени, пока нота звучит. Печатает поток как ряд, а не сравнивает
 # множества значений - на этом сравнении три прежних захода на этот банк и провалились.
 add_executable(d110_la32_stream la32_stream_probe.cpp
