@@ -1037,6 +1037,68 @@ void D110AudioProcessor::timerCallback() {
 	if (patchQueue.empty()) stopTimer();
 }
 
+int D110AudioProcessor::currentPatchNumber() const {
+	if (!core.isRunning()) return -1;
+	std::vector<uint8_t> ram(D110Core::kRamSize, 0);
+	if (!core.getRam(ram.data())) return -1;
+	const int n = ram[(size_t)D110Core::kRamPatchNumber];
+	return (n >= 0 && n < D110Core::kNumPatches) ? n : -1;
+}
+
+// Правка патча, слышная сразу. Память патча пишется всегда, а если правится тот патч,
+// который прибор играет, то же значение уходит и в живую область - туда, откуда прибор
+// действительно берёт звук.
+//
+// Раскладка записи патча измерена (docs/sysex_address_map.md): имя 0-9, ревербератор 10-12,
+// резерв партиалов 13-21, карта каналов 22-30, дальше восемь записей партий по 12 байт с
+// 31-го. Живые двойники у них разные: у партий это Timbre Temporary, у ревербератора,
+// резерва и каналов - системная область.
+void D110AudioProcessor::editPatchField(int patch, int field, juce::uint8 value) {
+	sendPatchMemoryParam(patch, field, value);
+	if (patch != currentPatchNumber()) return;
+
+	if (field >= 31 && field < 31 + 8 * 12) {
+		const int part = (field - 31) / 12;
+		const int offset = (field - 31) % 12;
+		sendTimbreTempParam(part, offset, value);
+		return;
+	}
+	// Тип ревербератора в движок не переносится (восемь типов на четыре режима не ложатся),
+	// но в прошивку он уходит: на индикаторе прибора значение обязано измениться.
+	if (field >= 10 && field <= 12) { sendSystemParam(field - 9, value); return; }
+	if (field >= 13 && field <= 21) { sendSystemParam(field - 9, value); return; }
+	if (field >= 22 && field <= 30) { sendSystemParam(field - 9, value); return; }
+}
+
+// Тон целиком - 246 байт, а в одно эксклюзивное сообщение у Roland помещается 244, поэтому
+// он идёт двумя кусками, ровно как его послал бы внешний библиотекарь.
+static void sendToneBlock(D110AudioProcessor &proc, juce::uint32 address, int offset,
+                          const uint8_t *from) {
+	constexpr int kChunk = 123;
+	for (int off = 0; off < D110Core::kToneRecord; off += kChunk) {
+		const int len = juce::jmin(kChunk, D110Core::kToneRecord - off);
+		proc.sendAreaData(address, offset + off, from + off, len);
+	}
+}
+
+void D110AudioProcessor::auditionTone(int part, int slot) {
+	if (part < 0 || part > 7 || slot < 0 || slot >= D110Core::kNumTones) return;
+	if (!core.isRunning()) return;
+	std::vector<uint8_t> ram(D110Core::kRamSize, 0);
+	if (!core.getRam(ram.data())) return;
+	sendToneBlock(*this, D110Core::kSysexToneTemp, part * D110Core::kToneRecord,
+	              ram.data() + D110Core::kRamTones + slot * D110Core::kToneMemRecord);
+}
+
+void D110AudioProcessor::storeToneFromPart(int part, int slot) {
+	if (part < 0 || part > 7 || slot < 0 || slot >= D110Core::kNumTones) return;
+	if (!core.isRunning()) return;
+	std::vector<uint8_t> ram(D110Core::kRamSize, 0);
+	if (!core.getRam(ram.data())) return;
+	sendToneBlock(*this, D110Core::kSysexTones, slot * D110Core::kToneMemRecord,
+	              ram.data() + D110Core::kRamToneTemp + part * D110Core::kToneRecord);
+}
+
 void D110AudioProcessor::logIncomingMidi(const juce::MidiMessage &message) {
 	const auto *raw = message.getRawData();
 	const int size = message.getRawDataSize();

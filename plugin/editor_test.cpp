@@ -217,6 +217,76 @@ int main() {
 		}
 	}
 
+	// --- 4. правка слышна СРАЗУ ------------------------------------------------
+	//
+	// Две вещи, которые на приборе устроены не так, как ждёт рука. Тон из памяти сам по себе
+	// не звучит - звучит временная область партии, и тон надо туда положить. Патч в памяти
+	// тоже не звучит - прибор играет из временных областей, куда патч попадает только при
+	// выборе. Редактор делает оба переноса сам; здесь проверяется, что он их вправду делает.
+	std::printf("\n=== 4. ПОДСТАНОВКА: ТОН И ПАТЧ СЛЫШНЫ СРАЗУ ===\n");
+	{
+		// Тон из ячейки памяти - в партию 3.
+		const auto ram = snapshot(proc);
+		const size_t slotAt = size_t(D110Core::kRamTones) + 4 * D110Core::kToneMemRecord;
+		juce::String wanted;
+		for (int i = 0; i < 10; ++i) {
+			const char ch = char(ram[slotAt + size_t(i)]);
+			wanted += (ch >= 32 && ch < 127) ? ch : ' ';
+		}
+		proc.auditionTone(2, 4);
+		render(proc, 1.6);
+		const auto after = snapshot(proc);
+		juce::String got;
+		for (int i = 0; i < 10; ++i) {
+			const char ch = char(after[size_t(D110Core::kRamToneTemp)
+			                          + 2 * D110Core::kToneRecord + size_t(i)]);
+			got += (ch >= 32 && ch < 127) ? ch : ' ';
+		}
+		// Пустая ячейка ничего не доказывает: если память тонов не заполнена, сравнивать
+		// нечего, и это надо сказать, а не выдать за успех.
+		if (wanted.trim().isEmpty())
+			std::printf("  [ -- ] ячейка памяти тонов пуста, проверять нечего\n");
+		else
+			check(got == wanted, "тон из памяти встал в партию 3",
+			      "ячейка \"" + wanted + "\", в партии \"" + got + "\"");
+
+		// Поле патча, который прибор играет: должно измениться И в памяти, И в живой области.
+		const int current = proc.currentPatchNumber();
+		if (current < 0) {
+			std::printf("  [FAIL] номер текущего патча не прочитан\n");
+			++g_failed;
+		} else {
+			constexpr int kPart = 1;
+			const int field = 31 + kPart * 12 + 8;   // Output Level второй партии
+			const int storedAt = D110Core::kRamPatches + current * D110Core::kPatchRecord + field;
+			const int liveAt = D110Core::kRamTimbreTemp + kPart * D110Core::kTimbreTempRecord + 8;
+			const uint8_t v = differentFrom(byteAt(proc, liveAt), 100);
+			proc.editPatchField(current, field, v);
+			render(proc, 1.4);
+			check(byteAt(proc, storedAt) == int(v), "правка легла в память патча",
+			      "0x" + juce::String::toHexString(storedAt) + " = "
+			          + juce::String(byteAt(proc, storedAt)));
+			check(byteAt(proc, liveAt) == int(v), "и в живую область, то есть слышна",
+			      "0x" + juce::String::toHexString(liveAt) + " = "
+			          + juce::String(byteAt(proc, liveAt)));
+		}
+
+		// КОНТРОЛЬ: у ЧУЖОГО патча живая область двигаться не должна - иначе редактор менял
+		// бы звук там, где его не просили.
+		if (current >= 0) {
+			const int other = (current + 1) % D110Core::kNumPatches;
+			constexpr int kPart = 3;
+			const int field = 31 + kPart * 12 + 8;
+			const int liveAt = D110Core::kRamTimbreTemp + kPart * D110Core::kTimbreTempRecord + 8;
+			const int before = byteAt(proc, liveAt);
+			proc.editPatchField(other, field, differentFrom(before, 100));
+			render(proc, 1.4);
+			check(byteAt(proc, liveAt) == before,
+			      "контроль: правка ЧУЖОГО патча звук не трогает",
+			      "живой байт остался " + juce::String(byteAt(proc, liveAt)));
+		}
+	}
+
 	std::printf("\n=== ИТОГ: %d прошло, %d не прошло ===\n", g_passed, g_failed);
 
 	// Убираем за собой: зонд писал в настоящую батарейную память прибора.

@@ -1453,7 +1453,7 @@ void D110EditorPane::setValue(const Cell &c, int value) {
 	case Area::Rhythm:   processor.sendRhythmParam(c.index, c.field, uint8_t(v)); break;
 	case Area::System:   processor.sendSystemParam(c.index, uint8_t(v)); break;
 	case Area::Timbres:  processor.sendTimbreMemoryParam(c.index, c.field, uint8_t(v)); break;
-	case Area::Patches:  processor.sendPatchMemoryParam(c.index, c.field, uint8_t(v)); break;
+	case Area::Patches:  processor.editPatchField(c.index, c.field, uint8_t(v)); break;
 	case Area::Tones:    break;   // тон целиком, а не по байту - см. вкладку TONES
 	default:             processor.sendTimbreTempParam(c.index, c.field, uint8_t(v)); break;
 	}
@@ -1763,9 +1763,10 @@ void D110EditorPane::paint(juce::Graphics &g) {
 		         "the TONES memory.";
 		break;
 	case Tab::Patches:
-		footer = "The number selects the patch on the instrument itself, by pressing its own "
-		         "PATCH / BANK / NUMBER buttons - so the display, the parts and the sound all "
-		         "follow, as they do by hand. Click a row's name to rename it.";
+		footer = "Clicking a row puts that patch on the instrument itself, by pressing its own "
+		         "PATCH / BANK / NUMBER buttons. Editing the parts below is audible at once "
+		         "while it is the patch being played - the stored record and the live areas "
+		         "are both written. Click a row's name to rename it.";
 		break;
 	case Tab::Rhythm:
 		footer = "One row per drum key, 85 of them - roll the wheel over the list to scroll. "
@@ -1779,6 +1780,11 @@ void D110EditorPane::paint(juce::Graphics &g) {
 		footer = "Master Tune and Reverb Type are the instrument's own and are deliberately NOT "
 		         "carried to the sound engine - the two scales disagree, and eight reverb types "
 		         "onto the engine's four have no honest mapping (docs/sysex_address_map.md).";
+		break;
+	case Tab::Tones:
+		footer = "Clicking a slot loads that tone into the chosen part at once, so it can be "
+		         "heard - the same 246 bytes the RECALL button sends. STORE puts the part's "
+		         "current tone back into the slot.";
 		break;
 	default:
 		footer = "Every change is sent to the instrument as exclusive data, exactly as an "
@@ -1939,35 +1945,18 @@ void D110EditorPane::buttonPressed(int id) {
 		}
 		return;
 	}
-	if (id == 20) {
-		// Тон из партии в ячейку памяти. 246 байт в одно эксклюзивное сообщение не
-		// помещаются (у Roland на данные остаётся 244), поэтому он идёт двумя кусками -
-		// ровно так же, как его послал бы внешний библиотекарь.
-		if (!ramValid) return;
-		const size_t from = size_t(D110Core::kRamToneTemp) + size_t(part) * D110Core::kToneRecord;
-		constexpr int kChunk = 123;
-		for (int off = 0; off < D110Core::kToneRecord; off += kChunk) {
-			const int len = juce::jmin(kChunk, D110Core::kToneRecord - off);
-			processor.sendAreaData(D110Core::kSysexTones,
-			                       toneSlot * D110Core::kToneMemRecord + off,
-			                       ram.data() + from + size_t(off), len);
-		}
+	if (id == 20) { processor.storeToneFromPart(part, toneSlot); return; }
+	if (id == 21) { processor.auditionTone(part, toneSlot); return; }
+	if (id >= 100 && id < 200) {
+		// Щелчок по ячейке не просто выделяет её, а СТАВИТ тон в выбранную партию - иначе
+		// перебирать шестьдесят четыре тона на слух пришлось бы через кнопку, по два
+		// движения на каждый.
+		toneSlot = id - 100;
+		processor.auditionTone(part, toneSlot);
+		layout();
+		repaint();
 		return;
 	}
-	if (id == 21) {
-		if (!ramValid) return;
-		const size_t from = size_t(D110Core::kRamTones)
-		                  + size_t(toneSlot) * D110Core::kToneMemRecord;
-		constexpr int kChunk = 123;
-		for (int off = 0; off < D110Core::kToneRecord; off += kChunk) {
-			const int len = juce::jmin(kChunk, D110Core::kToneRecord - off);
-			processor.sendAreaData(D110Core::kSysexToneTemp,
-			                       part * D110Core::kToneRecord + off,
-			                       ram.data() + from + size_t(off), len);
-		}
-		return;
-	}
-	if (id >= 100 && id < 200) { toneSlot = id - 100; layout(); repaint(); return; }
 	if (id >= 200 && id < 300) {
 		// Щелчок по номеру патча делает две вещи: показывает его партии ниже и просит
 		// прибор на него перейти.
@@ -2043,6 +2032,22 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 			return;
 		}
 	}
+	// На вкладке патчей попадание в строку - это и есть выбор патча: прибор переходит на
+	// него, и ниже показываются его партии. Ловится по всей строке, а не по одному номеру,
+	// потому что перебирать патчи на слух надо мышью, а не прицеливаясь в кнопку.
+	if (tab == Tab::Patches && tableArea.contains(p) && rowHeight > 0.0f) {
+		const int row = int((p.y - tableArea.getY()) / rowHeight);
+		const int patch = patchScroll + row;
+		if (row >= 0 && patch >= 0 && patch < D110Core::kNumPatches && patch != patchSlot) {
+			patchSlot = patch;
+			processor.selectPatch(patch);
+			layout();
+			repaint();
+			// Значение под курсором всё равно остаётся правимым: выбор патча и правка его
+			// поля - разные вещи, и обе делаются одним и тем же щелчком по одной строке.
+		}
+	}
+
 	for (const Button &b : buttons) {
 		if (!b.bounds.contains(p)) continue;
 		buttonPressed(b.id);
