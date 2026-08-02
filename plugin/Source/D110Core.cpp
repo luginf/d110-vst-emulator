@@ -443,6 +443,16 @@ class D110Osd : public osd_common_t {
 						core->osdLogCtxEvent(pc, ramsOffset, uint8_t(data & 0xff));
 					if (mem_mask & 0xff00)
 						core->osdLogCtxEvent(pc, uint16_t(ramsOffset + 1), uint8_t((data >> 8) & 0xff));
+					// Те же записи уходят и во ВРЕМЕННОЙ захват - тот, у которого есть метка
+					// времени. Вопрос «что раньше: регистры микросхемы или пометка слота
+					// занятым» решается только общей осью времени, а два раздельных журнала
+					// её не дают. Оба перехвата живут на одном потоке процессора, поэтому
+					// порядок в общем журнале и есть настоящий порядок событий, без
+					// сортировки. Попадёт туда это или нет, решает фильтр по адресу.
+					if (mem_mask & 0x00ff)
+						core->osdLogSoWrite(pc, uint16_t(addr), uint8_t(data & 0xff));
+					if (mem_mask & 0xff00)
+						core->osdLogSoWrite(pc, uint16_t(addr + 1), uint8_t((data >> 8) & 0xff));
 				});
 		}
 

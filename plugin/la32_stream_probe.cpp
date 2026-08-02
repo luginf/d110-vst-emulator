@@ -212,7 +212,13 @@ int main(int argc, char **argv) {
 	render(proc, 10.0);
 	if (!proc.getCore().isRunning()) { std::printf("прошивка не поднялась\n"); return 1; }
 
-	proc.getCore().setTraceFilter(D110Core::kLa32TapBase, D110Core::kLa32TapEnd);
+	// Режим order: в захват пускаются И регистры микросхемы, И таблица состояний слотов, чтобы
+	// они легли на одну ось времени. Ради этого фильтр расширяется до 0xEFFF - между 0x0DFF и
+	// 0xEDC0 в этот журнал не пишет никто, так что лишнего не наберётся.
+	if (mode == "order")
+		proc.getCore().setTraceFilter(D110Core::kLa32TapBase, 0xEFFF);
+	else
+		proc.getCore().setTraceFilter(D110Core::kLa32TapBase, D110Core::kLa32TapEnd);
 
 	// Режим ramps: считать рампы по-настоящему и поднимать прерывание по их прибытию.
 	// Ставится ПОСЛЕ включения питания - setPoweredOn задаёт политику сам.
@@ -294,6 +300,43 @@ int main(int argc, char **argv) {
 	std::printf("  рамп запущено: %llu, дошло до цели: %llu\n",
 	            (unsigned long long)proc.getCore().la32RampStarts(),
 	            (unsigned long long)proc.getCore().la32RampLandings());
+
+	if (mode == "order") {
+		// Что раньше - регистры рампы или пометка слота занятым. Печатается начало ноты
+		// целиком, без прореживания: вопрос именно в порядке нескольких первых событий.
+		// Поток высоты из журнала выброшен - он один даёт тысячи записей и утопил бы всё
+		// остальное, а к вопросу о порядке отношения не имеет.
+		std::printf("\n  первые события ноты на одной оси времени\n");
+		std::printf("  мс    | ПЗУ  | адрес | знач | что это\n");
+		int shown = 0;
+		for (const auto &w : r.writes) {
+			if ((w.addr & 0xFFC0) == 0x0CC0) continue;
+			const char *what = "?";
+			if ((w.addr & 0xFFC0) == D110Core::kAmpRampBase) what = "рампа амплитуды";
+			else if ((w.addr & 0xFFC0) == D110Core::kFilterRampBase) what = "рампа среза";
+			else if ((w.addr & 0xFFC0) == 0x0C40) what = "настройка (ширина/срез)";
+			else if ((w.addr & 0xFFC0) == 0x0D00) what = "настройка (волна/резонанс)";
+			// Таблицы прошивки идут через 0x40, как и банки микросхемы, поэтому номер слота
+			// берётся от начала СВОЕЙ таблицы, а не от начала всей области.
+			else if (w.addr >= 0xEDC0) {
+				switch (w.addr & 0xFFC0) {
+				case 0xEDC0: what = "СЛОТ: пометка занятости"; break;
+				case 0xEE00: what = "слот: контекст"; break;
+				case 0xEE40: what = "слот: цепочка"; break;
+				case 0xEE80: what = "слот: таблица EE80"; break;
+				case 0xEEC0: what = "слот: таблица EEC0"; break;
+				case 0xEF00: what = "слот: таблица EF00"; break;
+				case 0xEF40: what = "слот: база высоты"; break;
+				case 0xEF80: what = "слот: таблица EF80"; break;
+				default: what = "слот: прочее"; break;
+				}
+			}
+			const int slot = (w.addr & 0x3F) / 2;
+			std::printf("  %6.2f | %04X | %04X  |  %02X  | %s, слот %d\n", w.ms - onMs, w.pc,
+			            w.addr, w.value, what, slot);
+			if (++shown >= 60) { std::printf("  ... (обрезано)\n"); break; }
+		}
+	}
 
 	reportBanks(r);
 
