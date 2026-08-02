@@ -91,6 +91,30 @@ class D110Osd : public osd_common_t {
 	memory_passthrough_handler m_panelPortTap;
 	memory_passthrough_handler m_la32WriteTap;
 	memory_passthrough_handler m_portTap;
+	// Одна аппаратная рампа LA32. Смысл полей и закон движения - как у LA32Ramp в munt,
+	// восстановленного там по записям с живого прибора; здесь он повторён, а не выдуман
+	// заново, потому что это модель ТОЙ ЖЕ микросхемы.
+	//
+	// Считается не по отсчёту за раз, а аналитически: приращение постоянно, поэтому момент
+	// прибытия известен сразу, и обслуживать рампы можно на любой удобной частоте, не теряя
+	// точности самого момента. Единица времени - отсчёт микросхемы, 32 кГц.
+	struct La32RampState {
+		double current = 0.0;      // в тех же крупных единицах, что и у munt: значение << 18
+		double increment = 0.0;    // за один отсчёт микросхемы
+		double target = 0.0;
+		bool descending = false;
+		bool running = false;
+		bool landed = false;       // дошла и ещё не доложена процессору
+	};
+	static constexpr int kRampBanks = 2; // 0 - амплитуда (0x0C80), 1 - срез (0x0C00)
+	La32RampState m_ramp[kRampBanks][D110Core::kNumHardwareVoices];
+	// Полубайты, пришедшие порознь: пара собирается, когда записаны оба.
+	uint8_t m_rampTarget[kRampBanks][D110Core::kNumHardwareVoices] = {};
+	uint8_t m_rampIncrement[kRampBanks][D110Core::kNumHardwareVoices] = {};
+	double m_rampSamples = 0.0; // сколько отсчётов микросхемы прошло с запуска машины
+	// Очередь прибытий: слот и банк. Прошивка забирает их по одному, читая байт состояния.
+	std::vector<std::pair<int, int>> m_rampLanded;
+
 	bool m_la32Pending = false;   // a status byte is waiting to be collected
 	bool m_la32NeedClear = false; // the handler has taken it; drop the line
 	uint8_t m_la32Status = 0xff;
@@ -186,6 +210,102 @@ class D110Osd : public osd_common_t {
 			std::chrono::steady_clock::now() - m_ctxOnTime[ctx]).count());
 	}
 
+	// Приращение по байту, как его понимает микросхема: старший бит - сторона, младшие семь -
+	// скорость, и она экспоненциальная. Формула взята у LA32Ramp из munt (там она выведена
+	// анализом записей с прибора) и переписана в плавающую точку - здесь важен момент
+	// прибытия, а не побитовое совпадение промежуточных значений.
+	static double rampIncrementOf(uint8_t increment) {
+		if (increment == 0) return 0.0;                      // ноль не двигает и не прерывает
+		const double large = std::exp2((double((increment & 0x7F)) + 24.0) / 8.0);
+		return (increment & 0x80) ? large + 1.0 : large;     // вниз микросхема идёт чуть быстрее
+	}
+
+	// Запись в регистр рампы. Чётный байт слота - приращение, нечётный - цель; рампа
+	// запускается по записи ЦЕЛИ, потому что шестнадцатибитная запись кладёт младший байт
+	// первым, а раздельные записи прошивка делает в том же порядке.
+	void rampWrite(uint16_t addr, uint8_t value) {
+		int bankIndex = -1;
+		if (addr >= D110Core::kAmpRampBase && addr < D110Core::kAmpRampBase + 0x40)
+			bankIndex = 0;
+		else if (addr >= D110Core::kFilterRampBase && addr < D110Core::kFilterRampBase + 0x40)
+			bankIndex = 1;
+		if (bankIndex < 0) return;
+		const uint16_t base = bankIndex ? D110Core::kFilterRampBase : D110Core::kAmpRampBase;
+		const int within = addr - base;
+		const int slot = within / 2;
+		if (within & 1) {
+			m_rampTarget[bankIndex][slot] = value;
+			startRamp(bankIndex, slot);
+		} else {
+			m_rampIncrement[bankIndex][slot] = value;
+		}
+	}
+
+	// Пара «цель и приращение» записана целиком - запускаем рампу. Начальная точка - там, где
+	// значение сейчас: у настоящей микросхемы это конец предыдущей рампы, и здесь так же.
+	void startRamp(int bankIndex, int slot) {
+		if (bankIndex < 0 || bankIndex >= kRampBanks || slot < 0 ||
+		    slot >= D110Core::kNumHardwareVoices)
+			return;
+		La32RampState &r = m_ramp[bankIndex][slot];
+		const uint8_t inc = m_rampIncrement[bankIndex][slot];
+		r.increment = rampIncrementOf(inc);
+		r.descending = (inc & 0x80) != 0;
+		r.target = double(m_rampTarget[bankIndex][slot]) * double(1 << 18);
+		r.landed = false;
+		r.running = r.increment != 0.0;
+		if (!r.running) return; // нулевое приращение: ни движения, ни прерывания
+		// Приращение 0xFF - не скорость, а «поставить и не прерывать». Иначе нота гаснет на
+		// нулевой миллисекунде: прошивка пишет эти регистры ДО того, как пометит слот
+		// занятым, обработчик видит слот свободным и глушит его (ПЗУ 0x3160). Проверяется
+		// тем, доживает ли нота до снятия.
+		if (core->la32PresetFf() && inc == 0xFF) {
+			r.current = r.target;
+			r.running = false;
+			core->osdCountRampStart();
+			return;
+		}
+		// Цель уже пройдена - микросхема встаёт на неё сразу и тут же рапортует.
+		if ((r.descending && r.current <= r.target) || (!r.descending && r.current >= r.target)) {
+			r.current = r.target;
+			r.running = false;
+			r.landed = true;
+			m_rampLanded.push_back({bankIndex, slot});
+			core->osdCountRampLanding();
+		}
+		core->osdCountRampStart();
+	}
+
+	// Продвинуть все рампы до текущего момента и собрать прибытия. Вызывается с частотой
+	// обслуживания, а не с частотой микросхемы: приращение постоянно, поэтому шаг любой
+	// длины считается одной формулой.
+	void advanceRamps(double samples) {
+		m_rampSamples += samples;
+		for (int b = 0; b < kRampBanks; ++b)
+			for (int s = 0; s < D110Core::kNumHardwareVoices; ++s) {
+				La32RampState &r = m_ramp[b][s];
+				if (!r.running) continue;
+				r.current += r.descending ? -r.increment * samples : r.increment * samples;
+				const bool arrived = r.descending ? r.current <= r.target : r.current >= r.target;
+				if (!arrived) continue;
+				r.current = r.target;
+				r.running = false;
+				r.landed = true;
+				m_rampLanded.push_back({b, s});
+				core->osdCountRampLanding();
+			}
+	}
+
+	// Байт состояния, которым микросхема отвечает на чтение 0x0C00. Кодировка не выведена, а
+	// перебирается: разбор обработчика (docs/la32_interface.md) показал, что он ветвится по
+	// биту 7 и биту 5 и по-разному выводит из младших бит номер голоса, а какой именно
+	// вариант верен, решается опытом - счётом ступеней огибающей, которые пошли.
+	uint8_t rampStatusByte(int bank, int slot) const {
+		const int mode = core->la32StatusMode();
+		const uint8_t v = uint8_t((mode & 1) ? ((slot + 1) & 0x1F) : (slot & 0x1F));
+		return uint8_t((mode & 2) ? (v | (bank ? 0x20 : 0x00)) : v);
+	}
+
 	void resolveDevices() {
 		if (m_resolved || !m_machine) return;
 		device_t &root = m_machine->root_device();
@@ -264,6 +384,15 @@ class D110Osd : public osd_common_t {
 					// Counted unconditionally, so "the tap never fired" can be told apart
 					// from "the tap fired but had nothing to give".
 					core->osdCountLa32Read();
+					// Микросхеме есть что сказать только когда рампа дошла. Во всех прочих
+					// случаях она отвечает байтом со взведённым битом 7 - «обслуживать
+					// нечего», как и разбирает обработчик прошивки.
+					if (!m_la32Pending &&
+					    core->stuckPolicy_() == D110Core::StuckPolicy::La32Ramps) {
+						if (mem_mask & 0x00ff) data = u16((data & 0xff00) | 0x00ff);
+						else if (mem_mask & 0xff00) data = u16((data & 0x00ff) | 0xff00);
+						return;
+					}
 					if (!m_la32Pending) return;
 					if (mem_mask & 0x00ff)
 						data = u16((data & 0xff00) | m_la32Status);
@@ -359,8 +488,16 @@ class D110Osd : public osd_common_t {
 			// Регистровый файл LA32 - см. kLa32TapBase. Единственный способ увидеть, что
 			// прошивка кладёт в микросхему синтеза: карта памяти D-110 это окно не
 			// занимает вовсе, а обращения по нему и есть весь её управляющий интерфейс.
+			// Тот же перехват кормит и рампы: банки 0x0C00 и 0x0C80 - это их регистры, и
+			// пара «цель, приращение» становится известна ровно здесь.
 			m_la32WriteTap = m_cpu->space(AS_PROGRAM).install_write_tap(
-				D110Core::kLa32TapBase, D110Core::kLa32TapEnd, "d110_la32_regs", ioWatch);
+				D110Core::kLa32TapBase, D110Core::kLa32TapEnd, "d110_la32_regs",
+				[this, ioWatch](offs_t addr, u16 &data, u16 mem_mask) {
+					ioWatch(addr, data, mem_mask);
+					if (mem_mask & 0x00ff) rampWrite(uint16_t(addr), uint8_t(data & 0xff));
+					if (mem_mask & 0xff00)
+						rampWrite(uint16_t(addr + 1), uint8_t((data >> 8) & 0xff));
+				});
 
 			m_extIoTap = m_cpu->space(AS_PROGRAM).install_write_tap(
 				D110Core::kExtIoTapBase, D110Core::kExtIoTapEnd, "d110_ext_io",
@@ -558,6 +695,26 @@ public:
 			m_stuckIntHigh = false;
 			m_la32NeedClear = false;
 			m_stuckIntHighTicks = 0;
+		}
+
+		// Рампы идут ВСЕГДА, а не только когда процессор во что-то упёрся: на железе
+		// микросхема считает их сама и поднимает прерывание по прибытию, чем бы процессор в
+		// этот момент ни занимался. Поэтому эта ветка стоит до проверки «застрял».
+		if (core->stuckPolicy_() == D110Core::StuckPolicy::La32Ramps) {
+			advanceRamps(D110Core::kLa32SampleRate / D110Core::kMidiBytesPerSecond);
+			if (!m_la32Pending && !m_rampLanded.empty()) {
+				const auto ev = m_rampLanded.front();
+				m_rampLanded.erase(m_rampLanded.begin());
+				m_la32Status = rampStatusByte(ev.first, ev.second);
+				m_la32Pending = true;
+			}
+			if (m_la32Pending && !m_stuckIntHigh) {
+				m_cpu->set_input_line(i8x9x_device::EXTINT_LINE, ASSERT_LINE);
+				m_stuckIntHigh = true;
+				m_stuckIntHighTicks = 0;
+				core->osdCountStuckRelease();
+			}
+			return;
 		}
 
 		// Leaving the wait resets the response-delay counter, so the next voice waits its

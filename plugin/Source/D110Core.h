@@ -196,7 +196,15 @@ public:
 	//               its handler the status byte it reads from 0x0C00, encoding the very
 	//               voice it is waiting for. The handler then does its own work, which is
 	//               what the two cruder policies skipped. See docs/la32_interface.md.
-	enum class StuckPolicy { Off, PokeRam, PulseExtInt, La32Stub };
+	//   La32Ramps - то, чем это на самом деле является. Амплитуда и срез у LA32 - аппаратные
+	//               рампы: процессор кладёт цель и приращение, микросхема идёт к цели сама и
+	//               по достижении поднимает INT, а прошивка по прерыванию грузит следующую
+	//               ступень огибающей. Измерено (docs/la32_register_map.md): за целую ноту
+	//               прошивка получает НОЛЬ ответов, поэтому огибающая обрывается на первой
+	//               ступени, и правка её времён и уровней не доходит до микросхемы вовсе.
+	//               Здесь рампы считаются по-настоящему, и прерывание поднимает их прибытие,
+	//               а не то, что процессор куда-то встал.
+	enum class StuckPolicy { Off, PokeRam, PulseExtInt, La32Stub, La32Ramps };
 	void setStuckPolicy(StuckPolicy p) { stuckPolicy.store(int(p), std::memory_order_release); }
 	StuckPolicy stuckPolicy_() const {
 		return StuckPolicy(stuckPolicy.load(std::memory_order_acquire));
@@ -295,6 +303,32 @@ public:
 	// argument: sweep it and watch the note-on rate.
 	void setLa32ResponseDelay(int ticks) { la32Delay.store(ticks, std::memory_order_release); }
 	int la32ResponseDelay() const { return la32Delay.load(std::memory_order_acquire); }
+
+	// --- аппаратные рампы LA32 ---------------------------------------------------
+	// Два банка регистров по два байта на слот: чётный байт - ПРИРАЩЕНИЕ, нечётный - ЦЕЛЬ.
+	// Порядок именно такой, и он снят с измерения, а не выбран: при нажатии в банк
+	// амплитуды уходит цель 0x7E при силе 100 и 0x6E при силе 40 (то есть цель - это
+	// уровень), а при снятии цель 0x00 с приращением 0xCF, у которого старший бит означает
+	// «вниз». Банк среза ведёт себя в точности так же, что само по себе довод.
+	//
+	// Смысл цели и приращения взят у модели той же микросхемы в munt (LA32Ramp), где он
+	// восстановлен по анализу записей с живого прибора: старший бит приращения - сторона
+	// движения, младшие семь - скорость по экспоненте, нулевое приращение не двигает ничего
+	// и прерывания не даёт.
+	static constexpr uint16_t kAmpRampBase = 0x0C80;   // рампа TVA
+	static constexpr uint16_t kFilterRampBase = 0x0C00; // рампа TVF - см. оговорку в документе
+	// Частота, на которой микросхема считает рампы. Отсюда же её выход цифрового звука.
+	static constexpr double kLa32SampleRate = 32000.0;
+	// Сколько рамп стартовало и сколько дошло до цели - счётчики, а не журнал: вопрос
+	// «работает ли механизм вообще» обрезанной записью не отвечается.
+	uint64_t la32RampStarts() const { return rampStarts.load(std::memory_order_acquire); }
+	uint64_t la32RampLandings() const { return rampLandings.load(std::memory_order_acquire); }
+	// Считать ли приращение 0xFF установкой без прерывания. Держится переключателем, потому
+	// что это ГИПОТЕЗА, и стенд обязан уметь показать обе стороны.
+	void setLa32PresetFf(bool on) { presetFf.store(on, std::memory_order_release); }
+	bool la32PresetFf() const { return presetFf.load(std::memory_order_acquire); }
+	void osdCountRampStart() { rampStarts.fetch_add(1, std::memory_order_relaxed); }
+	void osdCountRampLanding() { rampLandings.fetch_add(1, std::memory_order_relaxed); }
 
 	void setLa32StatusMode(int mode) { la32Mode.store(mode, std::memory_order_release); }
 	int la32StatusMode() const { return la32Mode.load(std::memory_order_acquire); }
@@ -826,6 +860,8 @@ private:
 	std::atomic<int> lastUnresolvedContext{-1};
 	std::atomic<uint64_t> unresolvedStreak{0};
 	std::atomic<int> la32Mode{0};
+	std::atomic<uint64_t> rampStarts{0}, rampLandings{0};
+	std::atomic<bool> presetFf{false};
 	std::atomic<int> la32Delay{0};
 
 	// Карта памяти. cardWant пишет любой поток, cardIsIn трогает только поток машины -

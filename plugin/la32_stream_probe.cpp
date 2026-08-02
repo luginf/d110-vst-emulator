@@ -197,9 +197,13 @@ int main(int argc, char **argv) {
 	// рампе некуда идти, и «регистр не сдвинулся» будет означать не «параметр не доходит»,
 	// а «раздражитель ничего не раздражал». Тройки: группа, параметр, шаг (минус - вниз).
 	const std::string mode = argc > 1 ? argv[1] : "observe";
+	// В режиме ramps первый аргумент - кодировка байта состояния, дальше идут тройки правок:
+	// правки нужны и здесь, потому что весь смысл рамп проверяется тем, что огибающая, до
+	// которой раньше дело не доходило, теперь доходит.
+	const int statusMode = (mode == "ramps" && argc > 2) ? std::atoi(argv[2]) : 0;
 	struct Edit { int group, bank, presses; };
 	std::vector<Edit> edits;
-	for (int i = 2; i + 2 < argc; i += 3)
+	for (int i = (mode == "ramps" ? 3 : 2); i + 2 < argc; i += 3)
 		edits.push_back({std::atoi(argv[i]), std::atoi(argv[i + 1]), std::atoi(argv[i + 2])});
 
 	D110AudioProcessor proc;
@@ -209,6 +213,21 @@ int main(int argc, char **argv) {
 	if (!proc.getCore().isRunning()) { std::printf("прошивка не поднялась\n"); return 1; }
 
 	proc.getCore().setTraceFilter(D110Core::kLa32TapBase, D110Core::kLa32TapEnd);
+
+	// Режим ramps: считать рампы по-настоящему и поднимать прерывание по их прибытию.
+	// Ставится ПОСЛЕ включения питания - setPoweredOn задаёт политику сам.
+	// Кодировка байта состояния перебирается: разбор обработчика оставил четыре варианта,
+	// а какой верен, решает опыт - сколько ступеней огибающей после этого пошло.
+	if (mode == "ramps") {
+		proc.getCore().setStuckPolicy(D110Core::StuckPolicy::La32Ramps);
+		proc.getCore().setLa32StatusMode(statusMode);
+		// Вторая цифра режима, если она есть: считать ли 0xFF установкой без прерывания.
+		const bool presetFf = statusMode >= 10;
+		proc.getCore().setLa32StatusMode(statusMode % 10);
+		proc.getCore().setLa32PresetFf(presetFf);
+		std::printf("рампы включены, кодировка байта состояния: %d, 0xFF как установка: %s\n",
+		            statusMode % 10, presetFf ? "да" : "нет");
+	}
 
 	std::printf("заводской сброс, чтобы тембр был известным...\n");
 	proc.getCore().factoryReset();
@@ -232,7 +251,7 @@ int main(int argc, char **argv) {
 		std::printf("  записей: %zu%s\n", w.size(), w.empty() ? "" : "  !!! окно не молчит");
 	}
 
-	if (mode == "env") {
+	if (!edits.empty()) {
 		for (const auto &e : edits) {
 			std::printf("\nправка: Part+ x2, Group+ x%d, Bank+ x%d, Number%s x%d\n", e.group,
 			            e.bank, e.presses < 0 ? "-" : "+", std::abs(e.presses));
@@ -272,6 +291,9 @@ int main(int argc, char **argv) {
 	if (r.dropped) std::printf("  !!! захват переполнился - всё ниже нижняя граница\n");
 	std::printf("  ответов микросхемы за ноту (LA32 services): %llu\n",
 	            (unsigned long long)(r.servicesAfter - r.servicesBefore));
+	std::printf("  рамп запущено: %llu, дошло до цели: %llu\n",
+	            (unsigned long long)proc.getCore().la32RampStarts(),
+	            (unsigned long long)proc.getCore().la32RampLandings());
 
 	reportBanks(r);
 
