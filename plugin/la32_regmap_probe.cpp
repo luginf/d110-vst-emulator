@@ -245,7 +245,7 @@ void chromaticSweep(D110AudioProcessor &proc) {
 // использованные слоты, их всего 32, и как только они кончаются, в тот же банк начинают идти
 // обнуления при переиспользовании - неотличимые здесь от выдачи. Два опыта в одном прогоне
 // не помещаются, и попытка их совместить трижды портила измерение.
-enum class Mode { Sweep, Tone, Find };
+enum class Mode { Sweep, Tone, Find, Grid };
 
 int main(int argc, char **argv) {
 	juce::ScopedJuceInitialiser_GUI juceInit;
@@ -254,9 +254,11 @@ int main(int argc, char **argv) {
 	Mode mode = Mode::Sweep;
 	if (argc > 1 && std::strcmp(argv[1], "tone") == 0) mode = Mode::Tone;
 	if (argc > 1 && std::strcmp(argv[1], "find") == 0) mode = Mode::Find;
+	if (argc > 1 && std::strcmp(argv[1], "grid") == 0) mode = Mode::Grid;
 	std::printf("режим: %s\n",
 	            mode == Mode::Sweep ? "хроматика и четыре раздражителя"
 	            : mode == Mode::Tone ? "точечные правки тембра"
+	            : mode == Mode::Grid ? "сетка параметров партиала: Group+ и Bank+"
 	                                 : "разведка страниц правки тембра");
 
 	D110AudioProcessor proc;
@@ -295,6 +297,71 @@ int main(int argc, char **argv) {
 	// Нот здесь НЕ играется, и это важно: разведка не тратит голосовые слоты, поэтому всю
 	// сетку можно перебрать за один прогон, тогда как измерение регистров упирается в 32
 	// слота и требует опыта за запуск.
+	// ---- вся сетка параметров партиала: Group+ выбирает ГРУППУ, Bank+ параметр в ней ------
+	// Прежняя разведка ходила только по Group+ и нашла смещения +0, +8, +20, +23, +28, +41,
+	// +47. Это не «семь параметров партиала», как было записано, а ПЕРВЫЕ параметры семи
+	// групп: сверка с раскладкой тембра (munt, Structures.h) даёт WG, P-ENV, P-LFO, TVF,
+	// TVF-ENV, TVA, TVA-ENV - и ровно эти имена лежат строками в ПЗУ прошивки. Значит из
+	// тридцати параметров партиала измерены были семь, а форма волны, ширина импульса, номер
+	// волны ПЗУ и резонанс - те, которым до микросхемы дойти ОБЯЗАНО, потому что генерирует
+	// волну она сама, - не проверялись ни разу.
+	//
+	// Нот здесь не играется, поэтому голосовые слоты не тратятся и вся сетка снимается за
+	// один прогон. Внутри группы страница не перенабирается заново: Bank+ переводит на
+	// следующий параметр, и каждая клетка сравнивается со своим снимком.
+	if (mode == Mode::Grid) {
+		std::printf("заводской сброс, чтобы отсчёт был от известного тембра...\n");
+		proc.getCore().factoryReset();
+		render(proc, 3.0);
+		while (proc.getCore().isResetting() || !proc.getCore().isRunning()) render(proc, 0.5);
+		render(proc, 9.0);
+
+		constexpr int kPartialBase = 14; // партиал 1; базы отстоят на 58, это уже измерено
+		std::printf("\n  группа | Bank+ | байт тембра | смещение в партиале | значение\n");
+		for (int group = 0; group <= 6; ++group) {
+			press(proc, "Exit", 2);
+			press(proc, "Timbre");
+			press(proc, "Edit");
+			press(proc, "Edit");
+			press(proc, "Part+", 1);
+			if (group) press(proc, "Group+", group);
+			render(proc, 0.4);
+
+			for (int bank = 0; bank <= 8; ++bank) {
+				const auto before = ramOf(proc);
+				press(proc, "Number+", 3);
+				render(proc, 0.4);
+				auto after = ramOf(proc);
+				bool moved = std::memcmp(&before[0x21E4], &after[0x21E4], 246) != 0;
+				const char *dir = "+3";
+				if (!moved) {
+					// Значение могло стоять на верхнем упоре - тогда «не сдвинулось» значит
+					// «прибавлять некуда», а не «параметра нет». Пробуем в другую сторону.
+					press(proc, "Number-", 3);
+					render(proc, 0.4);
+					after = ramOf(proc);
+					moved = std::memcmp(&before[0x21E4], &after[0x21E4], 246) != 0;
+					dir = "-3";
+				}
+				std::printf("  %6d | %5d | %s |", group, bank, dir);
+				if (!moved) std::printf(" (ничего ни вверх, ни вниз)");
+				for (int i = 0; i < 246; ++i) {
+					const int off = 0x21E4 + i;
+					if (before[(size_t)off] == after[(size_t)off]) continue;
+					std::printf(" байт%d", i);
+					if (i >= kPartialBase && i < kPartialBase + 58)
+						std::printf(" = партиал1 +%d", i - kPartialBase);
+					std::printf(" (%d->%d)", before[(size_t)off], after[(size_t)off]);
+				}
+				std::printf("\n");
+				press(proc, "Bank+");
+				render(proc, 0.3);
+			}
+		}
+		proc.setPoweredOn(false);
+		return 0;
+	}
+
 	if (mode == Mode::Find) {
 		std::printf("  общая часть тембра - байты 0..13, партиалы - с 14-го\n");
 		std::printf("  Part+ | Group+ | сдвинувшийся байт тембра\n");
@@ -360,11 +427,18 @@ int main(int argc, char **argv) {
 		// на чужое допущение вместо измерения.
 		//
 		// Part+ 0 оставляет общую часть тембра: имя и две структуры.
+		// Адрес правки: партиал (Part+), группа (Group+) и параметр внутри группы (Bank+).
+		// Bank+ появился здесь после того, как режим grid показал: Group+ приводит на ПЕРВЫЙ
+		// параметр группы, а не перебирает параметры. Без него форма волны, номер волны ПЗУ,
+		// ширина импульса и резонанс были недостижимы, а это ровно те параметры, которым до
+		// микросхемы дойти обязано.
 		const int partSteps = (argc > 2) ? std::atoi(argv[2]) : 0;
-		const int firstPage = (argc > 3) ? std::atoi(argv[3]) : 0;
-		const int pageCount = (argc > 4) ? std::atoi(argv[4]) : 3;
-		std::printf("партиал: Part+ x%d; страницы: с %d, числом %d\n", partSteps, firstPage,
-		            pageCount);
+		const int groupSteps = (argc > 3) ? std::atoi(argv[3]) : 0;
+		const int firstBank = (argc > 4) ? std::atoi(argv[4]) : 0;
+		const int bankCount = (argc > 5) ? std::atoi(argv[5]) : 1;
+		const int presses = (argc > 6) ? std::atoi(argv[6]) : 3;
+		std::printf("партиал: Part+ x%d; группа: Group+ x%d; параметры: Bank+ с %d, числом %d;"
+		            " шаг значения %d\n", partSteps, groupSteps, firstBank, bankCount, presses);
 
 		// Заводской сброс ОБЯЗАТЕЛЕН, и это выяснилось дорогой ценой. Тембр живёт в памяти
 		// прошивки между прогонами, а прогонов с Number+ было много: структуры доехали до
@@ -383,19 +457,21 @@ int main(int argc, char **argv) {
 			            ram[0x2000], ram[0x2001], ram[0x21E4 + 10], ram[0x21E4 + 11]);
 		}
 
-		struct Point { std::string name; int groupSteps; int presses; };
+		struct Point { std::string name; int bankSteps; int presses; };
 		// Что именно на каждой странице - зонд не предполагает: он показывает, какие байты
 		// тембра в ОЗУ сдвинулись, и байт называет параметр сам.
 		std::vector<Point> points;
-		for (int p = 0; p < pageCount; ++p)
-			points.push_back({"страница " + std::to_string(firstPage + p), firstPage + p, 3});
+		for (int p = 0; p < bankCount; ++p)
+			points.push_back({"группа " + std::to_string(groupSteps) + ", параметр "
+			                  + std::to_string(firstBank + p), firstBank + p, presses});
 		for (const auto &pt : points) {
 			press(proc, "Exit", 2);
 			press(proc, "Timbre");
 			press(proc, "Edit");
 			press(proc, "Edit");
 			if (partSteps) press(proc, "Part+", partSteps);
-			if (pt.groupSteps) press(proc, "Group+", pt.groupSteps);
+			if (groupSteps) press(proc, "Group+", groupSteps);
+			if (pt.bankSteps) press(proc, "Bank+", pt.bankSteps);
 			render(proc, 0.6);
 			const auto ramBefore = ramOf(proc);
 
