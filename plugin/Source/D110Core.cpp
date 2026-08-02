@@ -111,6 +111,9 @@ class D110Osd : public osd_common_t {
 	// Полубайты, пришедшие порознь: пара собирается, когда записаны оба.
 	uint8_t m_rampTarget[kRampBanks][D110Core::kNumHardwareVoices] = {};
 	uint8_t m_rampIncrement[kRampBanks][D110Core::kNumHardwareVoices] = {};
+	// Каким из двух банков пользуется этот голос - см. rampWrite. Ноль по умолчанию, то есть
+	// банк 0x0C80; настоящее значение приходит с флагом голоса при его выдаче.
+	int m_slotBank[D110Core::kNumHardwareVoices] = {};
 	double m_rampSamples = 0.0; // сколько отсчётов микросхемы прошло с запуска машины
 	// Очередь прибытий: слот и банк. Прошивка забирает их по одному, читая байт состояния.
 	std::vector<std::pair<int, int>> m_rampLanded;
@@ -224,6 +227,19 @@ class D110Osd : public osd_common_t {
 	// запускается по записи ЦЕЛИ, потому что шестнадцатибитная запись кладёт младший байт
 	// первым, а раздельные записи прошивка делает в том же порядке.
 	void rampWrite(uint16_t addr, uint8_t value) {
+		// Флаг слота: чётный байт банка 0x0D00 - это тот же байт, что прошивка держит в
+		// ef80[слот], и его БИТ 7 выбирает, каким из двух банков рампы пользуется этот голос.
+		// Читается прямо из ПЗУ 0x3B11: `ldb 70, ef80[54]` / `jbc 70, 7, 3b20` / `st 78,
+		// 0c00[54]` против `st 78, 0c80[54]`. Значит банки - не «амплитуда» и «срез», как
+		// думалось: голос пользуется ОДНИМ из них, а во второй прошивка кладёт своё.
+		//
+		// Пока рампы шли по обоим банкам сразу, каждый голос получал лишнюю рампу, её
+		// прибытие давало прерывание, которого прошивка не ждёт, и цепочка ступеней рушилась.
+		if (addr >= 0x0D00 && addr < 0x0D40 && !(addr & 1)) {
+			const int slot = (addr - 0x0D00) / 2;
+			m_slotBank[slot] = (value & 0x80) ? 1 : 0; // 1 - банк 0x0C00, 0 - банк 0x0C80
+			return;
+		}
 		int bankIndex = -1;
 		if (addr >= D110Core::kAmpRampBase && addr < D110Core::kAmpRampBase + 0x40)
 			bankIndex = 0;
@@ -235,7 +251,9 @@ class D110Osd : public osd_common_t {
 		const int slot = within / 2;
 		if (within & 1) {
 			m_rampTarget[bankIndex][slot] = value;
-			startRamp(bankIndex, slot);
+			// Рампу ведёт только тот банк, который выбран флагом голоса. Записи в другой -
+			// не рампа, и принимать их за неё значит выдумывать прерывания.
+			if (m_slotBank[slot] == bankIndex) startRamp(bankIndex, slot);
 		} else {
 			m_rampIncrement[bankIndex][slot] = value;
 		}
