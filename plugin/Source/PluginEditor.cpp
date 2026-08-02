@@ -309,15 +309,26 @@ void D110Panel::timerCallback()
 		needsRepaint = true;
 	}
 
-	// Ход карты. Скорость взята так, чтобы весь путь занимал около полусекунды при 60 кадрах
-	// в секунду, а под конец движение замедлялось - карта подъезжает к упору, а не втыкается
-	// в него. Пока карта едет, перерисовываться надо каждый кадр.
+	// Ход карты: около девяти десятых секунды на весь путь при 60 кадрах в секунду. Скорость
+	// зависит от того, насколько карта далека от ОБОИХ упоров, поэтому она трогается мягко,
+	// разгоняется к середине и мягко подходит к упору. Прежний закон считал только оставшееся
+	// расстояние - карта срывалась с места на полной скорости и первую треть пути была
+	// неразличима, а замедлялась там, где смотреть уже не на что.
+	//
+	// Пока карта едет, перерисовываться надо каждый кадр.
+	// Картинка следует за прибором, а не наоборот. Окно можно открыть уже после того, как
+	// проект восстановил вынутую карту, и тогда рисовать её на месте было бы враньём. Сверка
+	// делается только на покое, чтобы не спорить с идущим ходом.
+	if (cardTravel == cardTarget) {
+		const float shouldBe = processor.getCore().cardInserted() ? 0.0f : 1.0f;
+		if (cardTarget != shouldBe) cardTarget = shouldBe;
+	}
+
 	if (cardTravel != cardTarget) {
-		const float step = 0.045f;
-		const float remaining = cardTarget - cardTravel;
-		const float ease = juce::jmax(0.25f, std::abs(remaining)); // мягче у обоих концов
-		cardTravel += juce::jlimit(-step, step, remaining) * ease * 2.0f;
-		if (std::abs(cardTarget - cardTravel) < 0.004f) {
+		const float dir = cardTarget > cardTravel ? 1.0f : -1.0f;
+		const float fromEnd = juce::jmin(cardTravel, 1.0f - cardTravel); // ноль у любого упора
+		cardTravel += dir * kCardStep * (0.30f + 1.40f * fromEnd);
+		if (dir * (cardTravel - cardTarget) > 0.0f) {
 			cardTravel = cardTarget;
 			// Карта села в разъём - только теперь она есть для прошивки.
 			if (cardTravel == 0.0f) processor.getCore().setCardInserted(true);
@@ -343,25 +354,36 @@ void D110Panel::paint(juce::Graphics &g)
 	paintMemoryCard(g);
 }
 
-// Карта рисуется ПОСЛЕ панели, но с отсечением по низу щели - поэтому она никогда не
-// оказывается поверх лицевой стороны прибора, а появляется только из-под неё.
+// Карта рисуется ПОСЛЕ панели, но с отсечением по верху проёма - поэтому она никогда не
+// оказывается поверх лицевой стороны прибора, а видна только в щели и ниже неё.
 //
 // Из щели она выходит НИЖНИМ краем вперёд: так и ведёт себя карта, которую выталкивают
-// вниз. Полный ход - от положения, где она целиком выше отсечения, до положения, где она
-// целиком ниже окна.
+// вниз. Полный ход - от положения, где над отсечением остаётся только её торец, до
+// положения, где она целиком ниже окна.
 void D110Panel::paintMemoryCard(juce::Graphics &g) const
 {
-	if (!cardImage.isValid() || cardTravel <= 0.0f) return;
+	if (!cardImage.isValid()) return;
 
-	const float span = float(getHeight()) - kCardSeatedY; // от спрятанной до ушедшей
+	const float span = float(getHeight()) - kCardSeatedY; // от вставленной до ушедшей
 	const float y = kCardSeatedY + cardTravel * span;
+	if (y >= float(getHeight())) return; // ушла за нижний край окна
 
 	juce::Graphics::ScopedSaveState clip(g);
-	g.reduceClipRegion(juce::Rectangle<int>(0, int(kSlotBottom), getWidth(),
-	                                        getHeight() - int(kSlotBottom)));
+	g.reduceClipRegion(juce::Rectangle<int>(0, int(kCardClipTop), getWidth(),
+	                                        getHeight() - int(kCardClipTop)));
 	g.drawImage(cardImage,
 	            juce::Rectangle<float>(kCardX, y, kCardWidth, kCardHeight),
 	            juce::RectanglePlacement::stretchToFit);
+
+	// Тень углубления - поверх карты, но только в пределах проёма и только пока карте есть
+	// чем его занимать. Пустой проём затемнять нечем и незачем: там уже своя чернота с
+	// фотографии, и класть на неё градиент значило бы править саму панель.
+	if (y >= kSlotBottom) return;
+	g.setGradientFill(juce::ColourGradient(
+		juce::Colours::black.withAlpha(kSlotShadeAlpha), kCardX, kCardClipTop,
+		juce::Colours::transparentBlack, kCardX, kSlotBottom, false));
+	g.fillRect(juce::Rectangle<float>(kCardX, kCardClipTop, kCardWidth,
+	                                  kSlotBottom - kCardClipTop));
 }
 
 // Where a cap's photographed image is drawn for a given press depth: shrunk about

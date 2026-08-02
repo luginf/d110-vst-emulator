@@ -62,9 +62,11 @@ and it is written when the plugin is switched off - so close the host and reopen
 patches are where you left them. Your project saves a copy too, so reloading a session brings
 back the sounds it was saved with rather than whatever the file has since become.
 
-**The memory card slot works.** Click the slot on the panel and the M-256D slides down and out,
-and the firmware notices: `Save to Card` then answers `Card Not Ready`. Click again and it seats
-itself, and the card's `Save` / `Load` / format functions behave as the hardware's do. There is
+**The memory card slot works.** A seated card shows its edge in the slot, so an occupied socket
+looks different from an empty one at a glance. Click the slot and the M-256D slides down and
+out over about a second, its label passing as it goes, and the firmware notices: `Save to Card`
+then answers `Card Not Ready`. Click again and it seats itself, and the card's `Save` / `Load` /
+format functions behave as the hardware's do. There is
 no card-detect line on a real D-110 - the firmware recognises a card by writing a byte and
 reading it back, and an empty socket is a bus that reads `0xFF` and takes no writes - so that is
 exactly what an ejected card is here. The card keeps its own 32 KB file, separate from the
@@ -173,6 +175,9 @@ that has to keep working.
   the memory the last one left, and that a second instance refuses to power on.
 - `plugin/two_instance_test.cpp` - records what really happens when two machines run in one
   process. Diagnostic, not a fix.
+- `plugin/panel_render.cpp` - snapshots the real panel to PNG, as a storyboard every 100 ms,
+  so the card's travel is judged by looking at it rather than from constants. It drives the
+  card by clicking the slot, so the whole path from the mouse to the frame is what gets checked.
 - `plugin/card_probe.cpp` - the memory card. Puts four different cards in the slot, each
   differing from the next by one property, and prints what the firmware said about each; then
   formats a blank card, saves to it, wipes the instrument with a factory reset and loads it back,

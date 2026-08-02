@@ -996,25 +996,25 @@ void D110Core::osdApplyCard(uint8_t *shared) {
 	// заново, даже если снаружи никто ничего не переключал. Иначе после перезапуска
 	// (заводской сброс - это он) извлечённая карта оказалась бы на месте.
 	const bool fresh = cardShared != shared;
-	cardShared = shared;
-
-	// Образ, поданный снаружи, имеет смысл только для вставленной карты: в пустое гнездо
-	// класть нечего. Если карту в этот же кадр ещё и вставляют, перенос сделает ветка ниже.
 	const bool newImage = cardImageDirty.exchange(false, std::memory_order_acq_rel);
-	if (newImage && cardIsIn) std::memcpy(shared, cardImage.data(), kCardSize);
-
 	const bool want = cardWant.load(std::memory_order_acquire);
-	if (want == cardIsIn && !fresh) return;
+	const bool wasIn = cardIsIn;
+	if (!fresh && !newImage && want == wasIn) return;
 
-	if (want) {
-		// На свежей машине содержимое карты уже поднято MAME из своего файла, и класть
-		// поверх него буфер плагина можно только если он новее.
-		if (!fresh || newImage) std::memcpy(shared, cardImage.data(), kCardSize);
-		else std::memcpy(cardImage.data(), shared, kCardSize);
-	} else {
-		if (!fresh) std::memcpy(cardImage.data(), shared, kCardSize);
-		std::memset(shared, kCardAbsentByte, kCardSize);
+	if (fresh && !newImage) {
+		// Свежая машина подняла карту из своего файла, и это её содержимое, кто бы файл ни
+		// написал - прошлый сеанс или загрузка проекта. Буфер плагина берёт его себе, иначе
+		// проект, сохранённый с вынутой картой, терял бы её содержимое при открытии.
+		std::memcpy(cardImage.data(), shared, kCardSize);
+	} else if (wasIn && !want) {
+		// Карту вынимают: то, что прошивка успела на неё записать, уносится в буфер.
+		std::memcpy(cardImage.data(), shared, kCardSize);
 	}
+
+	if (want) std::memcpy(shared, cardImage.data(), kCardSize);
+	else std::memset(shared, kCardAbsentByte, kCardSize);
+
+	cardShared = shared;
 	cardIsIn = want;
 }
 

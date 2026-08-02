@@ -924,6 +924,10 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 
 	xml->setAttribute("nvramRams", packBlock(rams));
 	xml->setAttribute("nvramMemcs", packBlock(memcs));
+	// Гнездо и движок защиты от записи - это положение вещей на приборе, такое же, как
+	// содержимое памяти: проект, сохранённый с вынутой картой, должен открыться с вынутой.
+	xml->setAttribute("cardInserted", core.cardInserted() ? 1 : 0);
+	xml->setAttribute("cardWriteProtect", core.cardWriteProtect() ? 1 : 0);
 
 	copyXmlToBinary(*xml, destData);
 }
@@ -966,6 +970,12 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 	const auto memcs = unpackBlock(xml->getStringAttribute("nvramMemcs"));
 	if (rams.getSize() > 0 || memcs.getSize() > 0)
 		writeNvramFiles(rams, memcs);
+
+	// Проект старше этой возможности карту не вынимал, поэтому по умолчанию она на месте.
+	// Содержимое её при этом уже лежит в файле выше, и ядро подхватит его при включении даже
+	// с вынутой картой - см. D110Core::osdApplyCard.
+	core.setCardInserted(xml->getIntAttribute("cardInserted", 1) != 0);
+	core.setCardWriteProtect(xml->getIntAttribute("cardWriteProtect", 0) != 0);
 }
 
 juce::AudioProcessor *JUCE_CALLTYPE createPluginFilter() {

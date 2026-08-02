@@ -95,8 +95,20 @@ private:
 	static constexpr float kCardX = 1600.0f;
 	static constexpr float kCardWidth = 236.0f;
 	static constexpr float kCardHeight = 370.0f;
-	static constexpr float kSlotBottom = 150.0f; // ниже этой линии карта только и видна
-	static constexpr float kCardSeatedY = kSlotBottom - kCardHeight; // спрятана над щелью
+	static constexpr float kSlotBottom = 150.0f; // пол проёма: ниже него карта уже снаружи
+	static constexpr float kCardSeatedY = kSlotBottom - kCardHeight; // торцом в проёме
+	// Верх отсечения. Карта не прячется за щель целиком: вставленная, она стоит торцом в
+	// проёме, и восемнадцать точек её края видны - иначе занятое гнездо ничем не отличалось бы
+	// от пустого. Восемнадцать - это около четырёх миллиметров в масштабе панели (4.4 точки на
+	// миллиметр), то есть толщина корпуса карты у хвата; проём выше 30 точек, и оставшаяся над
+	// картой темнота читается как глубина щели, из которой карта и выезжает.
+	static constexpr float kCardClipTop = 132.0f;
+	// Внутри проёма карта в тени. Тень нарисована градиентом поверх неё, от kCardClipTop до
+	// пола проёма, а не заложена в картинку: карта сквозь проём проезжает, и затемняться
+	// должно место, а не карта.
+	static constexpr float kSlotShadeAlpha = 0.58f;
+	// Доля пути за кадр в самой быстрой точке хода; закон движения - в timerCallback.
+	static constexpr float kCardStep = 0.032f;
 	// Насколько карта выдвинута: 0 - сидит в приборе, 1 - ушла за нижний край окна.
 	float cardTravel = 0.0f;
 	float cardTarget = 0.0f;

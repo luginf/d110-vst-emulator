@@ -12,7 +12,9 @@
 #include "Source/PluginProcessor.h"
 
 #include <cstdio>
+#include <cstring>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -177,6 +179,57 @@ int main() {
 		second.setPoweredOn(false);
 		first.releaseResources();
 		second.releaseResources();
+	}
+
+	// ---- 5. the memory card travels with the project too ---------------------
+	// Saved with the card OUT, the project must come back with the card OUT - and the card's
+	// contents must survive that, which is the case that can quietly lose them: the machine
+	// boots with 0xFF in the socket, so whatever it holds at boot is NOT the card. The
+	// harder half is therefore checked here, not the easy one.
+	{
+		juce::MemoryBlock state;
+		std::vector<juce::uint8> mark((size_t)D110Core::kCardSize, 0x00);
+		std::memcpy(mark.data(), "Roland D-10 ", 12);
+		mark[0x0c] = 'D'; mark[0x0d] = juce::uint8(~'D');
+		mark[0x0e] = 'X'; mark[0x0f] = juce::uint8(~'X');
+		std::memcpy(mark.data() + 0x100, "PROJECT-CARD", 13);
+
+		{
+			D110AudioProcessor proc;
+			proc.prepareToPlay(kSampleRate, kBlock);
+			bootAndSettle(proc);
+			proc.getCore().setCardImage(mark.data());
+			proc.getCore().setCardInserted(true);
+			std::this_thread::sleep_for(std::chrono::seconds(1));
+			proc.getCore().setCardInserted(false);   // вынули и так и сохранили
+			proc.getCore().setCardWriteProtect(true);
+			std::this_thread::sleep_for(std::chrono::seconds(1));
+			proc.getStateInformation(state);
+			std::printf("\nsaved with the card out : %d bytes\n", int(state.getSize()));
+			proc.setPoweredOn(false);
+			proc.releaseResources();
+		}
+
+		{
+			D110AudioProcessor proc;
+			proc.prepareToPlay(kSampleRate, kBlock);
+			proc.setStateInformation(state.getData(), int(state.getSize()));
+			std::printf("slot after reload       : %s   write protect: %s\n",
+			            proc.getCore().cardInserted() ? "card in - WRONG" : "empty, as saved",
+			            proc.getCore().cardWriteProtect() ? "on, as saved" : "off - WRONG");
+			bootAndSettle(proc);
+			proc.getCore().setCardInserted(true);
+			std::this_thread::sleep_for(std::chrono::seconds(1));
+			std::vector<juce::uint8> seen((size_t)D110Core::kCardSize, 0);
+			proc.getCore().getCardImage(seen.data());
+			const bool same = std::memcmp(seen.data() + 0x100, mark.data() + 0x100, 13) == 0;
+			std::printf("card put back in        : marker \"%.12s\"\n%s\n",
+			            reinterpret_cast<const char *>(seen.data() + 0x100),
+			            same ? "*** THE CARD CAME BACK WITH THE PROJECT ***"
+			                 : "LOST - the ejected card's contents did not survive the reload");
+			proc.setPoweredOn(false);
+			proc.releaseResources();
+		}
 	}
 
 	std::printf("\ndone\n");

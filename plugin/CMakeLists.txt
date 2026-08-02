@@ -409,6 +409,20 @@ target_link_libraries(d110_tone_edit_survives PRIVATE
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_tone_edit_survives PRIVATE /ignore:4099 /FORCE:MULTIPLE)
 
+# Снимает настоящую панель в PNG, чтобы её было на что посмотреть рядом с фотографией.
+add_executable(d110_panel_render panel_render.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_panel_render PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+# Ход карты двигает собственный таймер панели, поэтому стенду нужен настоящий цикл
+# сообщений; в плагине он не нужен и не включается.
+target_compile_definitions(d110_panel_render PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(d110_panel_render PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_panel_render PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
 # Чем прошивка отличает вставленную карту памяти от пустого гнезда. Подставляет ей четыре
 # разные карты и снимает с экрана, что она о каждой сказала.
 add_executable(d110_card card_probe.cpp
