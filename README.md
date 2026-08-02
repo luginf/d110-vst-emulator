@@ -47,6 +47,47 @@ pages are real and not decoration:
 - **System** - partial reserve and the per-part MIDI channel map, so the SYSTEM page's channel
   assignment actually takes effect.
 
+## The extended editor
+
+Under the instrument is a **drawer that opens downwards** — click the handle strip beneath
+the panel. It is drawn in code rather than photographed, and deliberately so: the panel is a
+photo-composite because it depicts a thing that exists, while a D-110 has no editor at all.
+What it has is a two-line, sixteen-character display, and reaching one of a partial's
+fifty-eight values through it takes dozens of button presses.
+
+Nine tabs, and everything on them is the instrument's own memory:
+
+- **PARTS** — what it is playing right now: tone group and tone (with the tone's name), level,
+  pan, key shift, fine tune, bender range, assign mode, reverb switch and key range, for all
+  eight parts and rhythm.
+- **TONE** — the 246-byte tone a part is playing: structures, partial mute, envelope mode, a
+  row per partial, and the chosen partial in full — pitch, waveform, PCM sample, the pitch,
+  TVF and TVA envelopes and the LFO. The name can be typed straight in.
+- **RHYTHM** — the rhythm setup, one row per drum key, all 85 of them.
+- **PATCHES** — the 64 stored patches. **Clicking a number selects that patch on the
+  instrument**, by pressing its own PATCH / BANK / NUMBER buttons — so the display, the parts
+  and the sound follow exactly as they do by hand. Below the list are that patch's own eight
+  part assignments.
+- **TIMBRES** — the 128 stored timbres; clicking one sends that program change on the chosen
+  part's own MIDI channel, as an external keyboard would.
+- **TONES** — the 64 internal tone slots, with STORE and RECALL against the part's tone.
+- **SYSTEM** — master tune, reverb, partial reserve and the MIDI channel map.
+- **MONITOR** — the firmware's own LA32 voice-slot table, which parts the engine is holding,
+  the bridge's message counters and a MIDI-in tape.
+- **UTILITY** — a message for the instrument's display, and SysEx bank import.
+
+**Nothing in the drawer writes to the sound engine.** Every field sends the *instrument* a
+Roland exclusive message through its own MIDI IN, exactly as an external editor would; the
+firmware changes its memory and the mirror carries that to the engine. An edit made here and
+an edit made on the panel are therefore the same event, and each shows up in both places.
+
+That this works is measured rather than assumed — `plugin/editor_write_probe.cpp` sends one
+write into each area and reports which byte of the battery RAM moved, which is also how the
+two areas nobody had located were found (Timbre Memory at `0x2994`, Tone Memory at `0x4000`);
+`plugin/editor_test.cpp` then checks each editor field end to end, proves an edit is audible
+against a control measurement, and checks that a patch click lands on the patch asked for.
+See [`docs/sysex_address_map.md`](docs/sysex_address_map.md).
+
 Host MIDI is delivered to **both** halves, as one cable feeds both on the real instrument. The
 firmware therefore sees what you play: the top LCD row replaces a part's digit with a solid
 block while that part is sounding, exactly as the hardware does, and the display follows
@@ -91,9 +132,18 @@ instrument's battery RAM, and travels with your project the same way. See
   onto four modes has no honest mapping - so the character of the room is the engine's choice,
   while its length and amount are the instrument's. See
   [`docs/sysex_address_map.md`](docs/sysex_address_map.md).
-- The real D-110 has eight **individual outputs** as well as the stereo mix, and a per-part
-  assignment for them. This plugin is stereo only: the sound engine models the MT-32, which had
-  no individual outputs at all, so there is nothing to route them from.
+- The real D-110 has six **individual outputs** as well as the stereo mix, and a per-part
+  assignment for them - `MIX OUT L/R` and `MULTI OUT 1-6` on the service notes' block diagram,
+  fed by time-slicing one DAC. This plugin is stereo only: the sound engine models the MT-32,
+  which had no individual outputs at all, so there is nothing to route them from. The
+  assignment itself is real and the drawer edits it, because it is the instrument's own byte -
+  it simply has nowhere to go here. (Six, not eight: stepped through on the panel, Output
+  Assign reads `MIX` then `1`…`6` and stops, which the block diagram agrees with.)
+- **A D-110 has no per-part reverb switch.** The byte an MT-32 uses for one is Output Assign
+  here - measured on the panel's own Timbre Edit page, where three presses moved it from `MIX`
+  to `3`. The sound engine reads that byte as its reverb switch, and every value the D-110 can
+  put there is non-zero, so the engine's reverb stays on; nothing is lost, because there was
+  never a switch to lose. Reverb on a D-110 is per patch, not per part.
 - **Master Tune** is not mirrored either: the firmware's scale and the engine's disagree, so
   passing the byte across would detune everything against what the display says.
 - The output saturates at full scale rather than exceeding it, because a 16-bit DAC cannot do

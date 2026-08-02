@@ -384,6 +384,51 @@ target_link_libraries(d110_factory_bank PRIVATE
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_factory_bank PRIVATE /ignore:4099 /FORCE:MULTIPLE)
 
+# Обратный путь моста: доходит ли правка, посланная эксклюзивным сообщением, до самой
+# прошивки, куда она ложится и не запрещает ли её Mem Protect. Это фундамент расширенного
+# редактора - без него правка из редактора была бы догадкой. Заодно измеряет место памяти
+# ТОНОВ, которого не найти по содержимому: в заводском приборе она пуста.
+add_executable(d110_editor_write editor_write_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_editor_write PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_editor_write PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_editor_write PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_editor_write PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Снимок расширенного редактора в PNG - настоящего компонента, с живыми значениями из
+# работающего прибора. Судить о разметке по константам нельзя, поэтому её снимают и смотрят.
+add_executable(d110_editor_shot editor_shot.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_editor_shot PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_editor_shot PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_editor_shot PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_editor_shot PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Доходит ли правка из расширенного редактора до прибора, до звука и обратно. Проверяет
+# каждый отправитель по памяти прошивки, слышимость - по RMS с контрольным прогоном, и
+# переход на патч - по номеру, на котором прибор в итоге стоит.
+#
+# JUCE_MODAL_LOOPS_PERMITTED здесь включён намеренно и только для этой цели: переход на патч
+# идёт по таймеру очереди сообщений, а в консольной программе эту очередь надо крутить руками.
+add_executable(d110_editor_test editor_test.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_editor_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_editor_test PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(d110_editor_test PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_editor_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
 # Ищет адрес, по которому прошивка задаёт ТИП ревербератора: перехватывает весь свободный
 # внешний ввод-вывод 0x0400-0x0BFF, разворачивает восемь типов и сравнивает с контрольным
 # прогоном, где нажатия и нота те же, а тип не меняется.

@@ -73,9 +73,17 @@ honest mapping. Verified end to end: engine readback matches the firmware byte f
 setting Level 0 → 7 on the panel moves the tail after a released note from RMS 0.000076 to
 0.001415, about 25 dB.
 
-There is also a **Reverb Switch per part**, in the Timbre Temporary block. That one *is*
-mirrored, so switching reverb off for an individual part does reach the sound engine — it
-is the global type/time/level that cannot cross. See
+**There is no per-part reverb switch — that was wrong, and the instrument says so.** Byte 6 of
+the Timbre record, which an MT-32 uses for `reverbSwitch`, is **Output Assign** on a D-110:
+walked to Timbre Edit → OutputAssign on the panel, three presses of Number+ moved the display
+from `MIX` to `3` and moved exactly that byte from 1 to 4; twenty more presses stopped it at 7,
+displayed as `6`. So the byte runs `MIX` then outputs 1–6 — which matches the service notes'
+block diagram, `MIX OUT L/R` and `MULTI OUT 1-6`, and not the eight outputs this project's
+README used to claim. Measured by `plugin/editor_write_probe.cpp`, section 7.
+
+The byte is still mirrored, and the sound engine still reads it as its reverb switch. That does
+no harm: every value a D-110 can store there is non-zero, so the engine's per-part reverb is
+simply always on, and reverb on this instrument is a **patch** setting anyway. See
 [`sysex_address_map.md`](sysex_address_map.md).
 
 ## PART SET page, per part

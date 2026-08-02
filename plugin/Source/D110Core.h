@@ -128,6 +128,80 @@ public:
 	// это нижняя граница.
 	uint64_t sysexDropped() const { return sysexDropCount.load(std::memory_order_acquire); }
 
+	// --- Roland's map, as this instrument lays it out -------------------------
+	// The exclusive addresses are the owner's manual's own (docs/sysex_address_map.md);
+	// the RAM offsets beside them were MEASURED, and between them they account for the
+	// whole of the battery RAM below the firmware's working areas:
+	//
+	//   0x0000  Patch Memory        64 x 128   plugin/factory_bank_probe.cpp
+	//   0x2000  Timbre Temporary     9 x 16    plugin/bridge_probe.cpp
+	//   0x2090  Rhythm Setup        85 x 4     follows Timbre Temporary
+	//   0x21E4  Tone Temporary       8 x 246   plugin/tone_probe.cpp, 246/246 bytes
+	//   0x2994  Timbre Memory      128 x 8     plugin/editor_write_probe.cpp
+	//   0x2D94  System Area             23     plugin/bridge_probe.cpp
+	//
+	// Timbre Memory lands exactly where Tone Temporary ends and ends exactly where the
+	// System Area begins, and its factory content reads as 64 records naming group A
+	// tones 1-64 followed by 64 naming group B - which is what a factory D-110 has.
+	static constexpr uint32_t kSysexTimbreTemp = 0x030000;
+	static constexpr uint32_t kSysexRhythmTemp = 0x030110;
+	static constexpr uint32_t kSysexToneTemp   = 0x040000;
+	static constexpr uint32_t kSysexTimbres    = 0x050000;
+	static constexpr uint32_t kSysexPatches    = 0x060000;
+	static constexpr uint32_t kSysexTones      = 0x080000;
+	static constexpr uint32_t kSysexSystem     = 0x100000;
+	static constexpr uint32_t kSysexDisplay    = 0x200000;
+
+	static constexpr int kRamPatches    = 0x0000;
+	static constexpr int kRamTimbreTemp = 0x2000;
+	static constexpr int kRamRhythmTemp = 0x2090;
+	static constexpr int kRamToneTemp   = 0x21E4;
+	static constexpr int kRamTimbres    = 0x2994;
+	static constexpr int kRamSystem     = 0x2D94;
+	// Имя патча, который прибор играет прямо сейчас: первые десять байт рабочей копии,
+	// сразу за системной областью. Остальное из патча живёт не здесь, а разложено по
+	// временным областям - реверберация, резерв и каналы в системной, назначения партий
+	// в Timbre Temporary, - поэтому отсюда берётся только имя.
+	static constexpr int kRamPatchName  = 0x2DAB;
+	// Номер играющего патча, 0..63. Измерено нажатиями: три Number+ сдвигают этот байт
+	// ровно на три, одно Bank+ - ровно на восемь (plugin/editor_write_probe.cpp). Отсюда
+	// редактор и умеет переходить на любой патч кнопками самой панели.
+	static constexpr int kRamPatchNumber = 0x2DB9;
+
+	static constexpr int kNumPatches       = 64;
+	static constexpr int kPatchRecord      = 128;
+	static constexpr int kNumTimbres       = 128;  // внутренняя память тембров, I-A/I-B
+	static constexpr int kTimbreRecord     = 8;
+	static constexpr int kNumParts         = 9;    // восемь голосовых и ритм
+	static constexpr int kTimbreTempRecord = 16;
+	static constexpr int kToneRecord       = 246;
+	static constexpr int kNumRhythmKeys    = 85;
+	static constexpr int kRhythmRecord     = 4;
+	static constexpr int kRhythmFirstKey   = 24;
+	static constexpr int kNameChars        = 10;
+	// Память тонов: RAM 0x4000 == SysEx 08 00 00, 64 записи по 256 байт - верхняя половина
+	// батарейного ОЗУ целиком. Единственная область карты Roland, которую нельзя было найти
+	// по содержимому: в заводском приборе она пуста, и все эти 16 КБ - нули. Измерена
+	// записью (plugin/editor_write_probe.cpp): два имени, посланные по адресам 08 00 00 и
+	// 08 04 00, легли по 0x4000 и 0x4200, то есть с шагом 256. Подтверждено вторым,
+	// независимым способом: после записи прибор СВОИМ индикатором назвал тон группы 2
+	// присланным именем.
+	static constexpr int kRamTones     = 0x4000;
+	static constexpr int kNumTones     = 64;
+	static constexpr int kToneMemRecord = 256;
+
+	// Строит ровно то же сообщение "Data set 1", какое строит зеркало (см. emitRegionSysex),
+	// но для произвольного адреса и произвольных данных, и НЕ ставит его в очередь: этим
+	// пользуется расширенный редактор, чей путь ведёт не в движок, а в саму прошивку -
+	// через pushMidi, то есть через её собственный приёмник MIDI. Возвращает длину
+	// сообщения в `out` (не меньше kMaxSysexBytes) или 0, если данные не помещаются.
+	//
+	// `offset` складывается с адресом в СЕМИБИТНОМ пространстве Roland, а не как обычное
+	// число: у Roland каждый байт адреса несёт семь бит, и смещение 246-байтного тембра
+	// иначе указывало бы не туда, стоит ему перевалить за 0x80.
+	static int buildDt1Message(uint32_t sysexAddress, int offset, const uint8_t *data,
+	                           int length, uint8_t *out);
+
 	// --- host MIDI into the firmware ------------------------------------------
 	// The firmware has to SEE the notes, not just the sound engine. Its MIDI IN is the
 	// CPU's serial port, and the driver already drives it that way for its own test note.

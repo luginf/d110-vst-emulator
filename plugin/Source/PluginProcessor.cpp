@@ -1,6 +1,8 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+#include <cstdlib>
+
 // Scans raw bytes for concatenated F0...F7 SysEx messages, e.g. the contents of a bare .syx file.
 static std::vector<std::vector<MT32Emu::Bit8u>> extractSysexMessagesFromRawBytes(const juce::MemoryBlock &data) {
 	std::vector<std::vector<MT32Emu::Bit8u>> messages;
@@ -646,6 +648,10 @@ void D110AudioProcessor::handleIncomingMidiMessage(const juce::MidiMessage &mess
 	// parts, and why the display drifted away from the host's program changes.
 	forwardMidiToFirmware(message);
 
+	// И в ленту, которую показывает вкладка MONITOR расширенного редактора: это ровно то,
+	// что прибор получил, до всякого разбора.
+	logIncomingMidi(message);
+
 	if (!synth) return;
 
 	if (message.isSysEx()) {
@@ -860,6 +866,202 @@ void D110AudioProcessor::stepPatch(int direction) {
 
 	const juce::ScopedLock sl(engineActionLock);
 	pendingShortMessages.push_back(message);
+}
+
+// ---- the extended editor -----------------------------------------------------
+//
+// Every one of these builds a Roland "Data set 1" and hands it to the CONTROL BOARD's own
+// MIDI input, which is the same door an external editor knocks on. Nothing goes to the
+// sound engine from here: the firmware writes its memory, and the mirror
+// (D110Core::emitRegionSysex) carries that across on its next snapshot - so a drawer edit
+// and a panel edit are the same event, and the instrument's own display shows both.
+//
+// That the firmware accepts them, and where each one lands, is MEASURED - see
+// plugin/editor_write_probe.cpp, which sends one write per area and reports which byte of
+// the battery RAM moved. Mem Protect, which is ON from the factory, does not block them.
+
+void D110AudioProcessor::sendAreaData(juce::uint32 sysexAddress, int offset,
+                                      const juce::uint8 *data, int length) {
+	if (!core.isRunning() || data == nullptr || length <= 0) return;
+	juce::uint8 msg[D110Core::kMaxSysexBytes];
+	const int n = D110Core::buildDt1Message(sysexAddress, offset, data, length, msg);
+	if (n > 0) core.pushMidi(msg, n);
+}
+
+void D110AudioProcessor::sendTimbreTempParam(int part, int field, juce::uint8 value) {
+	if (part < 0 || part >= D110Core::kNumParts) return;
+	if (field < 0 || field >= D110Core::kTimbreTempRecord) return;
+	const juce::uint8 v = value & 0x7f;
+	sendAreaData(D110Core::kSysexTimbreTemp, part * D110Core::kTimbreTempRecord + field, &v, 1);
+}
+
+void D110AudioProcessor::sendToneTempParam(int part, int offset, juce::uint8 value) {
+	if (part < 0 || part > 7 || offset < 0 || offset >= D110Core::kToneRecord) return;
+	const juce::uint8 v = value & 0x7f;
+	sendAreaData(D110Core::kSysexToneTemp, part * D110Core::kToneRecord + offset, &v, 1);
+}
+
+void D110AudioProcessor::sendRhythmParam(int slot, int field, juce::uint8 value) {
+	if (slot < 0 || slot >= D110Core::kNumRhythmKeys) return;
+	if (field < 0 || field >= D110Core::kRhythmRecord) return;
+	const juce::uint8 v = value & 0x7f;
+	sendAreaData(D110Core::kSysexRhythmTemp, slot * D110Core::kRhythmRecord + field, &v, 1);
+}
+
+void D110AudioProcessor::sendSystemParam(int field, juce::uint8 value) {
+	// 23 байта, как их описывает Roland: подстройка, ревербератор, резерв партиалов, карта
+	// каналов и громкость. Последняя у D-110 - физическая ручка, и прошивка её не
+	// заполняет, поэтому редактор её не предлагает; предел здесь всё равно стоит по длине
+	// области, а не по тому, что редактор рисует.
+	if (field < 0 || field > 22) return;
+	const juce::uint8 v = value & 0x7f;
+	sendAreaData(D110Core::kSysexSystem, field, &v, 1);
+}
+
+void D110AudioProcessor::sendTimbreMemoryParam(int slot, int field, juce::uint8 value) {
+	if (slot < 0 || slot >= D110Core::kNumTimbres) return;
+	if (field < 0 || field >= D110Core::kTimbreRecord) return;
+	const juce::uint8 v = value & 0x7f;
+	sendAreaData(D110Core::kSysexTimbres, slot * D110Core::kTimbreRecord + field, &v, 1);
+}
+
+void D110AudioProcessor::sendPatchMemoryParam(int patch, int field, juce::uint8 value) {
+	if (patch < 0 || patch >= D110Core::kNumPatches) return;
+	if (field < 0 || field >= D110Core::kPatchRecord) return;
+	const juce::uint8 v = value & 0x7f;
+	sendAreaData(D110Core::kSysexPatches, patch * D110Core::kPatchRecord + field, &v, 1);
+}
+
+void D110AudioProcessor::sendName(juce::uint32 sysexAddress, int offset,
+                                  const juce::String &name) {
+	juce::uint8 data[D110Core::kNameChars];
+	for (int i = 0; i < D110Core::kNameChars; ++i) {
+		const juce::juce_wchar ch = (i < name.length()) ? name[i] : ' ';
+		data[i] = juce::uint8((ch >= 32 && ch < 127) ? ch : ' ');
+	}
+	sendAreaData(sysexAddress, offset, data, D110Core::kNameChars);
+}
+
+void D110AudioProcessor::sendDisplayMessage(const juce::String &text) {
+	// Двадцать знаков - столько несёт команда Roland. Индикатор D-110 шириной шестнадцать,
+	// так что четыре последних он просто не покажет; сообщение от этого не перестаёт быть
+	// правильным, и обрезать его здесь значило бы посылать не то, что посылает прибор.
+	juce::uint8 data[20];
+	for (int i = 0; i < 20; ++i) {
+		const juce::juce_wchar ch = (i < text.length()) ? text[i] : ' ';
+		data[i] = juce::uint8((ch >= 32 && ch < 127) ? ch : ' ');
+	}
+	sendAreaData(D110Core::kSysexDisplay, 0, data, 20);
+}
+
+void D110AudioProcessor::selectTimbreForPart(int part, int timbre) {
+	if (part < 0 || part > 7 || timbre < 0 || timbre > 127) return;
+	if (!core.isRunning()) return;
+
+	// Канал берётся из карты самой прошивки (System Area, chanAssign), а не считается по
+	// заводской формуле "партия N на канале N+1": эту карту можно изменить, и тогда
+	// формула отправила бы смену программы мимо.
+	std::vector<uint8_t> ram(D110Core::kRamSize, 0);
+	if (!core.getRam(ram.data())) return;
+	const int chan = ram[(size_t)D110Core::kRamSystem + 13 + (size_t)part];
+	if (chan > 15) return;   // партия выключена - слать некуда
+
+	const juce::uint8 bytes[2] = { juce::uint8(0xC0 | chan), juce::uint8(timbre & 0x7f) };
+	core.pushMidi(bytes, 2);
+	// Смена программы - обычное MIDI-сообщение, поэтому она должна дойти и до звукового
+	// движка, как дошла бы с внешней клавиатуры.
+	const juce::ScopedLock sl(engineActionLock);
+	pendingShortMessages.push_back(juce::uint32(bytes[0]) | (juce::uint32(bytes[1]) << 8));
+}
+
+// Патч выбирается НАЖАТИЯМИ, а не записью в память: на D-110 патч - это не один
+// параметр, а целая раскладка, и раскладывает её по временным областям сама прошивка.
+// Записать её за прошивку значило бы держать вторую, свою реализацию смены патча, которая
+// однажды разойдётся с настоящей; нажать кнопки - значит попросить сделать это ту
+// программу, которая на приборе за это отвечает, и получить заодно её индикатор, её
+// зеркало и её же поведение.
+//
+// Номер текущего патча лежит в ОЗУ по 0x2DB9 (0..63), Bank+ двигает его на 8, Number+ на 1
+// - измерено plugin/editor_write_probe.cpp. Отсюда путь до любого патча: не больше семи
+// нажатий Bank+ и семи Number+.
+void D110AudioProcessor::selectPatch(int patch) {
+	if (patch < 0 || patch >= D110Core::kNumPatches) return;
+	if (!core.isRunning() || patchSteps > 0) return;
+
+	std::vector<uint8_t> ram(D110Core::kRamSize, 0);
+	if (!core.getRam(ram.data())) return;
+	const int current = ram[(size_t)D110Core::kRamPatchNumber];
+	if (current < 0 || current >= D110Core::kNumPatches) return;
+
+	patchQueue.clear();
+	// Сперва на страницу выбора патча - оттуда Bank и Number значат номер патча, а не
+	// что-нибудь ещё. Нажимается всегда, даже если патч уже нужный: пользователь щёлкнул
+	// по патчу и вправе увидеть его на индикаторе.
+	patchQueue.push_back(D110Core::buttonIndex(0, 6));   // Patch
+
+	// Ход считается СО ЗНАКОМ, и вниз идут кнопки со стрелкой вниз. Кольцевая арифметика
+	// здесь не работает, и это измерено: Bank+ у прибора НЕ перекатывается с восьмого банка
+	// на первый, а упирается. Расчёт «пять раз вперёд вместо трёх назад» просил патч I-14 и
+	// оставлял прибор на I-84 - ровно там, где кончился банк (plugin/editor_test.cpp).
+	const int bankStep = (patch / 8) - (current / 8);
+	const int numberStep = (patch % 8) - (current % 8);
+	const int bankButton = D110Core::buttonIndex(bankStep >= 0 ? 0 : 1, 2);     // Bank+ / Bank-
+	const int numberButton = D110Core::buttonIndex(numberStep >= 0 ? 0 : 1, 1); // Number+ / Number-
+	for (int i = 0; i < std::abs(bankStep); ++i) patchQueue.push_back(bankButton);
+	for (int i = 0; i < std::abs(numberStep); ++i) patchQueue.push_back(numberButton);
+
+	patchSteps = int(patchQueue.size());
+	patchPhase = 0;
+	// 60 мс на полунажатие: две фазы на кнопку, то есть восьмая доля секунды на нажатие -
+	// быстрее, чем это делает рука, и заметно медленнее, чем матрица опроса, которая
+	// читается каждый кадр прошивки.
+	startTimer(60);
+}
+
+void D110AudioProcessor::timerCallback() {
+	if (patchQueue.empty()) {
+		patchSteps = 0;
+		stopTimer();
+		return;
+	}
+	const int button = patchQueue.front();
+	if (patchPhase == 0) {
+		core.setButton(button, true);
+		patchPhase = 1;
+		return;
+	}
+	core.setButton(button, false);
+	patchPhase = 0;
+	patchQueue.erase(patchQueue.begin());
+	patchSteps = int(patchQueue.size());
+	if (patchQueue.empty()) stopTimer();
+}
+
+void D110AudioProcessor::logIncomingMidi(const juce::MidiMessage &message) {
+	const auto *raw = message.getRawData();
+	const int size = message.getRawDataSize();
+	if (size <= 0) return;
+	// Тактовые импульсы и active sensing идут потоком - их сотни в секунду, и они вытеснили
+	// бы из ленты всё осмысленное.
+	if (raw[0] == 0xF8 || raw[0] == 0xFE) return;
+
+	MidiLogEntry e;
+	e.status = raw[0];
+	e.data1 = size > 1 ? raw[1] : 0;
+	e.data2 = size > 2 ? raw[2] : 0;
+	e.size = juce::uint16(juce::jmin(size, 65535));
+	const juce::uint32 w = midiLogWrite.load(std::memory_order_relaxed);
+	midiLog[(size_t)(w % kMidiLogSize)] = e;
+	midiLogWrite.store(w + 1, std::memory_order_release);
+}
+
+int D110AudioProcessor::getMidiLog(MidiLogEntry *out, int max) const {
+	const juce::uint32 w = midiLogWrite.load(std::memory_order_acquire);
+	const int have = int(juce::jmin<juce::uint32>(w, kMidiLogSize));
+	const int n = juce::jmin(have, max);
+	for (int i = 0; i < n; ++i)
+		out[i] = midiLog[(size_t)((w - 1 - juce::uint32(i)) % kMidiLogSize)];
+	return n;
 }
 
 // Compressing before base64 is worth the few lines: the firmware's 32 KB battery RAM is

@@ -40,6 +40,20 @@ public:
 	void mouseDoubleClick(const juce::MouseEvent &) override;
 	void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
 
+	// Щелчок по щели карты памяти. Сама карта панели больше не принадлежит - она ездит по
+	// всему окну, включая ящик, и потому живёт отдельным компонентом (D110MemoryCard). А вот
+	// ЩЕЛЬ - часть фотографии прибора, и ловить попадание в неё должна панель.
+	std::function<void()> onCardSlotClicked;
+	// Обрамление щели, а не сам проём: попасть мышью в полоску высотой тридцать точек трудно,
+	// а обрамление - это ровно то, что человек видит как «щель».
+	static constexpr float kSlotHitX = 1588.0f, kSlotHitY = 109.0f;
+	static constexpr float kSlotHitW = 260.0f, kSlotHitH = 52.0f;
+
+	// Забирает у прибора всё, что панель показывает: индикатор, лампу, положение ручки, ход
+	// карты. В работе это делает таймер панели; отдельно вызывается там, где очереди
+	// сообщений нет, - например при съёмке панели в файл (plugin/editor_shot.cpp).
+	void refreshFromInstrument() { timerCallback(); }
+
 private:
 	// One front-panel cap as it sits in the photograph. `scanPort`/`scanBit` are this button's
 	// position in the real 2x8 key-scan matrix, straight out of INPUT_PORTS_START(d110) in MAME's
@@ -73,7 +87,6 @@ private:
 	void paintPowerSwitch(juce::Graphics &) const;
 	void paintVolumeKnob(juce::Graphics &) const;
 	void paintMidiLamp(juce::Graphics &) const;
-	void paintMemoryCard(juce::Graphics &) const;
 
 	static juce::Rectangle<float> pressedRect(juce::Rectangle<float> face, float depth,
 	                                          float shrink, float drop);
@@ -84,34 +97,6 @@ private:
 
 	juce::Image panelImage;
 
-	// Карта памяти M-256D. Её фотография ВЫШЕ окна: 236 x 370 против панели в 256, - поэтому
-	// она не выглядывает из щели, а ПРОЕЗЖАЕТ мимо, как титры, и наклейка успевает пройти
-	// целиком. Одновременно видны 106 точек - промежуток между низом щели и низом панели.
-	//
-	// Геометрия снята с фотографии панели (docs/panel_reference_notes.md): проём щели
-	// 1600, 120, размером 236 x 30. Ширина карты в истинном масштабе прибора - те же 236,
-	// что и ширина проёма, и это совпадение служит проверкой масштаба.
-	juce::Image cardImage;
-	static constexpr float kCardX = 1600.0f;
-	static constexpr float kCardWidth = 236.0f;
-	static constexpr float kCardHeight = 370.0f;
-	static constexpr float kSlotBottom = 150.0f; // пол проёма: ниже него карта уже снаружи
-	static constexpr float kCardSeatedY = kSlotBottom - kCardHeight; // торцом в проёме
-	// Верх отсечения. Карта не прячется за щель целиком: вставленная, она стоит торцом в
-	// проёме, и восемнадцать точек её края видны - иначе занятое гнездо ничем не отличалось бы
-	// от пустого. Восемнадцать - это около четырёх миллиметров в масштабе панели (4.4 точки на
-	// миллиметр), то есть толщина корпуса карты у хвата; проём выше 30 точек, и оставшаяся над
-	// картой темнота читается как глубина щели, из которой карта и выезжает.
-	static constexpr float kCardClipTop = 132.0f;
-	// Внутри проёма карта в тени. Тень нарисована градиентом поверх неё, от kCardClipTop до
-	// пола проёма, а не заложена в картинку: карта сквозь проём проезжает, и затемняться
-	// должно место, а не карта.
-	static constexpr float kSlotShadeAlpha = 0.58f;
-	// Доля пути за кадр в самой быстрой точке хода; закон движения - в timerCallback.
-	static constexpr float kCardStep = 0.032f;
-	// Насколько карта выдвинута: 0 - сидит в приборе, 1 - ушла за нижний край окна.
-	float cardTravel = 0.0f;
-	float cardTarget = 0.0f;
 	juce::Image lcdImage;                    // offscreen dot-matrix render, rebuilt only on change
 	std::vector<juce::Image> capImages;      // one cut-out per button
 	std::vector<juce::Colour> recessColours; // the recess each cap sinks into
@@ -146,16 +131,289 @@ private:
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D110Panel)
 };
 
-class D110AudioProcessorEditor : public juce::AudioProcessorEditor {
+
+// Карта памяти M-256D - отдельный компонент, лежащий ПОВЕРХ всего окна.
+//
+// Раньше её рисовала сама панель, и потому карта могла только проехать мимо кадра и
+// скрыться: панель ростом с прибор, 256 точек, а карта - 370. Теперь под прибором есть
+// ящик, и извлечённой карте есть куда лечь. Она выезжает из щели, ложится на ящик целиком
+// видимой и там остаётся; за неё можно взяться левой кнопкой и передвинуть куда удобно.
+//
+// Компонент, а не рисование поверх детей, именно ради этого: тащить мышью можно только то,
+// что само получает события мыши, а ящик под картой - живой компонент со своими полями.
+// Пока карта сидит в гнезде, она мышь НЕ перехватывает - щелчок по щели тогда достаётся
+// панели, как и раньше.
+class D110MemoryCard : public juce::Component, private juce::Timer {
+public:
+	explicit D110MemoryCard(D110AudioProcessor &);
+
+	void paint(juce::Graphics &) override;
+	void mouseDown(const juce::MouseEvent &) override;
+	void mouseDrag(const juce::MouseEvent &) override;
+	void mouseUp(const juce::MouseEvent &) override;
+
+	// Извлечь или вставить - то же самое, что щелчок по щели на приборе.
+	void toggle();
+	void insert();
+	// Вставлена ли она (по положению, а не по мнению прошивки): нужно хозяину окна, чтобы
+	// вернуть карту в гнездо, когда ящик закрывают, - лежать ей тогда негде.
+	bool isOut() const { return target > 0.5f; }
+
+	// Масштаб панели и полная высота окна в опорных точках. Задаёт хозяин окна при каждом
+	// изменении размера: карта живёт в тех же опорных точках, что и панель, поэтому и
+	// ездит вместе с ней при любом масштабе.
+	void setGeometry(float panelScale, float totalRefHeight);
+
+	// Извлечение просит открыть ящик: карта ложится на него, и на закрытом ящике ей просто
+	// негде быть.
+	std::function<void()> onEjectNeedsDrawer;
+
+	// Геометрия, снятая с фотографии панели (docs/panel_reference_notes.md): проём щели
+	// 1600, 120, размером 236 x 30. Ширина карты в истинном масштабе прибора - те же 236,
+	// что и ширина проёма, и это совпадение служит проверкой масштаба.
+	static constexpr float kCardX = 1600.0f;
+	static constexpr float kCardWidth = 236.0f;
+	static constexpr float kCardHeight = 370.0f;
+	static constexpr float kSlotBottom = 150.0f;   // пол проёма: ниже него карта уже снаружи
+	static constexpr float kCardSeatedY = kSlotBottom - kCardHeight;   // торцом в проёме
+	// Верх отсечения. Карта не прячется за щель целиком: вставленная, она стоит торцом в
+	// проёме, и восемнадцать точек её края видны - иначе занятое гнездо ничем не отличалось
+	// бы от пустого. Восемнадцать - это около четырёх миллиметров в масштабе панели
+	// (4.4 точки на миллиметр), то есть толщина корпуса карты у хвата.
+	static constexpr float kCardClipTop = 132.0f;
+	// Внутри проёма карта в тени. Тень рисуется поверх неё градиентом, а не заложена в
+	// картинку: карта сквозь проём проезжает, и затемняться должно место, а не карта.
+	static constexpr float kSlotShadeAlpha = 0.58f;
+	// Доля пути за кадр в самой быстрой точке хода; закон движения - в timerCallback.
+	static constexpr float kCardStep = 0.032f;
+
+private:
+	void timerCallback() override;
+	// Куда карта поедет, если её извлечь: на ящик, ниже полосы-ручки и ниже ряда вкладок,
+	// чтобы она их не закрывала. Точка эта - только НАЧАЛЬНАЯ: дальше её задаёт мышь.
+	static constexpr float kRestX = kCardX;
+	static constexpr float kRestY = 360.0f;
+	juce::Point<float> position() const;   // левый верхний угол, в опорных точках
+	void updateBounds();
+
+	D110AudioProcessor &processor;
+	juce::Image cardImage;
+
+	// Насколько карта вышла: 0 - сидит в гнезде, 1 - лежит на ящике. Между этими двумя
+	// точками она едет по прямой, поэтому положение - это их смесь, а не отдельная пара
+	// координат: закон движения остаётся тем же, каким он был снят раскадровкой.
+	float travel = 0.0f;
+	float target = 0.0f;
+	juce::Point<float> rest{ kRestX, kRestY };
+
+	float scale = 1.0f;
+	float totalRefH = 1190.0f;
+
+	bool dragging = false;
+	juce::Point<float> dragGrab;   // где именно за карту взялись, в опорных точках
+
+	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D110MemoryCard)
+};
+
+// Расширенный редактор - ящик, выезжающий из-под прибора.
+//
+// Он НАРИСОВАН КОДОМ, и это осознанное расхождение с самой панелью: панель - фотокомпозит,
+// потому что изображает существующую вещь, а редактора у D-110 не существует вовсе. У
+// прибора на всё про всё индикатор в две строки по шестнадцать знаков, и добраться по нему
+// до пятидесяти восьми величин партиала - это десятки нажатий; ящик показывает их разом.
+//
+// Ни одно поле не трогает звуковой движок напрямую. Правка уходит ПРИБОРУ эксклюзивным
+// сообщением - тем же путём, каким её послал бы внешний редактор настоящему D-110, -
+// прошивка меняет свою память, а зеркало доносит это до движка. Поэтому правка отсюда и
+// правка с панели это одно и то же событие, и обе видны в обоих местах.
+//
+// Каждый адрес, по которому пишет эта панель, ИЗМЕРЕН, а не взят из руководства на веру:
+// plugin/editor_write_probe.cpp посылает по одной записи в каждую область и смотрит, какой
+// байт батарейного ОЗУ сдвинулся.
+class D110EditorPane : public juce::Component, private juce::Timer {
+public:
+	explicit D110EditorPane(D110AudioProcessor &);
+
+	void paint(juce::Graphics &) override;
+	void resized() override;
+	void mouseDown(const juce::MouseEvent &) override;
+	void mouseDrag(const juce::MouseEvent &) override;
+	void mouseUp(const juce::MouseEvent &) override;
+	void mouseMove(const juce::MouseEvent &) override;
+	void mouseExit(const juce::MouseEvent &) override;
+	void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
+
+	// Перечитывает память прибора. Обычно это делает таймер; отдельно вызывается снимком
+	// панели в файл, которому не на чем крутить очередь сообщений.
+	void refreshFromInstrument();
+	void selectTab(int index);
+
+private:
+	void timerCallback() override;
+
+	// Куда пишет поле. Области - те же, что у Roland, и адрес каждой в ОЗУ прошивки
+	// измерен; см. D110Core.
+	enum class Area { TimbreTemp, ToneTemp, Rhythm, System, Timbres, Patches, Tones };
+
+	struct Cell {
+		juce::Rectangle<float> bounds;
+		Area area = Area::TimbreTemp;
+		int index = 0;   // партия, клавиша, ячейка памяти или смещение в системной области
+		int field = 0;   // смещение внутри записи; для System не используется
+		int lo = 0, hi = 127;
+	};
+
+	enum class Tab { Parts, Tone, Rhythm, Patches, Timbres, Tones, System, Monitor, Utility };
+	static constexpr int kNumTabs = 9;
+
+	// Один параметр партиала: подпись, смещение внутри его 58-байтной записи и предел.
+	struct ToneParam {
+		const char *name;
+		int offset;
+		int hi;
+	};
+
+	struct Button {
+		juce::Rectangle<float> bounds;
+		juce::String text;
+		int id = 0;
+	};
+
+	// Подпись, посчитанная вместе с полями. Держать их в одном списке нужно затем, чтобы
+	// заголовок столбца и сам столбец не считались дважды по разным формулам и однажды не
+	// разъехались.
+	struct Label {
+		juce::Rectangle<float> bounds;
+		juce::String text;
+		bool heading = true;
+		juce::Justification just = juce::Justification::centredLeft;
+	};
+
+	void layout();
+	void layoutParts(juce::Rectangle<float> area);
+	void layoutTone(juce::Rectangle<float> area);
+	void layoutRhythm(juce::Rectangle<float> area);
+	void layoutPatches(juce::Rectangle<float> area);
+	void layoutTimbres(juce::Rectangle<float> area);
+	void layoutTones(juce::Rectangle<float> area);
+	void layoutSystem(juce::Rectangle<float> area);
+	void layoutUtility(juce::Rectangle<float> area);
+	void layoutParamColumn(juce::Rectangle<float> column, int partialBase,
+	                       const ToneParam *params, int count);
+	void paintMonitor(juce::Graphics &, juce::Rectangle<float> area);
+	void buttonPressed(int id);
+
+	int cellAt(juce::Point<float>) const;
+	size_t addressOf(const Cell &) const;
+	int valueOf(const Cell &) const;
+	void setValue(const Cell &, int value);
+	juce::String textOf(const Cell &) const;
+	// Имя из памяти прибора: десять знаков, как их показывает индикатор.
+	juce::String nameAt(size_t ramOffset) const;
+	// Имя тона по паре «группа, номер». Пресетные группы и ритм живут в ПЗУ, поэтому их
+	// имена берутся у звукового движка, который загрузил то же ПЗУ; внутренние тона - из
+	// памяти самой прошивки.
+	juce::String toneName(int group, int number) const;
+
+	D110AudioProcessor &processor;
+
+	Tab tab = Tab::Parts;
+	std::array<juce::Rectangle<float>, kNumTabs> tabBounds{};
+
+	// Чьи записи показывают вкладки, у которых есть «текущая партия».
+	int part = 0;
+	std::array<juce::Rectangle<float>, 8> partBounds{};
+	juce::Rectangle<float> toneNameBounds;
+	int tonePartial = 0;
+	std::array<juce::Rectangle<float>, 4> tonePartialBounds{};
+
+	// Длинные списки листаются колесом мимо полей.
+	int rhythmScroll = 0;
+	int timbreScroll = 0;
+	int patchScroll = 0;
+	int toneScroll = 0;
+	int patchSlot = 0;    // патч, чьи партии показаны внизу вкладки PATCHES
+	int toneSlot = 0;     // выбранная ячейка памяти тонов
+
+	juce::Rectangle<float> tableArea;
+	juce::Rectangle<float> contentArea;   // для вкладок, которые рисуются целиком
+	float rowHeight = 0.0f;
+
+	std::vector<Label> labels;
+	std::vector<Cell> cells;
+	std::vector<Button> buttons;
+
+	// Одно поле ввода на весь редактор: им набирается любое имя и надпись для индикатора.
+	juce::TextEditor textEntry;
+	int textEntryTarget = 0;   // 0 - никуда, 1 - имя тона партии, 2 - надпись на индикатор,
+	                           // 3 - имя патча, 4 - имя тона в памяти
+	int textEntryButton = -1;  // кнопка, на месте которой стоит поле ввода
+	int hovered = -1, dragging = -1;
+	float dragStartY = 0.0f;
+	int dragStartValue = 0;
+
+	// Снимок памяти прибора, обновляемый по таймеру: редактор всегда показывает то, что в
+	// приборе на самом деле, включая правки, сделанные с его собственной панели.
+	std::vector<uint8_t> ram;
+	uint64_t ramGen = 0;
+	bool ramValid = false;
+
+	// Имена тонов из ПЗУ спрашиваются у движка по одному разу: они не меняются, а читать их
+	// на каждой перерисовке значило бы лезть в чужой поток по десять раз в секунду.
+	mutable std::array<juce::String, 4 * 64> romToneNames;
+	mutable std::array<bool, 4 * 64> romToneNameKnown{};
+
+	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D110EditorPane)
+};
+
+// Прибор, ящик и полоса-ручка между ними.
+//
+// Ящик открывается ВНИЗ, как у остальных синтезаторов этой серии: сам прибор остаётся
+// целым, а редактор выезжает из-под него. Ручка - во всю ширину, чтобы читалась ящиком, а
+// не кнопкой, и стоит НИЖЕ фотографии, а не на ней: на лицевой стороне прибора нет и не
+// может быть органов управления, которых нет у железа.
+class D110AudioProcessorEditor : public juce::AudioProcessorEditor, private juce::Timer {
 public:
 	explicit D110AudioProcessorEditor(D110AudioProcessor &);
 
 	void paint(juce::Graphics &) override;
 	void resized() override;
+	void mouseDown(const juce::MouseEvent &) override;
+	void mouseMove(const juce::MouseEvent &) override;
+	void mouseExit(const juce::MouseEvent &) override;
+
+	// Перечитать прибор обеими половинами сразу - панелью и ящиком. Нужно снимку целого
+	// редактора, у которого нет ни окна, ни очереди сообщений, чтобы крутить их таймеры.
+	void refreshFromInstrument() {
+		panel.refreshFromInstrument();
+		editorPane.refreshFromInstrument();
+	}
+	// Открыть ящик без мыши - тем же снимком.
+	void setExpanded(bool open) { expansion = expansionTarget = open ? 1.0f : 0.0f; }
+
+	// Высота полосы-ручки в опорных точках панели.
+	static constexpr float kHandleRefH = 34.0f;
+	// Высота ящика в тех же опорных точках. Взята так, чтобы при обычной ширине окна
+	// (1500 точек, масштаб 0.71) ящик выходил около 640 точек - в нём помещается таблица на
+	// девять партий и подробная страница партиала, ради которых он и нужен.
+	static constexpr float kPaneRefH = 900.0f;
 
 private:
+	void timerCallback() override;
+	float totalRefHeight() const;
+	void applySize();
+	juce::Rectangle<float> handleBand() const;
+
 	D110Panel panel;
+	D110EditorPane editorPane;
+	// Карта добавляется ПОСЛЕ ящика и потому лежит поверх него - иначе выехавшая карта
+	// пряталась бы за полями редактора.
+	D110MemoryCard card;
 	juce::ComponentBoundsConstrainer constrainer;
+
+	float expansion = 0.0f;        // сглаженное 0..1
+	float expansionTarget = 0.0f;  // то, что задал щелчок по ручке
+	bool handleHover = false;
 
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D110AudioProcessorEditor)
 };

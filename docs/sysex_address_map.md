@@ -162,6 +162,81 @@ Not yet found: the Part Set page's first parameter did not move any byte by the
 press count — most likely it was already at its maximum (Output Level was showing
 100). Re-probe from a lower value.
 
+## The whole of the battery RAM, measured
+
+The extended editor needs to read and write every area, not just the mirrored ones, so the
+two that had never been located were measured — by `plugin/editor_write_probe.cpp`, which
+sends one Roland DT1 into the firmware's own MIDI IN per area and reports which byte of the
+32 KB moved. The result accounts for the entire memory below the firmware's working areas,
+with no gaps and no overlaps:
+
+| RAM | SysEx | Contents | How it was pinned |
+| --- | --- | --- | --- |
+| `0x0000` | `06 00 00` | Patch Memory, 64 × 128 | `factory_bank_probe`, all 64 records found |
+| `0x2000` | `03 00 00` | Timbre Temporary, 9 × 16 | `bridge_probe`, three consecutive fields |
+| `0x2090` | `03 01 10` | Rhythm Setup, 85 × 4 | follows Timbre Temporary; ends exactly on `0x21E4` |
+| `0x21E4` | `04 00 00` | Tone Temporary, 8 × 246 | `tone_probe`, 246 of 246 bytes for all eight parts |
+| `0x2994` | `05 00 00` | **Timbre Memory, 128 × 8** | `editor_write_probe`; starts where Tone Temporary ends and ends where the System Area begins |
+| `0x2D94` | `10 00 00` | System Area, 23 | `bridge_probe`; reserve sums to 32, channels read 1–9 |
+| `0x2DAB` | — | working copy of the current patch's **name** | read directly |
+| `0x2DB9` | — | **current patch number**, 0–63 | three Number+ presses move it by exactly 3, one Bank+ by exactly 8 |
+| `0x4000` | `08 00 00` | **Tone Memory, 64 × 256** | `editor_write_probe`: names sent to `08 00 00` and `08 04 00` landed at `0x4000` and `0x4200` |
+
+Timbre Memory's factory content is its own corroboration: 64 records naming group A tones
+1–64 followed by 64 naming group B, which is exactly what a factory D-110 holds.
+
+Tone Memory could not be found by *reading*, because on a factory instrument it is 16 KB of
+zeroes — the top half of the battery RAM is simply empty. It had to be found by writing. The
+same write also confirmed it a second, independent way: after the name went in, the
+instrument's **own display** named the group-2 tone with it.
+
+### Writes from an editor are accepted, and Mem Protect does not stop them
+
+The bridge described above carries edits *out* of the firmware. The extended editor goes the
+other way: it sends the instrument a Roland DT1 through `pushMidi`, i.e. through the CPU's own
+serial receiver, exactly as an external librarian would. All six test writes landed on the
+documented byte — temporary areas *and* stored memory — with **Mem Protect at its factory
+`ON`**. So the editor can offer stored patches and timbres, not just the temporary areas.
+
+### What the four tone groups are
+
+A timbre's tone group is a number 0–3, and the sound engine treats them as its four banks.
+What each one *is* on a D-110 was read off the instrument's own display, by setting part 1's
+group over SysEx and looking at the tone name it then showed:
+
+| Group | The instrument showed | So it is |
+| --- | --- | --- |
+| 0 | `AcouPiano1` | preset A |
+| 1 | `Fantasy` | preset B |
+| 2 | the name just written into Tone Memory | internal tone memory |
+| 3 | `ClsdHiHat1` | rhythm |
+
+### Byte 6 of a Timbre is Output Assign, not a reverb switch
+
+Roland's structure is the MT-32's, but two of its fields mean something else here, and both
+were read off the instrument rather than assumed:
+
+| Byte | MT-32 calls it | The D-110's own display calls it | Range as the panel steps it |
+| --- | --- | --- | --- |
+| 6 | `reverbSwitch` | **Output Assign** | `MIX`, then `1`…`6` (byte 1…7) |
+| 10, 11 | `dummy` | **Key Range lower / upper** | 0…127, shown as note names |
+
+Output Assign was pinned by walking the panel to Timbre Edit → OutputAssign and pressing
+Number+: three presses moved the display `MIX` → `3` and the byte 1 → 4, and twenty more
+stopped it at 7, displayed `6`. Six individual outputs, which is what the service notes'
+block diagram shows (`MIX OUT L/R` and `MULTI OUT 1-6`).
+
+The consequence for the bridge is worth stating plainly: **the engine reads that byte as its
+own reverb switch.** Every value a D-110 can put there is non-zero, so the engine's per-part
+reverb is always on. Nothing is lost — a D-110 has no per-part reverb switch to lose, its
+reverb being a patch setting — but the region's meaning is not what munt's field name says.
+
+### Three different reverb scales
+
+Read off the panel, and they are not the same: **Type** runs 1–8 and then `OFF`, **Time**
+runs 1–8, and **Level** runs 0–7. The factory patch stores `04 04 04` and displays `5`, `5`,
+`4`. The editor prints each with its own scale for that reason.
+
 ## Host MIDI going the other way
 
 The bridge above carries panel edits *out* to the engine. Traffic also has to go

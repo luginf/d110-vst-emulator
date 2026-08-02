@@ -1329,6 +1329,41 @@ void D110Core::emitRegionSysex(const MirrorRegion &region, const uint8_t *ramIma
 	pushSysex(msg, n);
 }
 
+// Тот же DT1, но для произвольного адреса и данных, и без постановки в очередь. Смещение
+// прибавляется в семибитном пространстве Roland: 0x040000 + 246 - это 0x040166, а не
+// 0x0400F6, и обычное сложение промахнулось бы на каждом тембре, кроме первого.
+int D110Core::buildDt1Message(uint32_t sysexAddress, int offset, const uint8_t *data,
+                              int length, uint8_t *out) {
+	if (length <= 0 || length > kMaxSysexBytes - 12 || offset < 0) return 0;
+
+	int n = 0;
+	out[n++] = 0xF0;
+	out[n++] = 0x41; // Roland
+	out[n++] = 0x10; // device ID (заводской Exclu Unit# 17, считая с единицы)
+	out[n++] = 0x16; // model: MT-32 family, which is what the D-110 answers to
+	out[n++] = 0x12; // DT1
+
+	const uint32_t linear = (((sysexAddress >> 16) & 0x7f) << 14)
+	                      | (((sysexAddress >> 8) & 0x7f) << 7) | (sysexAddress & 0x7f);
+	const uint32_t target = linear + uint32_t(offset);
+	const uint8_t a1 = uint8_t((target >> 14) & 0x7f);
+	const uint8_t a2 = uint8_t((target >> 7) & 0x7f);
+	const uint8_t a3 = uint8_t(target & 0x7f);
+	out[n++] = a1;
+	out[n++] = a2;
+	out[n++] = a3;
+
+	uint32_t sum = a1 + a2 + a3;
+	for (int i = 0; i < length; ++i) {
+		const uint8_t v = data[i] & 0x7f;
+		out[n++] = v;
+		sum += v;
+	}
+	out[n++] = uint8_t((128 - (sum & 0x7f)) & 0x7f);
+	out[n++] = 0xF7;
+	return n;
+}
+
 void D110Core::pushSysex(const uint8_t *msg, int len) {
 	if (len <= 0 || len > kMaxSysexBytes) return;
 	const int w = sW.load(std::memory_order_relaxed);

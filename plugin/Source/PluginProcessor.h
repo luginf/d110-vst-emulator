@@ -12,7 +12,8 @@
 #include <thread>
 
 class D110AudioProcessor : public juce::AudioProcessor,
-                           private juce::MidiInputCallback {
+                           private juce::MidiInputCallback,
+                           private juce::Timer {
 public:
 	D110AudioProcessor();
 	~D110AudioProcessor() override;
@@ -165,6 +166,49 @@ public:
 	void selectPreviousPart();
 	void stepPatch(int direction); // direction: +1 or -1
 
+	// --- the extended editor ---------------------------------------------------
+	// Everything the drawer edits goes to the INSTRUMENT, as a Roland DT1 into its own
+	// MIDI IN - exactly what an external editor would send to the hardware. The firmware
+	// changes its memory, the mirror carries that to the sound engine, and the panel's own
+	// display shows it too. Nothing here writes to the sound engine directly, so an edit
+	// made in the drawer and an edit made on the panel are the same event.
+	//
+	// Measured, not assumed: plugin/editor_write_probe.cpp sends one write into each area
+	// and checks which byte of the firmware's battery RAM moved. All of them land where
+	// Roland's map says, and Mem Protect does not stand in the way of exclusive writes.
+	void sendAreaData(juce::uint32 sysexAddress, int offset, const juce::uint8 *data, int length);
+	void sendTimbreTempParam(int part, int field, juce::uint8 value);
+	void sendToneTempParam(int part, int offset, juce::uint8 value);
+	void sendRhythmParam(int slot, int field, juce::uint8 value);
+	void sendSystemParam(int field, juce::uint8 value);
+	void sendTimbreMemoryParam(int slot, int field, juce::uint8 value);
+	void sendPatchMemoryParam(int patch, int field, juce::uint8 value);
+	// Имена - те же десять знаков, что показывает индикатор: только печатные ASCII, добито
+	// пробелами. Прибор других не знает, и в эксклюзивном сообщении байт выше 0x7F невозможен.
+	void sendName(juce::uint32 sysexAddress, int offset, const juce::String &name);
+	// Надпись на индикаторе прибора - штатная команда Roland по адресу 0x200000.
+	void sendDisplayMessage(const juce::String &text);
+
+	// Смена тембра партии - обычная смена программы на её собственном MIDI-канале, как с
+	// внешней клавиатуры. Канал берётся из карты прошивки, а не считается по формуле:
+	// заводская раскладка «партия N на канале N+1» изменяема, и формула промахнулась бы.
+	void selectTimbreForPart(int part, int timbre);
+	// Переход на патч НАЖАТИЯМИ САМОЙ ПАНЕЛИ: Patch, затем Bank+ и Number+ столько раз,
+	// сколько нужно. Патч выбирает прошивка - она при этом раскладывает его по временным
+	// областям, пишет своё на индикатор и поднимает зеркало, - а не мы за неё.
+	//
+	// Bank+ двигает номер на 8, Number+ на 1 (измерено editor_write_probe), поэтому до
+	// любого из 64 патчей не больше четырнадцати нажатий.
+	void selectPatch(int patch);
+	bool isSelectingPatch() const { return patchSteps > 0; }
+
+	// Лента принятых сообщений для вкладки MONITOR - кольцо на 64 записи, без блокировок.
+	struct MidiLogEntry {
+		juce::uint8 status = 0, data1 = 0, data2 = 0;
+		juce::uint16 size = 0;
+	};
+	int getMidiLog(MidiLogEntry *out, int max) const;
+
 	juce::AudioProcessorValueTreeState parameters;
 
 private:
@@ -310,6 +354,23 @@ private:
 
 	std::atomic<int> selectedPartIndex{0};
 	std::array<int, 8> currentProgramPerPart{};
+
+	// --- переход на патч кнопками панели --------------------------------------
+	// Очередь кнопок, которые осталось нажать, и фаза текущего нажатия (0 - опустить,
+	// 1 - отпустить). Живёт на таймере сообщений: между нажатиями обязано пройти
+	// эмулируемое время, иначе матрица опроса просто не увидит вторую половину.
+	void timerCallback() override;
+	std::vector<int> patchQueue;
+	int patchSteps = 0;
+	int patchPhase = 0;
+
+	// --- лента принятых сообщений ---------------------------------------------
+	// Кольцо фиксированного размера, один писатель (аудиопоток) и один читатель (интерфейс),
+	// поэтому без блокировок: писатель кладёт запись и только потом двигает счётчик.
+	static constexpr juce::uint32 kMidiLogSize = 64;
+	void logIncomingMidi(const juce::MidiMessage &message);
+	std::array<MidiLogEntry, kMidiLogSize> midiLog{};
+	std::atomic<juce::uint32> midiLogWrite{0};
 
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D110AudioProcessor)
 };
