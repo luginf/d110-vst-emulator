@@ -50,6 +50,28 @@ void render(D110AudioProcessor &proc, double seconds) {
 	}
 }
 
+struct Btn { const char *name; int port; int bit; };
+const Btn kButtons[] = {
+	{"Exit", 0, 7}, {"Patch", 0, 6}, {"Timbre", 0, 5}, {"Part+", 0, 4},
+	{"Group+", 0, 3}, {"Bank+", 0, 2}, {"Number+", 0, 1}, {"Write", 0, 0},
+	{"Edit", 1, 7}, {"Part", 1, 6}, {"System", 1, 5}, {"Part-", 1, 4},
+	{"Group-", 1, 3}, {"Bank-", 1, 2}, {"Number-", 1, 1}, {"Enter", 1, 0},
+};
+
+void pressButton(D110AudioProcessor &proc, const char *name, int times = 1) {
+	for (const auto &b : kButtons)
+		if (std::strcmp(b.name, name) == 0) {
+			const int idx = D110Core::buttonIndex(b.port, b.bit);
+			for (int i = 0; i < times; ++i) {
+				proc.getCore().setButton(idx, true);
+				render(proc, 0.13);
+				proc.getCore().setButton(idx, false);
+				render(proc, 0.30);
+			}
+			return;
+		}
+}
+
 // Состояние одного голоса, собранное из записей в регистры.
 struct Voice {
 	bool seen = false;
@@ -61,6 +83,17 @@ struct Voice {
 	uint8_t wavePos = 0;     // 0x0C40 нечётный байт (PCM) - см. ниже
 	uint8_t ampTarget = 0;   // выбранный флагом банк рампы, нечётный байт
 	uint16_t pitch = 0;      // 0x0CC0, шестнадцатибитное
+	// 0x0D00 чётный байт, бит 5. Совпал с Partial::isRingModulatingNoMix() из munt на всех
+	// одиннадцати достижимых структурах и обоих слотах - 22 точки без исключений
+	// (docs/la32_register_map.md). У ведущего партиала он взведён только при mix 2, у
+	// ведомого - при mix 1 и mix 2, то есть везде, где идёт кольцевая модуляция без
+	// подмешивания ведущего.
+	bool ringNoMix = false;
+	// Он же, бит 6, у PCM-партиала: гаснет ровно у ведомого в кольцевой модуляции. Это в
+	// точности условие pcmWaveInterpolated у munt, где сказано, что у такого партиала
+	// умножитель интерполяции занят кольцевым модулятором. У синтетического партиала тот же
+	// бит несёт пилу - разделить эти два смысла на нынешних данных нечем, оба не опровергнуты.
+	bool pcmInterpolated = true;
 	// 0x0D00 нечётный байт у PCM-партиала: старшие биты - длина и цикл волны (см. ниже),
 	// младшие - резонанс, тот же, что и у синтетического.
 	bool pcmLoop = false;
@@ -130,6 +163,10 @@ int main(int argc, char **argv) {
 	// закон громкости надо по НАКЛОНУ, а не по одному пику: абсолютный пик зависит ещё и от
 	// формы волны, а отношение двух пиков при известной разнице уровней - уже нет.
 	const int velocity = argc > 3 ? std::atoi(argv[3]) : 100;
+	// На сколько шагов сдвинуть структуру пары 1&2 от заводской. Нужно, чтобы проверить путь
+	// кольцевой модуляции: у заводского тембра структура 2, то есть простое сложение, и на
+	// нём кольцевой модулятор не работает вовсе - а значит и утверждать про него нечего.
+	const int structureSteps = argc > 4 ? std::atoi(argv[4]) : 0;
 	const juce::File outDir = argc > 2 ? juce::File(juce::String(argv[2]))
 	                                   : juce::File::getCurrentWorkingDirectory();
 
@@ -149,6 +186,20 @@ int main(int argc, char **argv) {
 	render(proc, 3.0);
 	while (proc.getCore().isResetting() || !proc.getCore().isRunning()) render(proc, 0.5);
 	render(proc, 9.0);
+
+	if (structureSteps) {
+		pressButton(proc, "Exit", 3);
+		pressButton(proc, "Timbre");
+		pressButton(proc, "Edit");
+		pressButton(proc, "Edit");
+		pressButton(proc, "Group+", 1); // общая часть, страница структуры пары 1&2
+		pressButton(proc, "Number+", structureSteps);
+		render(proc, 0.4);
+		pressButton(proc, "Exit", 3);
+		std::vector<uint8_t> ram(D110Core::kRamSize, 0);
+		proc.getCore().getRam(ram.data());
+		std::printf("структура пары 1&2: %d\n", ram[0x21E4 + 10]);
+	}
 
 	// Одна нота, короткое окно: нужны значения, которые прошивка положила при выдаче голоса.
 	// Нота держится и отпускается ВНУТРИ окна захвата: ступени огибающей приходят и при
@@ -177,6 +228,8 @@ int main(int argc, char **argv) {
 		v[s].seen = true;
 		v[s].isPcm = (flag->second & 0x80) != 0;
 		v[s].sawtooth = (flag->second & 0x40) != 0;
+		v[s].pcmInterpolated = (flag->second & 0x40) != 0;
+		v[s].ringNoMix = (flag->second & 0x20) != 0;
 		bankOf[s] = v[s].isPcm ? 0x0C00 : 0x0C80;
 		const auto res = firstValue.find(uint16_t(0x0D01 + 2 * s));
 		if (res != firstValue.end()) {
@@ -217,6 +270,8 @@ int main(int argc, char **argv) {
 	std::printf("\n  слот | род      | пила/адрес | ширина/длина | срез | резонанс | цикл |"
 	            " уровень | высота\n");
 	int synthSlot = -1, pcmSlot = -1;
+	// Слоты ноты по порядку выдачи: первый из пары - ведущий партиал, второй - ведомый.
+	std::vector<int> pairSlots;
 	for (int s = 0; s < D110Core::kNumHardwareVoices; ++s) {
 		if (!v[s].seen) continue;
 		if (v[s].isPcm)
@@ -229,6 +284,7 @@ int main(int argc, char **argv) {
 			            v[s].cutoff, v[s].resonance, "-", v[s].ampTarget, v[s].pitch);
 		if (!v[s].isPcm && synthSlot < 0) synthSlot = s;
 		if (v[s].isPcm && pcmSlot < 0) pcmSlot = s;
+		pairSlots.push_back(s);
 	}
 
 	// Волновое ПЗУ - те же байты, что автозагрузка плагина берёт из тех же файлов MAME
@@ -255,42 +311,86 @@ int main(int argc, char **argv) {
 	std::printf("\n  волновое ПЗУ: %s\n", pcmRom.empty() ? "НЕ НАЙДЕНО" :
 	            (juce::String(pcmRom.size()) + " отсчётов").toRawUTF8());
 
-	if (pcmSlot >= 0 && !pcmRom.empty()) {
-		const Voice &pv = v[pcmSlot];
-		const uint32_t addr = uint32_t(pv.wavePos) << 11;
-		std::printf("\n  === PCM-партиал, слот %d: адрес %06X, длина %u, цикл %s ===\n",
-		            pcmSlot, addr, pv.pcmLen, pv.pcmLoop ? "да" : "нет");
-		if (addr + pv.pcmLen > pcmRom.size()) {
-			std::printf("  !!! волна выходит за пределы ПЗУ - в этом наборе ROM её нет\n");
-		} else {
-			MT32Emu::LA32FloatWaveGenerator wgPcm;
-			wgPcm.initPCM(pcmRom.data() + addr, pv.pcmLen, pv.pcmLoop, true);
-			const MT32Emu::Bit32u ampPcm = kAmpFull - (MT32Emu::Bit32u(pv.ampTarget) << 18);
-			const MT32Emu::Bit32u cutoffPcm = 240u << 18; // срез настежь: слышна волна как есть
-			const int nPcm = int(kChipRate * 0.3);
-			std::vector<float> outPcm((size_t)nPcm, 0.0f);
-			float peakPcm = 0.0f;
-			for (int i = 0; i < nPcm; ++i) {
-				outPcm[(size_t)i] = wgPcm.generateNextSample(ampPcm, pv.pitch, cutoffPcm);
-				peakPcm = std::max(peakPcm, std::abs(outPcm[(size_t)i]));
+	// --- ПАРА партиалов как ОДИН голос ---------------------------------------------------
+	// На D-110 нота берёт два слота не потому, что звучит дважды, а потому что голос состоит
+	// из пары партиалов, и микросхема сама решает, сложить их или перемножить кольцевой
+	// модулятором. Пока они рендерились порознь, это был не голос, а его половинки.
+	//
+	// Кто ведущий, а кто ведомый, решает порядок слотов: прошивка выдаёт их подряд, и первый
+	// из пары - ведущий. Режим смешивания берётся из бита 5, найденного перебором структур.
+	if (int(pairSlots.size()) == 2) {
+		const Voice &m = v[pairSlots[0]], &sv = v[pairSlots[1]];
+		// ringModulated - идёт ли кольцевая модуляция вообще; mixed - подмешивается ли к её
+		// выходу ведущий партиал. По munt: init(hasRingModulatingSlave(), mixType == 1), а
+		// mixType == 1 это ровно "ведомый в кольце, ведущий подмешан" - то есть бит 5 у
+		// ведомого взведён, а у ведущего нет.
+		const bool ringModulated = sv.ringNoMix;
+		const bool mixed = sv.ringNoMix && !m.ringNoMix;
+		std::printf("\n  === голос как пара: ведущий слот %d, ведомый слот %d ===\n",
+		            pairSlots[0], pairSlots[1]);
+		std::printf("  кольцевая модуляция: %s, ведущий подмешан: %s\n",
+		            ringModulated ? "да" : "нет", mixed ? "да" : "нет");
+
+		bool ok = true;
+		MT32Emu::LA32FloatPartialPair pair;
+		pair.init(ringModulated, mixed);
+		const MT32Emu::LA32PartialPair::PairType kRoles[2] = {
+			MT32Emu::LA32PartialPair::MASTER, MT32Emu::LA32PartialPair::SLAVE};
+		for (int i = 0; i < 2 && ok; ++i) {
+			const Voice &pv = v[pairSlots[(size_t)i]];
+			if (!pv.isPcm) {
+				pair.initSynth(kRoles[i], pv.sawtooth, pv.pulseWidth,
+				               uint8_t(pv.resonance ? pv.resonance : 1));
+				continue;
 			}
-			std::printf("  пик: %.4f\n", double(peakPcm));
-			const juce::File wavPcm = outDir.getChildFile("la32_pcm_note" + juce::String(note) + ".wav");
-			juce::AudioBuffer<float> bufPcm(1, nPcm);
-			std::memcpy(bufPcm.getWritePointer(0), outPcm.data(), sizeof(float) * (size_t)nPcm);
-			wavPcm.deleteFile();
-			juce::WavAudioFormat fmtPcm;
-			std::unique_ptr<juce::FileOutputStream> stPcm(wavPcm.createOutputStream());
-			if (stPcm != nullptr) {
-				std::unique_ptr<juce::AudioFormatWriter> wrPcm(
-					fmtPcm.createWriterFor(stPcm.get(), kChipRate, 1, 16, {}, 0));
-				if (wrPcm != nullptr) { stPcm.release(); wrPcm->writeFromAudioSampleBuffer(bufPcm, 0, nPcm); }
+			const uint32_t addr = uint32_t(pv.wavePos) << 11;
+			if (pcmRom.empty() || addr + pv.pcmLen > pcmRom.size()) {
+				std::printf("  PCM-волна по адресу %06X недоступна - пара пропущена\n", addr);
+				ok = false;
+				break;
 			}
-			std::printf("  записано: %s\n", wavPcm.getFullPathName().toRawUTF8());
+			std::printf("  слот %d: волна %06X, длина %u, цикл %s, интерполяция %s\n",
+			            pairSlots[(size_t)i], addr, pv.pcmLen, pv.pcmLoop ? "да" : "нет",
+			            pv.pcmInterpolated ? "да" : "нет");
+			pair.initPCM(kRoles[i], pcmRom.data() + addr, pv.pcmLen, pv.pcmLoop);
 		}
-	} else if (pcmSlot >= 0) {
-		std::printf("\n  PCM-партиал есть (слот %d), но волновое ПЗУ не найдено - пропущено\n",
-		            pcmSlot);
+
+		if (ok) {
+			const int nPair = int(kChipRate * 0.4);
+			std::vector<float> outPair((size_t)nPair, 0.0f);
+			float peakPair = 0.0f;
+			for (int i = 0; i < nPair; ++i) {
+				for (int p = 0; p < 2; ++p) {
+					const Voice &pv = v[pairSlots[(size_t)p]];
+					const MT32Emu::Bit32u a = kAmpFull - (MT32Emu::Bit32u(pv.ampTarget) << 18);
+					const MT32Emu::Bit32u c = pv.isPcm ? (240u << 18)
+					                                   : (MT32Emu::Bit32u(pv.cutoff) << 18);
+					pair.generateNextSample(kRoles[p], a, pv.pitch, c);
+				}
+				outPair[(size_t)i] = pair.nextOutSample();
+				peakPair = std::max(peakPair, std::abs(outPair[(size_t)i]));
+			}
+			// Печатается с запасом знаков намеренно: кольцевая модуляция ПЕРЕМНОЖАЕТ два
+			// сигнала, и произведение двух тихих партиалов на четырёх знаках выглядит нулём,
+			// хотя нулём не является. Один раз это уже чуть не прочиталось как «не работает».
+			std::printf("  пик пары: %.8f\n", double(peakPair));
+			const juce::File wavPair =
+				outDir.getChildFile("la32_pair_note" + juce::String(note) + ".wav");
+			juce::AudioBuffer<float> bufPair(1, nPair);
+			std::memcpy(bufPair.getWritePointer(0), outPair.data(), sizeof(float) * (size_t)nPair);
+			wavPair.deleteFile();
+			juce::WavAudioFormat fmtPair;
+			std::unique_ptr<juce::FileOutputStream> stPair(wavPair.createOutputStream());
+			if (stPair != nullptr) {
+				std::unique_ptr<juce::AudioFormatWriter> wrPair(
+					fmtPair.createWriterFor(stPair.get(), kChipRate, 1, 16, {}, 0));
+				if (wrPair != nullptr) {
+					stPair.release();
+					wrPair->writeFromAudioSampleBuffer(bufPair, 0, nPair);
+				}
+			}
+			std::printf("  записано: %s\n", wavPair.getFullPathName().toRawUTF8());
+		}
 	}
 
 	if (synthSlot < 0) { std::printf("\nсинтетического партиала в этой ноте нет\n"); return 0; }

@@ -257,6 +257,49 @@ int main(int argc, char **argv) {
 		std::printf("  записей: %zu%s\n", w.size(), w.empty() ? "" : "  !!! окно не молчит");
 	}
 
+	// ---- какой бит регистра несёт СТРУКТУРУ пары партиалов ------------------------------
+	// Структура решает две вещи сразу: который партиал синтетический, а который PCM, и
+	// складываются они или перемножаются кольцевой модуляцией. Первое уже найдено - бит 7
+	// байта 0x0D00. Второе искать так же наугад незачем: структура перебирается по всем
+	// значениям, и рядом печатается, что о каждом говорят таблицы munt. Бит, который ходит
+	// вместе с кольцевой модуляцией и никак иначе, и будет ответом.
+	if (mode == "struct") {
+		// Таблицы из munt/Part.cpp: чем каждая структура является на самом деле.
+		static const uint8_t kPartialStruct[13] = {0, 0, 2, 2, 1, 3, 3, 0, 3, 0, 2, 1, 3};
+		static const uint8_t kMixStruct[13] = {0, 1, 0, 1, 1, 0, 1, 3, 3, 2, 2, 2, 2};
+
+		std::printf("\n  структура | ожидается по munt      | флаги 0x0D00 по слотам\n");
+		for (int step = 0; step < 13; ++step) {
+			press(proc, "Exit", 3);
+			press(proc, "Timbre");
+			press(proc, "Edit");
+			press(proc, "Edit");
+			press(proc, "Group+", 1); // общая часть, страница структуры 1&2 (тон +10)
+			if (step) press(proc, "Number+", 1);
+			render(proc, 0.4);
+			const auto ram = ramOf(proc);
+			const int structure = ram[0x21E4 + 10];
+			press(proc, "Exit", 3);
+
+			const Run r = playOne(proc, 60, 100, 0.35, 0.35);
+			std::printf("  %9d | %-5s + %-5s, mix %d | ", structure,
+			            (structure < 13 && (kPartialStruct[structure] & 2)) ? "PCM" : "синт",
+			            (structure < 13 && (kPartialStruct[structure] & 1)) ? "PCM" : "синт",
+			            structure < 13 ? kMixStruct[structure] : -1);
+			for (int slot : r.slots) {
+				uint8_t flag = 0;
+				bool got = false;
+				for (const auto &w : r.writes)
+					if (w.addr == uint16_t(0x0D00 + 2 * slot) && !got) { flag = w.value; got = true; }
+				if (got) std::printf("слот%d=%02X ", slot, flag);
+			}
+			std::printf("\n");
+			if (r.slots.empty()) { std::printf("  слоты кончились\n"); break; }
+		}
+		proc.setPoweredOn(false);
+		return 0;
+	}
+
 	if (!edits.empty()) {
 		for (const auto &e : edits) {
 			std::printf("\nправка: Part+ x2, Group+ x%d, Bank+ x%d, Number%s x%d\n", e.group,
