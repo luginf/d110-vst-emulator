@@ -868,7 +868,11 @@ private:
 	std::atomic<bool> soTracingOn{false};
 	std::atomic<uint16_t> traceLo{0x0000}, traceHi{0xFFFF};
 	uint64_t soDropped = 0;
-	static constexpr size_t kMaxSoWrites = 20000;
+	// Двадцати тысяч не хватало на вопрос, ради которого захват и делался: пока нота звучит,
+	// банк огибающих 0x0CC0 переписывается непрерывно, и полусекундное окно уже теряло по
+	// две тысячи записей. Обрезанный поток на вопрос «что он несёт во времени» ответить не
+	// может в принципе - потерянный хвост неотличим от закончившегося. Запись весит 16 байт.
+	static constexpr size_t kMaxSoWrites = 400000;
 	mutable std::mutex noteLogMutex;
 	std::vector<NoteLog> noteLog;
 	std::chrono::steady_clock::time_point noteLogStart;
