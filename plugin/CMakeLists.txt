@@ -599,3 +599,17 @@ target_include_directories(d110_core_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURR
 target_compile_definitions(d110_core_test PRIVATE ${MAME_DEFS})
 target_link_libraries(d110_core_test PRIVATE ${MAME_LIBS} ${MAME_SYS_LIBS})
 target_link_options(d110_core_test PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Куда деваются ноты при быстрой игре: их теряет заглушка LA32 или их некуда играть.
+# Считает ноту на трёх рубежах - отправлено, взято прошивкой, занято у движка - и делает это
+# дважды, тоном в два партиала и тоном в четыре, чтобы полифонию нельзя было спутать с потерей.
+add_executable(d110_polyphony polyphony_test.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_polyphony PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_polyphony PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_polyphony PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_polyphony PRIVATE /ignore:4099 /FORCE:MULTIPLE)
