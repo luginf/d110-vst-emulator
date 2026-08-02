@@ -85,6 +85,10 @@ int main(int argc, char **argv) {
 	std::setvbuf(stdout, nullptr, _IONBF, 0);
 
 	const int note = argc > 1 ? std::atoi(argv[1]) : 60;
+	// Сила нажатия - управляемый вход: она двигает ЦЕЛЬ рампы, то есть уровень. Проверять
+	// закон громкости надо по НАКЛОНУ, а не по одному пику: абсолютный пик зависит ещё и от
+	// формы волны, а отношение двух пиков при известной разнице уровней - уже нет.
+	const int velocity = argc > 3 ? std::atoi(argv[3]) : 100;
 	const juce::File outDir = argc > 2 ? juce::File(juce::String(argv[2]))
 	                                   : juce::File::getCurrentWorkingDirectory();
 
@@ -106,15 +110,17 @@ int main(int argc, char **argv) {
 	render(proc, 9.0);
 
 	// Одна нота, короткое окно: нужны значения, которые прошивка положила при выдаче голоса.
+	// Нота держится и отпускается ВНУТРИ окна захвата: ступени огибающей приходят и при
+	// нажатии, и при снятии, и без второй половины проверять в рампе нечего.
 	proc.getCore().startSoTrace();
-	const uint8_t on[3] = {0x91, uint8_t(note), 100};
+	const uint8_t on[3] = {0x91, uint8_t(note), uint8_t(velocity)};
 	proc.getCore().pushMidi(on, 3);
-	render(proc, 0.5);
-	proc.getCore().stopSoTrace();
+	render(proc, 1.0);
 	const uint8_t off[3] = {0x81, uint8_t(note), 0};
 	proc.getCore().pushMidi(off, 3);
+	render(proc, 1.2);
+	proc.getCore().stopSoTrace();
 	const auto writes = proc.getCore().takeSoWrites();
-	render(proc, 0.5);
 
 	// Разбор. Берётся ПЕРВОЕ значение каждого регистра: ведущее 0xFF - это установка, а не
 	// данные, но здесь оно в чётных байтах, которые нас в этой части не интересуют.
@@ -167,7 +173,13 @@ int main(int argc, char **argv) {
 	const Voice &vv = v[synthSlot];
 	MT32Emu::LA32FloatWaveGenerator wg;
 	wg.initSynth(vv.sawtooth, vv.pulseWidth, uint8_t(vv.resonance ? vv.resonance : 1));
-	const MT32Emu::Bit32u amp = MT32Emu::Bit32u(vv.ampTarget) << 18;
+	// Генератор ждёт не уровень, а его ЛОГАРИФМИЧЕСКОЕ ДОПОЛНЕНИЕ: у munt в Partial.cpp
+	// стоит `ampRampVal = 67117056 - ampRamp.nextValue()`, и дальше `amp = 2^(-ampVal/2^22)`,
+	// то есть большее число значит тише. Регистр же несёт именно УРОВЕНЬ, и подавать его
+	// напрямую - значит вывернуть громкость наизнанку: полный уровень 255 дал бы тишину.
+	// Шаг единицы уровня выходит 2^(1/16), то есть около 0.376 дБ.
+	const MT32Emu::Bit32u kAmpFull = 67117056;
+	const MT32Emu::Bit32u amp = kAmpFull - (MT32Emu::Bit32u(vv.ampTarget) << 18);
 	const MT32Emu::Bit32u cutoff = MT32Emu::Bit32u(vv.cutoff) << 18;
 
 	constexpr double kChipRate = D110Core::kLa32SampleRate;
@@ -175,6 +187,87 @@ int main(int argc, char **argv) {
 	std::vector<float> out((size_t)samples, 0.0f);
 	for (int i = 0; i < samples; ++i)
 		out[(size_t)i] = wg.generateNextSample(amp, vv.pitch, cutoff);
+
+	// --- то же, но с ЖИВОЙ огибающей -------------------------------------------------
+	// Выше амплитуда держалась постоянной, чтобы проверить высоту и громкость по отдельности.
+	// Здесь в рендер подаётся то, что прошивка на самом деле велела микросхеме делать во
+	// времени: ступени рампы по мере их прихода. Закон движения тот же, что в D110Core.
+	{
+		struct Ev { double ms; uint8_t inc, target; };
+		std::vector<Ev> events;
+		uint8_t pendingInc = 0;
+		const uint16_t evenAddr = uint16_t(bankOf[synthSlot] + 2 * synthSlot);
+		for (const auto &w : writes) {
+			if (w.addr == evenAddr) pendingInc = w.value;
+			else if (w.addr == uint16_t(evenAddr + 1)) events.push_back({w.ms, pendingInc, w.value});
+		}
+		const double t0 = events.empty() ? 0.0 : events.front().ms;
+
+		MT32Emu::LA32FloatWaveGenerator wg2;
+		wg2.initSynth(vv.sawtooth, vv.pulseWidth, uint8_t(vv.resonance ? vv.resonance : 1));
+		const int n2 = int(kChipRate * 2.5);
+		std::vector<float> out2((size_t)n2, 0.0f);
+		double current = 0.0, increment = 0.0, target = 0.0;
+		bool descending = false, running = false;
+		size_t next = 0;
+		double landedAtMs = -1.0;
+		for (int i = 0; i < n2; ++i) {
+			const double ms = 1000.0 * i / kChipRate;
+			while (next < events.size() && events[next].ms - t0 <= ms) {
+				const Ev &e = events[next++];
+				target = double(e.target) * double(1 << 18);
+				if (e.inc == 0) { running = false; continue; }
+				if (e.inc == 0xFF) { current = target; running = false; continue; }
+				const double large = std::pow(2.0, (double(e.inc & 0x7F) + 24.0) / 8.0);
+				descending = (e.inc & 0x80) != 0;
+				increment = descending ? large + 1.0 : large;
+				running = !((descending && current <= target) || (!descending && current >= target));
+				if (!running) current = target;
+			}
+			if (running) {
+				current += descending ? -increment : increment;
+				if (descending ? current <= target : current >= target) {
+					current = target;
+					running = false;
+					if (landedAtMs < 0.0) landedAtMs = ms;
+				}
+			}
+			const MT32Emu::Bit32u a =
+				kAmpFull - MT32Emu::Bit32u(std::min(current, double(kAmpFull)));
+			out2[(size_t)i] = wg2.generateNextSample(a, vv.pitch, cutoff);
+		}
+
+		// Огибающая печатается по огибающей ЗВУКА, а не по внутреннему счётчику: иначе
+		// проверялось бы, что переменная равна сама себе.
+		std::printf("\n  огибающая рендера (пик по 25 мс, дБ от максимума):\n   ");
+		double top = 0.0;
+		std::vector<double> env;
+		for (int b = 0; b + int(kChipRate / 40) <= n2; b += int(kChipRate / 40)) {
+			double p = 0.0;
+			for (int i = b; i < b + int(kChipRate / 40); ++i) p = std::max(p, std::abs(double(out2[(size_t)i])));
+			env.push_back(p);
+			top = std::max(top, p);
+		}
+		for (size_t i = 0; i < env.size(); i += 4)
+			std::printf(" %.0f:%.0f", 25.0 * double(i), top > 0 ? 20.0 * std::log10(std::max(env[i], 1e-9) / top) : 0.0);
+		std::printf("\n  ступеней рампы за ноту: %zu", events.size());
+		for (const auto &e : events)
+			std::printf(" | %.0f мс: цель %d, приращение %02X", e.ms - t0, e.target, e.inc);
+		std::printf("\n");
+
+		const juce::File wav2 = outDir.getChildFile("la32_env_note" + juce::String(note) + ".wav");
+		juce::AudioBuffer<float> buf2(1, n2);
+		std::memcpy(buf2.getWritePointer(0), out2.data(), sizeof(float) * (size_t)n2);
+		wav2.deleteFile();
+		juce::WavAudioFormat fmt2;
+		std::unique_ptr<juce::FileOutputStream> st2(wav2.createOutputStream());
+		if (st2 != nullptr) {
+			std::unique_ptr<juce::AudioFormatWriter> w2(
+				fmt2.createWriterFor(st2.get(), kChipRate, 1, 16, {}, 0));
+			if (w2 != nullptr) { st2.release(); w2->writeFromAudioSampleBuffer(buf2, 0, n2); }
+		}
+		std::printf("  с огибающей: %s\n", wav2.getFullPathName().toRawUTF8());
+	}
 
 	// Меряется установившийся кусок, без первых миллисекунд.
 	const std::vector<float> steady(out.begin() + samples / 4, out.end());
@@ -190,7 +283,14 @@ int main(int argc, char **argv) {
 		const double cents = 1200.0 * std::log2(got / want442);
 		std::printf("  расхождение с 442: %+8.1f цента   (октав: %+.2f)\n", cents, cents / 1200.0);
 	}
-	std::printf("  пик: %.4f\n", double(peak));
+	// Пик проверяется не «на глаз», а против того, что предсказывает сам закон громкости:
+	// каждая единица уровня - 2^(1/16). Если разбор уровня верен, предсказание и измерение
+	// обязаны сойтись с точностью до формы волны (у неё пик всегда ниже полной шкалы).
+	const double predicted = std::pow(2.0, -double(kAmpFull - (MT32Emu::Bit32u(vv.ampTarget) << 18))
+	                                            / 4194304.0);
+	std::printf("  пик: %.4f   потолок по уровню %d: %.4f   ниже потолка на %.1f дБ\n",
+	            double(peak), vv.ampTarget, predicted,
+	            peak > 0.0f ? 20.0 * std::log10(predicted / double(peak)) : 0.0);
 
 	const juce::File wav = outDir.getChildFile("la32_note" + juce::String(note) + ".wav");
 	{
