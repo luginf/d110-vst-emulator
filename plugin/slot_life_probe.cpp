@@ -63,10 +63,35 @@ int main() {
 	std::printf("занятых слотов до игры: %d из %d\n", busySlots(proc),
 	            D110Core::kNumHardwareVoices);
 
+	// ОДНА нота, ДОЛГО: шесть коротких нот подряд не дают огибающей дожить своим настоящим
+	// временем ни до конца затухания, ни тем более до release после снятия. Здесь и держим
+	// нажатой три секунды, и держим тишину после снятия пять - раз в полсекунды печатая
+	// счётчик прямо во время игры, а не одним снимком по итогу.
 	proc.getCore().setVoiceCtxTap(true);
-
-	// Шесть нот подряд, отпускаются сразу: этого хватает, чтобы увидеть и выдачу слота, и
-	// то, что происходит (или не происходит) в конце жизни голоса.
+	std::printf("\nодна нота, слежение за eec0[слот 0] и edc0[слот 0] в реальном времени:\n");
+	{
+		juce::MidiBuffer on;
+		on.addEvent(juce::MidiMessage::noteOn(kChannel, 60, 0.9f), 0);
+		renderBlocks(proc, 1, &on);
+		bool released = false;
+		for (int step = 0; step < 16; ++step) {
+			renderBlocks(proc, 45);   // ~0.5 с на шаг
+			std::vector<uint8_t> ram(D110Core::kRamSize, 0);
+			proc.getCore().getRam(ram.data());
+			std::printf("  t=%4.1fs  edc0[0]=0x%02X  eec0[0]=%d%s\n", (step + 1) * 0.5,
+			            ram[D110Core::kSlotStateTable], ram[0x2EC0],
+			            released ? "  (снята)" : "  (держим)");
+			if (step == 5 && !released) {
+				juce::MidiBuffer off;
+				off.addEvent(juce::MidiMessage::noteOff(kChannel, 60), 0);
+				renderBlocks(proc, 1, &off);
+				released = true;
+			}
+		}
+	}
+	proc.getCore().setVoiceCtxTap(false);
+	// Тот же прогон из шести нот, для сравнения счётчиков по итогу.
+	proc.getCore().setVoiceCtxTap(true);
 	for (int i = 0; i < 6; ++i) {
 		juce::MidiBuffer on;
 		on.addEvent(juce::MidiMessage::noteOn(kChannel, 48 + i * 3, 0.9f), 0);
@@ -75,7 +100,6 @@ int main() {
 		off.addEvent(juce::MidiMessage::noteOff(kChannel, 48 + i * 3), 0);
 		renderBlocks(proc, 10, &off);
 	}
-	// Долгая тишина: если освобождение вообще бывает, оно случится тут.
 	render(proc, 6.0);
 	proc.getCore().setVoiceCtxTap(false);
 
