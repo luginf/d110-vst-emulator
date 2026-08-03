@@ -14,8 +14,11 @@ Roland's procedure is to hold **WRITE/COPY** while switching the unit on and con
   kept as a template and every instance afterwards is seeded from it, so loading the plugin
   never repeats the initialisation.
 - **On demand, on the panel itself**, by the hardware's own procedure: POWER off,
-  **Ctrl+click WRITE/COPY** to latch the cap down, POWER on, then **ENTER**. There is no
-  Factory Reset command in the plugin's menu, because the instrument already has one.
+  **Ctrl+click WRITE/COPY** to latch the cap down, POWER on, **Ctrl+click WRITE/COPY again**
+  to release it, then **ENTER** to confirm. The order of the last two matters - releasing
+  WRITE/COPY before confirming, not after, is what the firmware is actually waiting for.
+  There is no Factory Reset command in the plugin's menu, because the instrument already
+  has one.
 
 Either way the firmware rebuilds its own patch memory, timbre memory and settings from the
 preset ROM. There is no table of defaults written out in the plugin — the values are the

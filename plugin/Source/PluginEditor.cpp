@@ -464,7 +464,21 @@ int D110Panel::buttonAt(juce::Point<float> p) const
 void D110Panel::setButtonState(int index, bool down)
 {
 	if (index < 0 || index >= kNumButtons) return;
-	if (!processor.getCore().isRunning()) return; // nothing to press while the unit is off
+	// Раньше здесь стоял ранний выход, пока прибор выключен ("nothing to press while the
+	// unit is off") - и он молча ломал ДОКУМЕНТИРОВАННУЮ процедуру факт-сброса: она прямо
+	// требует защёлкнуть WRITE/COPY, ПОКА ПРИБОР ВЫКЛЮЧЕН, и только потом включить. Ctrl-клик
+	// в этот момент попадал сюда, отражался ранним выходом, и `core.setButton()` не
+	// вызывался вовсе - защёлкивался только локальный флаг панели `m.latched`, который ничего
+	// не значит для настоящей матрицы опроса. Прибор включался, ничего не видел зажатым, и
+	// пятишаговая процедура из README не срабатывала НИКОГДА, ни для одного пользователя -
+	// не через раз, а структурно, самим порядком проверки.
+	//
+	// Убирать защиту можно без риска: `D110Core::setButton()` - это голая атомарная запись в
+	// `wantButtons`, ей ничего не нужно от работающей машины, и `D110Core::factoryReset()`
+	// делает ровно то же самое внутри себя - защёлкивает Write/Copy ДО вызова `start()` - и
+	// это работает, им пользуется даже `plugin/nvram_recovery.cpp`. Обычный, незащёлкнутый
+	// клик по-прежнему безвреден на выключенном приборе: mouseUp снимает то же самое
+	// нажатие, и итог - ноль.
 	const auto &b = kButtons[index];
 	int bit = 0;
 	while (bit < 7 && !((b.scanBit >> bit) & 1)) ++bit;
@@ -635,7 +649,10 @@ void D110Panel::showOptionsMenu()
 	// way.
 	m.addSeparator();
 	m.addItem(106, "Factory init, as on the hardware:", false, false);
-	m.addItem(107, "   POWER off, Ctrl+click WRITE/COPY, POWER on, then ENTER", false, false);
+	m.addItem(107,
+		"   POWER off, Ctrl+click WRITE/COPY, POWER on, Ctrl+click WRITE/COPY "
+		"again, then ENTER",
+		false, false);
 
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
 		[this, reverb, superMode, reverbOn, superOn, ins, outs](int result) {
@@ -1400,9 +1417,10 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 	labels.push_back({ area.removeFromTop(15.0f), "FACTORY INITIALISATION", true });
 	labels.push_back({ area.removeFromTop(18.0f),
 	                   "The instrument has its own, and this plugin can perform it exactly: "
-	                   "POWER off, Ctrl+click WRITE/COPY to latch the cap down, POWER on, then "
-	                   "ENTER. There is no button for it here, because there is none on the "
-	                   "hardware either.", false });
+	                   "POWER off, Ctrl+click WRITE/COPY to latch the cap down, POWER on, "
+	                   "Ctrl+click WRITE/COPY again to release it, then ENTER to confirm - "
+	                   "release before confirming, not after. There is no button for it here, "
+	                   "because there is none on the hardware either.", false });
 	area.removeFromTop(12.0f);
 
 	labels.push_back({ area.removeFromTop(15.0f), "WHERE THE EDITS GO", true });

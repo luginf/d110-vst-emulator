@@ -191,8 +191,13 @@ switching on, then confirm with ENTER**:
 2. **Ctrl+click** (or Alt+click) **WRITE/COPY**. The cap latches down, exactly as if you were
    holding it.
 3. Switch **POWER** on. The firmware comes up seeing the button held and asks to confirm.
-4. Click **ENTER**.
-5. Ctrl+click WRITE/COPY again to release it.
+4. Ctrl+click **WRITE/COPY** again to release it.
+5. Click **ENTER** to confirm.
+
+The order of the last two steps matters and is easy to get backwards - release WRITE/COPY
+**before** confirming with ENTER, not after. Confirming while the cap is still latched down
+does nothing, because the firmware is waiting to see WRITE/COPY come back up before it will
+read ENTER as the answer to its own prompt.
 
 Ctrl+click latches any of the sixteen caps, which is what makes "hold this button while
 switching on" possible with a single mouse. It is on a modifier rather than on a long press on

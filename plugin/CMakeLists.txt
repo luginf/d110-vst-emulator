@@ -642,3 +642,18 @@ target_link_libraries(d110_nvram_recovery PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_nvram_recovery PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Проверяет документированную процедуру факт-сброса ("POWER off, Ctrl+click WRITE/COPY,
+# POWER on, ENTER") настоящими нажатиями по настоящей D110Panel - в отличие от
+# coldstart_test.cpp, который вызывает D110Core::setButton() в обход панели и потому не мог
+# бы поймать регрессию в самой D110Panel::setButtonState().
+add_executable(d110_panel_factory_init panel_factory_init_test.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_panel_factory_init PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_panel_factory_init PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_panel_factory_init PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_panel_factory_init PRIVATE /ignore:4099 /FORCE:MULTIPLE)
