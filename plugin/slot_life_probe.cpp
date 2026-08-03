@@ -63,6 +63,63 @@ int main() {
 	std::printf("занятых слотов до игры: %d из %d\n", busySlots(proc),
 	            D110Core::kNumHardwareVoices);
 
+	// --- гипотеза 1: тон в два партиала может требовать освобождения ОБОИХ разом ---
+	//
+	// Слот 0 в опыте выше следил только за одним партиалом ноты. Если релиз одного партиала
+	// ждёт релиза второго - через общий счётчик ссылок по партии, f283[part]/f284[part], -
+	// то у одного из двух слотов eec0 должен доходить до 7 первым и там же зависать, ожидая
+	// второго. Здесь следим за слотами 0 И 1 в одном окне времени.
+	std::printf("\nодна нота (2 партиала), слежение за ОБОИМИ слотами разом:\n");
+	{
+		// Диспетчер вращает слоты (в прежних трассах доставались 4,5,6,7...), поэтому нельзя
+		// предполагать, что новая нота попадёт в 0 и 1 - это остатки от предыдущего опыта.
+		// Слоты этой ноты берутся по факту: снимок ДО и снимок ПОСЛЕ, разница и есть ответ.
+		std::vector<uint8_t> before(D110Core::kRamSize, 0);
+		proc.getCore().getRam(before.data());
+
+		juce::MidiBuffer on;
+		on.addEvent(juce::MidiMessage::noteOn(kChannel, 60, 0.9f), 0);
+		renderBlocks(proc, 3, &on);
+
+		std::vector<uint8_t> after(D110Core::kRamSize, 0);
+		proc.getCore().getRam(after.data());
+		std::vector<int> newSlots;
+		for (int s = 0; s < D110Core::kNumHardwareVoices; ++s) {
+			const size_t at = size_t(D110Core::kSlotStateTable) + size_t(s) * 2;
+			const bool wasBusy = before[at] == D110Core::kSlotBusyValue
+			                   || before[at] == D110Core::kSlotBusyValueAlt;
+			const bool isBusy = after[at] == D110Core::kSlotBusyValue
+			                  || after[at] == D110Core::kSlotBusyValueAlt;
+			if (isBusy && !wasBusy) newSlots.push_back(s);
+		}
+		std::printf("  слоты, доставшиеся этой ноте: ");
+		for (int s : newSlots) std::printf("%d ", s);
+		std::printf("(%d партиал%s)\n", int(newSlots.size()), newSlots.size() == 1 ? "" : "а");
+		if (newSlots.size() < 2) {
+			std::printf("  меньше двух слотов - опыт про пару партиалов здесь не проверить\n");
+		}
+
+		bool released = false;
+		for (int step = 0; step < 16; ++step) {
+			renderBlocks(proc, 45);
+			std::vector<uint8_t> ram(D110Core::kRamSize, 0);
+			proc.getCore().getRam(ram.data());
+			std::printf("  t=%4.1fs", (step + 1) * 0.5 + 0.3);
+			for (int s : newSlots) {
+				const size_t at = size_t(D110Core::kSlotStateTable) + size_t(s) * 2;
+				std::printf("   слот%d: edc0=0x%02X eec0=%d", s, ram[at], ram[0x2EC0 + s * 2]);
+			}
+			std::printf("%s\n", released ? "  (снята)" : "  (держим)");
+			if (step == 5 && !released) {
+				juce::MidiBuffer off;
+				off.addEvent(juce::MidiMessage::noteOff(kChannel, 60), 0);
+				renderBlocks(proc, 1, &off);
+				released = true;
+			}
+		}
+	}
+
+
 	// ОДНА нота, ДОЛГО: шесть коротких нот подряд не дают огибающей дожить своим настоящим
 	// временем ни до конца затухания, ни тем более до release после снятия. Здесь и держим
 	// нажатой три секунды, и держим тишину после снятия пять - раз в полсекунды печатая
@@ -90,6 +147,7 @@ int main() {
 		}
 	}
 	proc.getCore().setVoiceCtxTap(false);
+
 	// Тот же прогон из шести нот, для сравнения счётчиков по итогу.
 	proc.getCore().setVoiceCtxTap(true);
 	for (int i = 0; i < 6; ++i) {
