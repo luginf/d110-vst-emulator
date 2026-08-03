@@ -327,9 +327,16 @@ public:
 	// the logical context (r52's value at dispatch time) into ee01[slot] for the handler to
 	// cross-reference later - so the handler never needs us to know r52 at all, only the
 	// TRUE slot number. rams 0x2DC0 + 2*slot ("edc0[slot]" at CPU address 0xEDC0, which is
-	// rams offset - 0xC000) marks a dispatched voice awaiting completion and reverts to
-	// 0x80 (idle) once the handler has serviced it - so the live table itself says which
-	// slot(s) are genuinely pending, one scan at a time, chords included.
+	// rams offset - 0xC000) marks a dispatched voice awaiting completion.
+	//
+	// 2026-08-03: the "reverts to 0x80 once serviced" this comment used to claim is real
+	// CODE - confirmed by disassembly at ROM 0x32AA/0x34FA (`stb #0x80, edc0[64]`), reached
+	// only once the voice's envelope-stage counter (eec0[voice]) counts up to 7 - but it is
+	// NOT something that currently happens. `plugin/slot_life_probe.cpp` taps every write
+	// into this table by the PC that made it: across six notes the counter reaches 6 twelve
+	// times and never once reaches 7, so the release code is never entered and slots stay
+	// busy forever - measured as 31 of 32 slots stuck busy at idle. See
+	// docs/la32_interface.md, "solved kept the panel alive, but not the polyphony".
 	//
 	// The busy value is 0x40, NOT the 0x20 the disassembly listing at 0x3646 seemed to say -
 	// `d110_la32_lifecycle_probe` played one real note and read the table back afterwards:

@@ -608,3 +608,72 @@ feature now, not a workaround toggle. Kept the whole investigation trail above r
 cleaning it up, because the wrong turns (r52-as-voice-number, premature EXTINT clearing
 that turned out to be a MAME core bug, the 0x40-only scan) are exactly what the next
 LA32-shaped problem on a sibling machine (D-10, D-20, MT-32) will need to avoid repeating.
+
+## 2026-08-03 — solved kept the panel alive, but not the polyphony: slots are never freed
+
+Reported as "notes get eaten when playing fast" - measured with `plugin/polyphony_test.cpp`
+to be real polyphony loss, not a MIDI or drawer bug: ten held notes on a two-partial tone
+peak at 5 sounding partials instead of 20, and with every key released 31 of 32 LA32 slots
+still read busy. Raising partial reserve to 32 - first in the engine alone, then in the
+firmware too - left the peak at exactly 8 partials in all cases, so the ceiling is not
+reserve; it is slots that fill up and never come back.
+
+**The comment claiming a slot "reverts to `0x80` once the handler has serviced it" was
+wrong about the present tense** - `0x80` itself is correct, confirmed below by
+disassembly as exactly what the release code writes, but nothing currently makes that
+code run. Measured with `plugin/slot_life_probe.cpp`, which taps writes into the dispatch
+window and reports the PC that made each one - not a guess, the actual calling routine:
+
+```
+0x30E3 -> 0x40   dispatch: marks a slot genuinely playing
+0x364E -> 0x20   dispatch: marks a slot mid-handshake (the scan's busy-alt value)
+0x39ED, 0x3A56 -> 0x00   dispatch: clears a slot while scanning for a free one
+```
+
+Nothing in six notes' worth of traffic ever wrote `0x80`. The table also reads all zeroes
+at boot, before a single note - so `0x00` is what an idle slot actually holds, and the
+`0x80` the handler compares against at `0x315B` means something else, most likely "never
+allocated" rather than "free".
+
+**The release code exists and was found by disassembly, not assumed:**
+
+```
+32F5  ldbze 80, eec0[64]      read the voice's envelope-stage counter
+32FE  inc   80
+3300  stb   80, eec0[64]      write it back
+3305  cmpb  80, #07
+3308  je    32aa              -> reached stage 7: release the voice
+...
+32AA  st    0, 0c80[64]        zero the TVA ramp register
+32AF  st    0, 0c00[64]        zero the TVF/pitch register
+32B4  sjmp  34a3               -> ...falls through to...
+34FA  ldb   80, #80
+34FD  stb   80, edc0[64]       THE slot finally goes back to 0x80
+```
+
+So a real D-110 frees a slot by counting seven envelope-stage completions per voice, and
+this project's own `emu.count -> 0x40 -> 0x40` scan interpreted a single `edc0` byte as
+the whole story. Re-running `slot_life_probe` filtered strictly to the counter's own byte
+(the disassembly's index register is always `voice * 2`, so only even offsets of the
+`eec0` window are the counter - the first version of this probe scanned the whole window,
+mixed in a neighbouring array, and printed nonsense values like 250) shows exactly what the
+static reading predicted: the counter reaches **6**, twelve times, and **never once reaches
+7** across six notes. The release code is unreachable because the stub answers only the
+handshake that a voice was *dispatched* - never a further seven-times-repeated event that a
+real chip's envelope generator would raise as time passed and each stage genuinely ended.
+
+**What this means for `StuckPolicy::La32Stub`:** answering the dispatch handshake was
+enough to stop the firmware hanging, but it is a different event from the one that ends a
+voice's life. The stub needs to also raise EXTINT roughly seven times per voice, spaced by
+something resembling real envelope-segment timing (or immediately, if getting the panel
+unstuck matters more than pacing), so `eec0[voice]` actually climbs to 7 and the firmware's
+own release code - which already exists and needs no new code invented - runs on its own.
+
+Not yet built: which of the two ways to trigger this is right. Either extend the existing
+handshake so a fixed number of "envelope stage" events follow the first "dispatched" one per
+voice, or read the real TVA ramp (`0x0C80`, the `RampPlayer` law) and raise the completion
+once the ramp has genuinely reached zero - the second is truer to the hardware and ties
+into the ramp work already underway in `plugin/la32_render.cpp`, but is more code and more
+risk. Measured with `plugin/polyphony_test.cpp` and `plugin/slot_life_probe.cpp`; the check
+for either fix is the same: ten held notes on a two-partial tone should reach 20 sounding
+partials, and idle slots should fall from 31 to 0.
