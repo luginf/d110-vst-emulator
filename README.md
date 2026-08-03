@@ -24,8 +24,9 @@ coordinates; only the LCD and the MIDI MESSAGE lamp are drawn, and the LCD's gly
 the emulated controller's own mask character ROM. See
 [`docs/panel_reference_notes.md`](docs/panel_reference_notes.md).
 
-The plugin opens **powered off**, as a rack unit does. Click POWER and the firmware boots live,
-in real time.
+The plugin opens **already switched on**: the firmware boots live, in real time, as soon as
+the project loads - not fast-forwarded, and not waiting for a click. Click POWER to switch
+it off, exactly as the hardware's own switch does, and click it again to boot it back up.
 
 ## What reaches the sound
 

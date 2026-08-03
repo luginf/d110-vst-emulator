@@ -160,9 +160,26 @@ void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
 		// were the three things standing between this and working audio-driven playback.
 		// All three fixed; validated against a stress-chord test (30s, was 0-3s), a
 		// realistic single-note test (120 notes over 60s) and the real demo song (three
-		// songs back to back, panel responsive throughout). Safe to leave on unconditionally
-		// - it only ever acts while the firmware is genuinely parked waiting for it.
-		core.setStuckPolicy(D110Core::StuckPolicy::La32Stub);
+		// songs back to back, panel responsive throughout).
+		//
+		// 2026-08-03: La32Stub answers the handshake that a voice was DISPATCHED, but never
+		// the further event a real chip raises when a voice's envelope genuinely finishes -
+		// so the firmware's own 32 LA32 slots filled up and never came back, and it started
+		// stealing voices from notes still sounding after only a handful of keys (measured:
+		// a chord of ten notes on a two-partial tone peaked at 5 sounding partials instead
+		// of 20, and with every key released 31 of 32 slots still read busy, forever).
+		//
+		// La32Ramps is the honest fix: it runs the same ramp law munt's own LA32Ramp uses,
+		// so the firmware is answered only when a ramp genuinely lands, exactly as real
+		// hardware would raise the interrupt. Its status-byte encoding needs mode 1 (voice+1,
+		// no bank flag) - the encoding docs/la32_register_map.md already proved correct by
+		// disassembly for La32Stub's own default; La32Ramps had its own, disagreeing default
+		// and serviced the wrong slot until this was set. With both pieces in place the
+		// firmware's own release code (ROM 0x3502) runs on its own: eec0[voice] reaches 7,
+		// edc0[voice] gets 0x80 back, and every key released now leaves 0 of 32 slots busy,
+		// not 31. See docs/la32_interface.md and plugin/slot_life_probe.cpp.
+		core.setStuckPolicy(D110Core::StuckPolicy::La32Ramps);
+		core.setLa32StatusMode(1);
 		if (virgin) core.factoryReset();
 	} else {
 		// Stopping is what makes MAME write its NVRAM out, so this is where the state
@@ -475,6 +492,15 @@ void D110AudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
 	interleavedScratch.resize(static_cast<size_t>(samplesPerBlock) * 2);
 	osMidiCollector.reset(sampleRate);
 	if (synth) rebuildSampleRateConverter();
+
+	// Switched on by default, at the user's request: a rack unit you have to reach for and
+	// flip on every time you open the project is a step nobody wants between loading a
+	// session and hearing it. setPoweredOn(true) is idempotent - already-on is a no-op - so
+	// calling it on every prepareToPlay (a host may call this more than once) is harmless,
+	// and it fails exactly as a manual click would if the ROMs are missing or another
+	// instance already holds the machine: poweredOn stays false, the panel shows POWER up,
+	// and the reason is on the right-click menu, same as before.
+	setPoweredOn(true);
 }
 
 void D110AudioProcessor::releaseResources() {
