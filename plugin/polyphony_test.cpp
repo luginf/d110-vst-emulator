@@ -132,6 +132,14 @@ int main() {
 	            int(proc.enginePartialCount()));
 	if (!proc.getCore().isRunning() || !proc.engineIsOpen()) return 1;
 
+	// La32Ramps + правильная кодировка байта состояния (slot+1, docs/la32_register_map.md)
+	// доводит счётчик ступени eec0[voice] до 7 и вправду освобождает слот
+	// (plugin/slot_life_probe.cpp). Проверяем здесь, что это чинит именно полифонию, а не
+	// только сам факт освобождения таблицы.
+	proc.getCore().setStuckPolicy(D110Core::StuckPolicy::La32Ramps);
+	proc.getCore().setLa32StatusMode(1);
+	std::printf("политика: La32Ramps, режим байта состояния = 1 (слот+1)\n\n");
+
 	// Два тона с ЗАВЕДОМО разным числом партиалов, по ламинированной карточке Preset Tones:
 	// a02 «Acou Piano 2» - два партиала, b01 «Fantasy» - четыре. Это и есть контроль: если
 	// потери от полифонии, они обязаны быть разными; если от заглушки - одинаковыми.
