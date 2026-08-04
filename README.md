@@ -248,11 +248,15 @@ dependencies on Linux - `libsdl2-dev libsdl2-ttf-dev libfontconfig1-dev libpulse
 Debian/Ubuntu). JUCE is fetched automatically by CMake on first configure.
 
 **MAME is not vendored here and must be built first**, because its libraries are what run the
-firmware. From an unmodified [MAME 0.288](https://github.com/mamedev/mame/releases/tag/mame0288)
-tree - no source patches are needed:
+firmware. From a [MAME 0.288](https://github.com/mamedev/mame/releases/tag/mame0288) tree,
+apply the one required patch below - it fixes a real crash, an out-of-bounds array access
+reachable from this project's own EXTINT workaround, not just a cosmetic difference - then
+build:
 
 Windows:
 ```
+cd <mame-tree>
+git apply <this-repo>/patches/mame_mcs96_stale_irq_level.patch
 make vs2022 MSBUILD=1 PTR64=1 MINGW64=C:/msys64/mingw64 MINGW32=C:/msys64/mingw32 \
      NOWERROR=1 PYTHON_EXECUTABLE=python SUBTARGET=d110 \
      SOURCES=src/mame/roland/roland_d10.cpp USE_BGFX=0
@@ -260,8 +264,12 @@ make vs2022 MSBUILD=1 PTR64=1 MINGW64=C:/msys64/mingw64 MINGW32=C:/msys64/mingw3
 
 Linux (uses MAME's own default SDL OSD, no extra flags needed):
 ```
+cd <mame-tree>
+git apply <this-repo>/patches/mame_mcs96_stale_irq_level.patch
 make SUBTARGET=d110 SOURCES=src/mame/roland/roland_d10.cpp -j$(nproc)
 ```
+
+See [`patches/README.md`](patches/README.md) for what the patch fixes and why it's required.
 
 Then point `MAME_DIR` in [`plugin/mame.cmake`](plugin/mame.cmake) at that tree (or pass
 `-DMAME_DIR=...` on the CMake command line) and build:
