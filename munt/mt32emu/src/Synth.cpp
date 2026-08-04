@@ -158,6 +158,29 @@ protected:
 		return *synth.analog;
 	}
 
+	// A separate Analog instance per D-110 part output, built the same way the main mix's
+	// own analog stage was: same output mode, same gain, so a part routed straight to an
+	// individual output sounds like the same machine, not a second, differently-tuned one.
+	Analog *createD110OutputAnalog() const {
+		Analog *result = Analog::createAnalog(synth.analogOutputMode, synth.controlROMFeatures->oldMT32AnalogLPF, synth.getSelectedRendererType());
+		result->setSynthOutputGain(synth.outputGain);
+		result->setReverbOutputGain(synth.reverbOutputGain, synth.isMT32ReverbCompatibilityMode());
+		return result;
+	}
+
+	void refreshD110OutputAnalog(Analog &analog) const {
+		analog.setSynthOutputGain(synth.outputGain);
+		analog.setReverbOutputGain(synth.reverbOutputGain, synth.isMT32ReverbCompatibilityMode());
+	}
+
+	// Output Assign lives at the same patch-record byte the four-mode engine already used
+	// for something else entirely (reverbSwitch, an on/off bit) - the D-110 firmware
+	// repurposes it as a 0-7 routing selector, and this reads it back exactly that way:
+	// 0/1 both mean MIX (with/without reverb), 2-7 mean INDIVIDUAL 1-6.
+	Bit8u getD110OutputAssign(unsigned int part) const {
+		return part < 9 ? synth.mt32ram.patchTemp[part].patch.reverbSwitch : 1;
+	}
+
 	MidiEventQueue &getMidiQueue() {
 		return *synth.midiQueue;
 	}
@@ -189,6 +212,7 @@ public:
 	virtual void render(FloatSample *stereoStream, Bit32u len) = 0;
 	virtual void renderStreams(const DACOutputStreams<IntSample> &streams, Bit32u len) = 0;
 	virtual void renderStreams(const DACOutputStreams<FloatSample> &streams, Bit32u len) = 0;
+	virtual void renderD110MultiOutput(const D110MultiOutputStreams &streams, Bit32u len) = 0;
 };
 
 template <class Sample>
@@ -198,6 +222,21 @@ class RendererImpl : public Renderer {
 	Sample tmpNonReverbLeft[MAX_SAMPLES_PER_RUN], tmpNonReverbRight[MAX_SAMPLES_PER_RUN];
 	Sample tmpReverbDryLeft[MAX_SAMPLES_PER_RUN], tmpReverbDryRight[MAX_SAMPLES_PER_RUN];
 	Sample tmpReverbWetLeft[MAX_SAMPLES_PER_RUN], tmpReverbWetRight[MAX_SAMPLES_PER_RUN];
+	// Per-part shadow of the same non-reverb/reverb-dry buffers above, one set per D-110
+	// part (8 voice parts + rhythm) - what lets the multi-output pass keep every part's
+	// contribution separate long enough to route it, instead of mixing them all down to
+	// stereo before Output Assign ever gets a say.
+	Sample d110PartNonReverbLeft[9][MAX_SAMPLES_PER_RUN], d110PartNonReverbRight[9][MAX_SAMPLES_PER_RUN];
+	Sample d110PartReverbDryLeft[9][MAX_SAMPLES_PER_RUN], d110PartReverbDryRight[9][MAX_SAMPLES_PER_RUN];
+	Sample d110ZeroLeft[MAX_SAMPLES_PER_RUN], d110ZeroRight[MAX_SAMPLES_PER_RUN];
+	Analog *d110PartAnalogs[9];
+	Analog *d110WetAnalog;
+	// Sets a wider path through doRenderStreams()/produceStreams() (below) to fill the
+	// per-part buffers above as a side effect of the SAME partial loop the ordinary stereo
+	// mix already runs - not a second pass, which would double the CPU cost and risk the
+	// two outputs disagreeing about which partial belongs to which part this block.
+	bool d110MultiOutputActive;
+	Bit32u d110MultiOutputOffset;
 
 	const DACOutputStreams<Sample> tmpBuffers;
 	DACOutputStreams<Sample> createTmpBuffers() {
@@ -212,13 +251,25 @@ class RendererImpl : public Renderer {
 public:
 	RendererImpl(Synth &useSynth) :
 		Renderer(useSynth),
-		tmpBuffers(createTmpBuffers())
-	{}
+		tmpBuffers(createTmpBuffers()),
+		d110WetAnalog(NULL),
+		d110MultiOutputActive(false),
+		d110MultiOutputOffset(0)
+	{
+		for (unsigned int i = 0; i < 9; ++i) d110PartAnalogs[i] = createD110OutputAnalog();
+		d110WetAnalog = createD110OutputAnalog();
+	}
+
+	~RendererImpl() {
+		for (unsigned int i = 0; i < 9; ++i) delete d110PartAnalogs[i];
+		delete d110WetAnalog;
+	}
 
 	void render(IntSample *stereoStream, Bit32u len);
 	void render(FloatSample *stereoStream, Bit32u len);
 	void renderStreams(const DACOutputStreams<IntSample> &streams, Bit32u len);
 	void renderStreams(const DACOutputStreams<FloatSample> &streams, Bit32u len);
+	void renderD110MultiOutput(const D110MultiOutputStreams &streams, Bit32u len);
 
 	template <class O>
 	void doRenderAndConvert(O *stereoStream, Bit32u len);
@@ -227,6 +278,7 @@ public:
 	template <class O>
 	void doRenderAndConvertStreams(const DACOutputStreams<O> &streams, Bit32u len);
 	void doRenderStreams(const DACOutputStreams<Sample> &streams, Bit32u len);
+	void doRenderD110MultiOutput(const D110MultiOutputStreams &streams, Bit32u len);
 	void produceLA32Output(Sample *buffer, Bit32u len);
 	void convertSamplesToOutput(Sample *buffer, Bit32u len);
 	void produceStreams(const DACOutputStreams<Sample> &streams, Bit32u len);
@@ -288,6 +340,7 @@ Synth::Synth(ReportHandler *useReportHandler) :
 {
 	opened = false;
 	reverbOverridden = false;
+	bossReverbROMInstalled = false;
 	partialCount = DEFAULT_MAX_PARTIALS;
 	controlROMMap = NULL;
 	controlROMFeatures = NULL;
@@ -296,7 +349,7 @@ Synth::Synth(ReportHandler *useReportHandler) :
 	extensions.reportHandler2 = &extensions.defaultReportHandler;
 
 	extensions.preallocatedReverbMemory = false;
-	for (int i = REVERB_MODE_ROOM; i <= REVERB_MODE_TAP_DELAY; i++) {
+	for (int i = 0; i < 8; i++) {
 		reverbModels[i] = NULL;
 	}
 	reverbModel = NULL;
@@ -433,6 +486,16 @@ void Synth::setReverbEnabled(bool newReverbEnabled) {
 	}
 }
 
+bool Synth::setBossReverbROM(const Bit8u *romData, const Bit32u romSize) {
+	// After open(), initReverbModels() has already decided how many models to build and
+	// what to build them from - installing a ROM at that point would leave the array
+	// mismatched with what actually got constructed. The caller re-opens to pick it up.
+	if (opened || romData == NULL || romSize != sizeof(bossReverbROMData)) return false;
+	memcpy(bossReverbROMData, romData, sizeof(bossReverbROMData));
+	bossReverbROMInstalled = true;
+	return true;
+}
+
 bool Synth::isReverbEnabled() const {
 	return reverbModel != NULL;
 }
@@ -449,8 +512,12 @@ void Synth::setReverbCompatibilityMode(bool mt32CompatibleMode) {
 	if (!opened || (isMT32ReverbCompatibilityMode() == mt32CompatibleMode)) return;
 	bool oldReverbEnabled = isReverbEnabled();
 	setReverbEnabled(false);
-	for (int i = REVERB_MODE_ROOM; i <= REVERB_MODE_TAP_DELAY; i++) {
-		delete reverbModels[i];
+	{
+		const int reverbModelCount = bossReverbROMInstalled ? 8 : 4;
+		for (int i = 0; i < reverbModelCount; i++) {
+			delete reverbModels[i];
+			reverbModels[i] = NULL;
+		}
 	}
 	initReverbModels(mt32CompatibleMode);
 	setReverbEnabled(oldReverbEnabled);
@@ -469,7 +536,8 @@ void Synth::preallocateReverbMemory(bool enabled) {
 	if (extensions.preallocatedReverbMemory == enabled) return;
 	extensions.preallocatedReverbMemory = enabled;
 	if (!opened) return;
-	for (int i = REVERB_MODE_ROOM; i <= REVERB_MODE_TAP_DELAY; i++) {
+	const int reverbModelCount = bossReverbROMInstalled ? 8 : 4;
+	for (int i = 0; i < reverbModelCount; i++) {
 		if (enabled) {
 			reverbModels[i]->open();
 		} else if (reverbModel != reverbModels[i]) {
@@ -701,8 +769,11 @@ bool Synth::initTimbres(Bit16u mapAddress, Bit16u offset, Bit16u count, Bit16u s
 }
 
 void Synth::initReverbModels(bool mt32CompatibleMode) {
-	for (int mode = REVERB_MODE_ROOM; mode <= REVERB_MODE_TAP_DELAY; mode++) {
-		reverbModels[mode] = BReverbModel::createBReverbModel(ReverbMode(mode), mt32CompatibleMode, getSelectedRendererType());
+	const int reverbModelCount = bossReverbROMInstalled ? 8 : 4;
+	for (int mode = 0; mode < reverbModelCount; mode++) {
+		reverbModels[mode] = bossReverbROMInstalled
+			? BReverbModel::createBossReverbModel(static_cast<Bit8u>(mode), bossReverbROMData, sizeof(bossReverbROMData))
+			: BReverbModel::createBReverbModel(ReverbMode(mode), mt32CompatibleMode, getSelectedRendererType());
 
 		if (extensions.preallocatedReverbMemory) {
 			reverbModels[mode]->open();
@@ -916,6 +987,10 @@ bool Synth::open(const ROMImage &controlROMImage, const ROMImage &pcmROMImage, B
 	midiQueue = new MidiEventQueue(extensions.midiEventQueueSize, extensions.midiEventQueueSysexStorageBufferSize);
 
 	analog = Analog::createAnalog(analogOutputMode, controlROMFeatures->oldMT32AnalogLPF, getSelectedRendererType());
+	// Remembered so renderD110MultiOutput()'s own, later-built per-part Analog instances
+	// (createD110OutputAnalog()) match this one - the local parameter above only lives for
+	// the rest of open().
+	this->analogOutputMode = analogOutputMode;
 #if MT32EMU_MONITOR_INIT
 	static const char *ANALOG_OUTPUT_MODES[] = { "Digital only", "Coarse", "Accurate", "Oversampled2x" };
 	printDebug("Using Analog output mode %s", ANALOG_OUTPUT_MODES[analogOutputMode]);
@@ -994,7 +1069,11 @@ void Synth::dispose() {
     patchTempSuper = NULL;
     timbreTempSuper = NULL;
 
-	for (int i = REVERB_MODE_ROOM; i <= REVERB_MODE_TAP_DELAY; i++) {
+	// A flat 8 rather than the installed-count conditional used elsewhere: entries never
+	// allocated (no Boss ROM, so only 4 of 8 ever get built) are still NULL here, and
+	// deleting NULL is a no-op - so this covers both cases without needing to ask which one
+	// it is.
+	for (int i = 0; i < 8; i++) {
 		delete reverbModels[i];
 		reverbModels[i] = NULL;
 	}
@@ -1864,12 +1943,18 @@ void Synth::refreshSystemReverbParameters() {
 	reportHandler->onNewReverbLevel(mt32ram.system.reverbLevel);
 
 	BReverbModel *oldReverbModel = reverbModel;
-	if (mt32ram.system.reverbTime == 0 && mt32ram.system.reverbLevel == 0) {
+	// With a Boss ROM installed, reverbMode is the D-110's own panel value (0-7, one of its
+	// eight named programs) rather than one of the four MT-32 modes this array otherwise
+	// holds - values at or above 8 don't correspond to any of the chip's ROM banks, and
+	// silence is the closer match to what real hardware would do with an out-of-range
+	// program select than picking some other bank's sound at random would be.
+	if ((bossReverbROMInstalled && mt32ram.system.reverbMode >= 8)
+			|| (mt32ram.system.reverbTime == 0 && mt32ram.system.reverbLevel == 0)) {
 		// Setting both time and level to 0 effectively disables wet reverb output on real devices.
 		// Take a shortcut in this case to reduce CPU load.
 		reverbModel = NULL;
 	} else {
-		reverbModel = reverbModels[mt32ram.system.reverbMode % 4];
+		reverbModel = reverbModels[bossReverbROMInstalled ? (mt32ram.system.reverbMode & 7) : (mt32ram.system.reverbMode % 4)];
 	}
 	if (reverbModel != oldReverbModel) {
 		if (extensions.preallocatedReverbMemory) {
@@ -2290,6 +2375,89 @@ void RendererImpl<FloatSample>::render(FloatSample *stereoStream, Bit32u len) {
 	doRender(stereoStream, len);
 }
 
+// D-110 multi-output streams are always exposed as normalised floats, whichever Sample
+// type this renderer instantiation actually runs on internally - the regular converter is
+// cross-format and would run a float through Synth::convertSample(float), producing a
+// 16-bit integer value, which is not what a host expecting -1..1 floats wants back.
+static inline void convertD110Output(const FloatSample *inBuffer, FloatSample *outBuffer, const Bit32u len) {
+	if (inBuffer == NULL || outBuffer == NULL) return;
+	memcpy(outBuffer, inBuffer, len * sizeof(FloatSample));
+}
+
+static inline void convertD110Output(const IntSample *inBuffer, FloatSample *outBuffer, const Bit32u len) {
+	convertSampleFormat(inBuffer, outBuffer, len);
+}
+
+template <class Sample>
+void RendererImpl<Sample>::doRenderD110MultiOutput(const D110MultiOutputStreams &streams, Bit32u len) {
+	D110MultiOutputStreams outputs = streams;
+	Sample analogOutput[MAX_SAMPLES_PER_RUN << 1];
+	float partOutput[MAX_SAMPLES_PER_RUN << 1];
+
+	while (len > 0) {
+		const Bit32u thisPassLen = len > MAX_SAMPLES_PER_RUN ? MAX_SAMPLES_PER_RUN : len;
+		const Bit32u dacLen = getAnalog().getDACStreamsLength(thisPassLen);
+		// doRenderStreams() below is the SAME partial-mixing pass the ordinary stereo path
+		// runs - this flag is what makes it also fill the per-part shadow buffers as a side
+		// effect, rather than running the whole partial loop a second time.
+		d110MultiOutputActive = true;
+		d110MultiOutputOffset = 0;
+		doRenderStreams(tmpBuffers, dacLen);
+		d110MultiOutputActive = false;
+
+		if (!getAnalog().process(analogOutput, tmpNonReverbLeft, tmpNonReverbRight,
+				tmpReverbDryLeft, tmpReverbDryRight, tmpReverbWetLeft, tmpReverbWetRight, thisPassLen)) {
+			printDebug("RendererImpl: Invalid D-110 mix call to Analog::process()!\n");
+			Synth::muteSampleBuffer(analogOutput, thisPassLen << 1);
+		}
+		if (outputs.mixStereo != NULL) {
+			convertD110Output(analogOutput, outputs.mixStereo, thisPassLen << 1);
+			outputs.mixStereo += thisPassLen << 1;
+		}
+
+		Synth::muteSampleBuffer(d110ZeroLeft, dacLen);
+		Synth::muteSampleBuffer(d110ZeroRight, dacLen);
+		for (unsigned int output = 0; output < 6; ++output)
+			if (outputs.individualMono[output] != NULL)
+				Synth::muteSampleBuffer(outputs.individualMono[output], thisPassLen);
+		for (unsigned int part = 0; part < 9; ++part) {
+			// Each part gets its own Analog pass - not because its signal chain differs,
+			// but because Analog::process() mixes reverb wet in as it goes, and a part
+			// routed to an individual output must NOT carry the shared reverb return (only
+			// MIX does; see Output Assign below) - d110ZeroLeft/Right stands in for "no wet
+			// signal" on this call without needing a second Analog implementation.
+			refreshD110OutputAnalog(*d110PartAnalogs[part]);
+			if (!d110PartAnalogs[part]->process(analogOutput,
+					d110PartNonReverbLeft[part], d110PartNonReverbRight[part],
+					d110PartReverbDryLeft[part], d110PartReverbDryRight[part],
+					d110ZeroLeft, d110ZeroRight, thisPassLen)) {
+				Synth::muteSampleBuffer(analogOutput, thisPassLen << 1);
+			}
+			const Bit8u outputAssign = getD110OutputAssign(part);
+			if (outputAssign >= 2 && outputAssign <= 7) {
+				const unsigned int output = outputAssign - 2;
+				// Individual outputs 5/6 physically share the BOSS chip's own converter
+				// path on real hardware, so they only carry a signal while reverb itself
+				// is switched off - matching that restriction here rather than silently
+				// producing audio the real rear panel never would.
+				if (outputs.individualMono[output] != NULL && (output < 4 || !synth.isReverbEnabled())) {
+					convertD110Output(analogOutput, partOutput, thisPassLen << 1);
+					for (Bit32u sample = 0; sample < thisPassLen; ++sample)
+						outputs.individualMono[output][sample] += partOutput[sample << 1] + partOutput[(sample << 1) + 1];
+				}
+			}
+		}
+		for (unsigned int output = 0; output < 6; ++output)
+			if (outputs.individualMono[output] != NULL) outputs.individualMono[output] += thisPassLen;
+		len -= thisPassLen;
+	}
+}
+
+template <class Sample>
+void RendererImpl<Sample>::renderD110MultiOutput(const D110MultiOutputStreams &streams, Bit32u len) {
+	doRenderD110MultiOutput(streams, len);
+}
+
 template <class S>
 static inline void renderStereo(bool opened, Renderer *renderer, S *stream, Bit32u len) {
 	if (opened) {
@@ -2305,6 +2473,16 @@ void Synth::render(Bit16s *stream, Bit32u len) {
 
 void Synth::render(float *stream, Bit32u len) {
 	renderStereo(opened, renderer, stream, len);
+}
+
+void Synth::renderD110MultiOutput(const D110MultiOutputStreams &streams, Bit32u len) {
+	if (opened) {
+		renderer->renderD110MultiOutput(streams, len);
+		return;
+	}
+	if (streams.mixStereo != NULL) muteSampleBuffer(streams.mixStereo, len << 1);
+	for (unsigned int output = 0; output < 6; ++output)
+		if (streams.individualMono[output] != NULL) muteSampleBuffer(streams.individualMono[output], len);
 }
 
 template <class Sample>
@@ -2556,17 +2734,74 @@ void RendererImpl<Sample>::produceStreams(const DACOutputStreams<Sample> &stream
 		Synth::muteSampleBuffer(nonReverbRight, len);
 		Synth::muteSampleBuffer(reverbDryLeft, len);
 		Synth::muteSampleBuffer(reverbDryRight, len);
+		if (d110MultiOutputActive) {
+			for (unsigned int part = 0; part < 9; ++part) {
+				Synth::muteSampleBuffer(d110PartNonReverbLeft[part] + d110MultiOutputOffset, len);
+				Synth::muteSampleBuffer(d110PartNonReverbRight[part] + d110MultiOutputOffset, len);
+				Synth::muteSampleBuffer(d110PartReverbDryLeft[part] + d110MultiOutputOffset, len);
+				Synth::muteSampleBuffer(d110PartReverbDryRight[part] + d110MultiOutputOffset, len);
+			}
+		}
 
+		// Multi-output active: each partial goes into ITS OWN part's buffer instead of the
+		// shared mix, so Output Assign can route it correctly below - the partial manager
+		// already knows which part owns each partial (that is what shouldReverb() itself
+		// reads off of), this just asks it the other question too.
 		for (unsigned int i = 0; i < synth.getPartialCount(); i++) {
-			if (getPartialManager().shouldReverb(i)) {
+			if (d110MultiOutputActive) {
+				const int ownerPart = getPartialManager().getPartial(i)->getOwnerPart();
+				if (ownerPart < 0) continue;
+				if (ownerPart > 8) {
+					if (getPartialManager().shouldReverb(i))
+						getPartialManager().produceOutput(i, reverbDryLeft, reverbDryRight, len);
+					else
+						getPartialManager().produceOutput(i, nonReverbLeft, nonReverbRight, len);
+				} else if (getPartialManager().shouldReverb(i)) {
+					getPartialManager().produceOutput(i,
+						d110PartReverbDryLeft[ownerPart] + d110MultiOutputOffset,
+						d110PartReverbDryRight[ownerPart] + d110MultiOutputOffset, len);
+				} else {
+					getPartialManager().produceOutput(i,
+						d110PartNonReverbLeft[ownerPart] + d110MultiOutputOffset,
+						d110PartNonReverbRight[ownerPart] + d110MultiOutputOffset, len);
+				}
+			} else if (getPartialManager().shouldReverb(i)) {
 				getPartialManager().produceOutput(i, reverbDryLeft, reverbDryRight, len);
 			} else {
 				getPartialManager().produceOutput(i, nonReverbLeft, nonReverbRight, len);
 			}
 		}
 
+		// The shared MIX still needs every part that is actually ASSIGNED to it (Output
+		// Assign 0 or 1) summed back in - parts routed to an individual output (2-7) stay
+		// out of this sum entirely, which is the whole point of having an individual output.
+		if (d110MultiOutputActive) {
+			for (Bit32u sample = 0; sample < len; ++sample) {
+				for (unsigned int part = 0; part < 9; ++part) {
+					const Bit32u source = d110MultiOutputOffset + sample;
+					const Bit8u outputAssign = getD110OutputAssign(part);
+					if (outputAssign == 0) {
+						nonReverbLeft[sample] = Synth::clipSampleEx(nonReverbLeft[sample] + d110PartNonReverbLeft[part][source] + d110PartReverbDryLeft[part][source]);
+						nonReverbRight[sample] = Synth::clipSampleEx(nonReverbRight[sample] + d110PartNonReverbRight[part][source] + d110PartReverbDryRight[part][source]);
+					} else if (outputAssign == 1) {
+						nonReverbLeft[sample] = Synth::clipSampleEx(nonReverbLeft[sample] + d110PartNonReverbLeft[part][source]);
+						nonReverbRight[sample] = Synth::clipSampleEx(nonReverbRight[sample] + d110PartNonReverbRight[part][source]);
+						reverbDryLeft[sample] = Synth::clipSampleEx(reverbDryLeft[sample] + d110PartReverbDryLeft[part][source]);
+						reverbDryRight[sample] = Synth::clipSampleEx(reverbDryRight[sample] + d110PartReverbDryRight[part][source]);
+					}
+					// outputAssign 2-7: deliberately not summed here - see doRenderD110MultiOutput().
+				}
+			}
+		}
+
 		produceLA32Output(reverbDryLeft, len);
 		produceLA32Output(reverbDryRight, len);
+		if (d110MultiOutputActive) {
+			for (unsigned int part = 0; part < 9; ++part) {
+				produceLA32Output(d110PartReverbDryLeft[part] + d110MultiOutputOffset, len);
+				produceLA32Output(d110PartReverbDryRight[part] + d110MultiOutputOffset, len);
+			}
+		}
 
 		if (synth.isReverbEnabled()) {
 			if (!getReverbModel().process(reverbDryLeft, reverbDryRight, streams.reverbWetLeft, streams.reverbWetRight, len)) {
@@ -2590,11 +2825,34 @@ void RendererImpl<Sample>::produceStreams(const DACOutputStreams<Sample> &stream
 		}
 		if (streams.reverbDryLeft != NULL) convertSamplesToOutput(reverbDryLeft, len);
 		if (streams.reverbDryRight != NULL) convertSamplesToOutput(reverbDryRight, len);
+		if (d110MultiOutputActive) {
+			for (unsigned int part = 0; part < 9; ++part) {
+				produceLA32Output(d110PartNonReverbLeft[part] + d110MultiOutputOffset, len);
+				produceLA32Output(d110PartNonReverbRight[part] + d110MultiOutputOffset, len);
+				convertSamplesToOutput(d110PartNonReverbLeft[part] + d110MultiOutputOffset, len);
+				convertSamplesToOutput(d110PartNonReverbRight[part] + d110MultiOutputOffset, len);
+				convertSamplesToOutput(d110PartReverbDryLeft[part] + d110MultiOutputOffset, len);
+				convertSamplesToOutput(d110PartReverbDryRight[part] + d110MultiOutputOffset, len);
+			}
+		}
 	} else {
 		muteStreams(streams, len);
+		if (d110MultiOutputActive) {
+			for (unsigned int part = 0; part < 9; ++part) {
+				Synth::muteSampleBuffer(d110PartNonReverbLeft[part] + d110MultiOutputOffset, len);
+				Synth::muteSampleBuffer(d110PartNonReverbRight[part] + d110MultiOutputOffset, len);
+				Synth::muteSampleBuffer(d110PartReverbDryLeft[part] + d110MultiOutputOffset, len);
+				Synth::muteSampleBuffer(d110PartReverbDryRight[part] + d110MultiOutputOffset, len);
+			}
+		}
 	}
 
 	getPartialManager().clearAlreadyOutputed();
+	// Advances the shadow buffers' write position for the NEXT chunk within this same
+	// doRenderD110MultiOutput() pass (produceStreams()/this function may run more than once
+	// per pass if len exceeds MAX_SAMPLES_PER_RUN) - reset to 0 at the start of each pass in
+	// doRenderD110MultiOutput() itself, not here.
+	if (d110MultiOutputActive) d110MultiOutputOffset += len;
 	incRenderedSampleCount(len);
 	updateDisplayState();
 }

@@ -86,6 +86,15 @@ struct DACOutputStreams {
 	T *reverbWetRight;
 };
 
+// Physical outputs produced by one D-110 render pass. mixStereo is interleaved
+// stereo; individualMono contains the six rear-panel MULTI OUT signals. Any
+// pointer may be NULL. Output Assign values 0/1 feed MIX, while 2..7 feed
+// individual outputs 1..6.
+struct D110MultiOutputStreams {
+	float *mixStereo;
+	float *individualMono[6];
+};
+
 // Class for the client to supply callbacks for reporting various errors and information
 class MT32EMU_EXPORT ReportHandler {
 public:
@@ -185,9 +194,15 @@ private:
 	void * patchTempSuper;
 	void * timbreTempSuper;
 
-	BReverbModel *reverbModels[4];
+	// 8, not 4: with a real BOSS reverb ROM installed (setBossReverbROM()) the D-110's own
+	// eight programs are all available, each its own model. Without a ROM installed only
+	// the first four ever get built (see initReverbModels()) - the array is sized for the
+	// installed case so switching a ROM in at runtime never needs a reallocation.
+	BReverbModel *reverbModels[8];
 	BReverbModel *reverbModel;
 	bool reverbOverridden;
+	bool bossReverbROMInstalled;
+	Bit8u bossReverbROMData[0x8000];
 
 	MIDIDelayMode midiDelayMode;
 	DACInputMode dacInputMode;
@@ -214,6 +229,10 @@ private:
 
 	Analog *analog;
 	Renderer *renderer;
+	// Kept from open() so renderD110MultiOutput() can build its own per-part Analog
+	// instances (nine of them - eight Parts plus Rhythm) with the same output-stage
+	// configuration the main mix already uses, rather than a second, disagreeing one.
+	AnalogOutputMode analogOutputMode;
 
 	// Binary compatibility helper.
 	Extensions &extensions;
@@ -407,6 +426,13 @@ public:
 
 	// Allows to disable wet reverb output altogether.
 	MT32EMU_EXPORT void setReverbEnabled(bool reverbEnabled);
+	// Installs the D-110's own 32 KiB BOSS reverb program ROM (chip HG61H20R36F / BOS-007,
+	// board silkscreen IC6) before open(). Once installed, the ROM's microcode is executed
+	// directly rather than approximated, and all eight of the D-110's own reverb programs
+	// become selectable instead of the four MT-32 modes this engine otherwise offers.
+	// Must be called before open() - the ROM is copied in, not referenced, so the caller's
+	// buffer need not outlive the call. Returns false if already open or romSize is wrong.
+	MT32EMU_EXPORT bool setBossReverbROM(const Bit8u *romData, Bit32u romSize);
 	// Returns whether wet reverb output is enabled.
 	MT32EMU_EXPORT bool isReverbEnabled() const;
 	// Sets override reverb mode. In this mode, emulation ignores sysexes (or the related part of them) which control the reverb parameters.
@@ -530,6 +556,14 @@ public:
 	MT32EMU_EXPORT void render(Bit16s *stream, Bit32u len);
 	// Same as above but outputs to a float stereo stream.
 	MT32EMU_EXPORT void render(float *stream, Bit32u len);
+
+	// Renders the main mix, nine dry part outputs and the BOSS reverb return in one pass
+	// through a single synthesiser core, so the D-110's rear-panel MULTI OUT jacks and its
+	// stereo mix stay sample-identical - they are the same partial allocation, just summed
+	// differently, not two independent renders that could drift against each other. `len`
+	// is at the caller's own sample rate: unlike render() above, this is not routed through
+	// SampleRateConverter, so the caller supplies samples at whatever rate it wants them.
+	MT32EMU_EXPORT void renderD110MultiOutput(const D110MultiOutputStreams &streams, Bit32u len);
 
 	// Renders samples to the specified output streams as if they appeared at the DAC entrance.
 	// No further processing performed in analog circuitry emulation is applied to the signal.

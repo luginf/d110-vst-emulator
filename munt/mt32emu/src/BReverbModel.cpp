@@ -20,6 +20,7 @@
 #include "internals.h"
 
 #include "BReverbModel.h"
+#include "BossEmu.h"
 #include "Synth.h"
 
 // Analysing of state of reverb RAM address lines gives exact sizes of the buffers of filters used. This also indicates that
@@ -626,6 +627,101 @@ public:
 	bool process(const FloatSample *inLeft, const FloatSample *inRight, FloatSample *outLeft, FloatSample *outRight, Bit32u numSamples);
 };
 
+// Wraps BossEmu - a cycle-accurate interpreter of the D-110's own reverb ROM microcode
+// (Sergey V. Mikayev, 2013-2014), not an approximation of it. `mode` selects which of the
+// eight ROM banks this instance runs; time/level are the same two System-area bytes the
+// four-mode BReverbModelImpl above already takes, just handed to the chip's own emulation
+// instead of a filter network built to sound similar.
+class BossReverbModelImpl : public BReverbModel {
+public:
+	BossReverbModelImpl(const Bit8u useMode, const Bit8u *useROMData, const Bit32u useROMSize) :
+		mode(useMode & 7), romData(useROMData), romSize(useROMSize), boss(NULL), time(0), level(0)
+	{}
+
+	~BossReverbModelImpl() {
+		close();
+	}
+
+	bool isOpen() const {
+		return boss != NULL;
+	}
+
+	void open() {
+		if (isOpen()) return;
+		boss = new BossEmu(romData, static_cast<int>(romSize));
+		boss->setParameters(mode, time, level);
+	}
+
+	void close() {
+		delete boss;
+		boss = NULL;
+	}
+
+	void mute() {
+		if (boss != NULL) {
+			boss->reset();
+			boss->setParameters(mode, time, level);
+		}
+	}
+
+	void setParameters(Bit8u useTime, Bit8u useLevel) {
+		time = useTime & 7;
+		level = useLevel & 7;
+		if (boss != NULL) boss->setParameters(mode, time, level);
+	}
+
+	bool isActive() const {
+		return boss != NULL && boss->isActive();
+	}
+
+	bool isMT32Compatible(const ReverbMode) const {
+		return false;
+	}
+
+	bool process(const IntSample *inLeft, const IntSample *inRight, IntSample *outLeft, IntSample *outRight, Bit32u numSamples) {
+		if (boss == NULL) {
+			Synth::muteSampleBuffer(outLeft, numSamples);
+			Synth::muteSampleBuffer(outRight, numSamples);
+			return true;
+		}
+		boss->process(inLeft, inRight, outLeft, outRight, static_cast<int>(numSamples));
+		return true;
+	}
+
+	// BossEmu speaks the chip's own signed 16-bit bus. The float renderer path carries
+	// samples in mt32emu's usual +-1.0 range, so the boundary here converts one way in,
+	// one way out - unlike the four built-in models, which are float-native throughout and
+	// need no such crossing because they never touch real hardware's own number range.
+	bool process(const FloatSample *inLeft, const FloatSample *inRight, FloatSample *outLeft, FloatSample *outRight, Bit32u numSamples) {
+		if (boss == NULL) {
+			Synth::muteSampleBuffer(outLeft, numSamples);
+			Synth::muteSampleBuffer(outRight, numSamples);
+			return true;
+		}
+		static const float SCALE = 16383.0f;
+		for (Bit32u i = 0; i < numSamples; ++i) {
+			const float floatLeft = inLeft == NULL ? 0.0f : inLeft[i] * SCALE;
+			const float floatRight = inRight == NULL ? 0.0f : inRight[i] * SCALE;
+			const short sampleLeft = static_cast<short>(floatLeft < -32768.0f ? -32768.0f : (32767.0f < floatLeft ? 32767.0f : floatLeft));
+			const short sampleRight = static_cast<short>(floatRight < -32768.0f ? -32768.0f : (32767.0f < floatRight ? 32767.0f : floatRight));
+			short wetLeft = 0;
+			short wetRight = 0;
+			boss->process(&sampleLeft, &sampleRight, &wetLeft, &wetRight, 1);
+			if (outLeft != NULL) outLeft[i] = static_cast<float>(wetLeft) / SCALE;
+			if (outRight != NULL) outRight[i] = static_cast<float>(wetRight) / SCALE;
+		}
+		return true;
+	}
+
+private:
+	const Bit8u mode;
+	const Bit8u * const romData;
+	const Bit32u romSize;
+	BossEmu *boss;
+	Bit8u time;
+	Bit8u level;
+};
+
 BReverbModel *BReverbModel::createBReverbModel(const ReverbMode mode, const bool mt32CompatibleModel, const RendererType rendererType) {
 	switch (rendererType)
 	{
@@ -637,6 +733,10 @@ BReverbModel *BReverbModel::createBReverbModel(const ReverbMode mode, const bool
 		break;
 	}
 	return NULL;
+}
+
+BReverbModel *BReverbModel::createBossReverbModel(const Bit8u mode, const Bit8u *romData, const Bit32u romSize) {
+	return new BossReverbModelImpl(mode, romData, romSize);
 }
 
 template <>

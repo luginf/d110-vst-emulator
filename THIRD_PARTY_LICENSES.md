@@ -32,9 +32,7 @@ named below.
   the full text.
 - **Copyright**: Copyright (C) 2003-2009 Dean Beeler, Jerome Fisher;
   Copyright (C) 2011-2022 Dean Beeler, Jerome Fisher, Sergey V. Mikayev.
-- **Repository**: https://github.com/munt/munt (this project vendors
-  davidhsilaban's D-110 fork,
-  https://github.com/davidhsilaban/munt/tree/davidhsilaban-d110-changes-with-kode54-super-mode)
+- **Repository**: https://github.com/munt/munt
 - **Used for**: the actual LA-synthesis sound engine (Roland MT-32/D-110
   emulation core). Vendored in full, including its own license files, at
   `munt/`.
@@ -43,8 +41,27 @@ named below.
   D-110 has 8 LCD part-status slots vs. the original MT-32's 5), to remove
   inter-digit spaces to fit the 20-byte display buffer, and to make
   `copyNullTerminatedString`/`Mode_MAIN` pad their tail with spaces instead
-  of leaving stale bytes from a previous, longer message. The complete
-  modified source is included in this repository, satisfying the LGPL's
+  of leaving stale bytes from a previous, longer message.
+- **2026-08-04, BOSS reverb chip emulation ported in**: `munt/mt32emu/src/BossEmu.cpp`
+  and `.h` are Sergey V. Mikayev's cycle-accurate interpreter of the D-110's own
+  reverb chip (Hitachi HG61H20R36F / BOS-007, board silkscreen IC6) — copied
+  unmodified, copyright notice intact, from the public fork
+  https://github.com/davidhsilaban/munt/tree/davidhsilaban-d110-changes-with-kode54-super-mode
+  (LGPLv2.1-or-later, same as the rest of munt). `BReverbModel.cpp`/`.h` and
+  `Synth.cpp`/`.h` carry a small, hand-picked subset of that same fork's changes -
+  the reverb-selection plumbing (`setBossReverbROM()`, an 8-model array instead of
+  4, `BReverbModel::createBossReverbModel()`) only. The fork's other changes
+  (`resetHardware()`, `writeMemory()`, a Timbre-memory addressing fix) were
+  deliberately left out of this pass and are not present here.
+- **2026-08-04, six individual outputs ported in**: the same fork's
+  `D110MultiOutputStreams` render path (`Synth.h`/`.cpp`: `renderD110MultiOutput()`,
+  per-part `Analog` instances, Output Assign routing reading
+  `PatchTemp.patch.reverbSwitch`) was ported the same way - hand-picked, not the
+  whole fork. Routes each of the D-110's 9 parts (8 voice + rhythm) to the shared
+  MIX bus or one of 6 mono buses per its own Output Assign setting; verified by
+  measurement (`plugin/multi_output_probe.cpp`) that a part's signal lands in
+  exactly the bus it is assigned to and nowhere else. The complete modified
+  source is included in this repository, satisfying the LGPL's
   source-availability requirement for modified versions of the library.
 
 ## MAME

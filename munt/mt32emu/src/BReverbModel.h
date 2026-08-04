@@ -28,6 +28,10 @@ namespace MT32Emu {
 class BReverbModel {
 public:
 	static BReverbModel *createBReverbModel(const ReverbMode mode, const bool mt32CompatibleModel, const RendererType rendererType);
+	// mode is the D-110's own reverb program, 0-7 (Small Room .. Delay 3) - the chip's ROM
+	// banks are indexed directly, so this is the raw panel value minus one, not a translation
+	// into any of the four ReverbMode values above.
+	static BReverbModel *createBossReverbModel(Bit8u mode, const Bit8u *romData, Bit32u romSize);
 
 	virtual ~BReverbModel() {}
 	virtual bool isOpen() const = 0;
