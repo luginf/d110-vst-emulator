@@ -317,6 +317,9 @@ private:
 
 	// Opens the synth from whatever is currently in controlRomData/pcmRomData.
 	bool openSynthIfReady();
+	// Reads la32RampsParam and applies the matching StuckPolicy/status mode to core. Called
+	// from setPoweredOn() and every processBlock(), so the parameter can be switched live.
+	void applyStuckPolicy();
 	// Scans getAutoRomFolder() for a Control ROM and PCM ROM by content (not filename) and
 	// loads them automatically if both are found - so the user doesn't have to pick files by hand.
 	bool tryAutoLoadRoms();
@@ -346,6 +349,7 @@ private:
 	std::atomic<float> *masterVolumeParam = nullptr;
 	std::atomic<float> *reverbEnabledParam = nullptr;
 	std::atomic<float> *superModeParam = nullptr;
+	std::atomic<float> *la32RampsParam = nullptr;
 	bool lastSuperModeApplied = false;
 	std::atomic<bool> poweredOn{false};
 

@@ -77,6 +77,19 @@ static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
 	params.push_back(std::make_unique<juce::AudioParameterBool>(
 		juce::ParameterID{"superMode", 1}, "Super Mode (unofficial)", false));
 
+	// La32Stub (default here) answers the firmware's LA32 handshake but never tells it a
+	// voice's envelope actually finished, so the firmware's own 32-slot bookkeeping never
+	// frees a slot - harmless for real playing (validated: 30s stress chords, 120 notes over
+	// 60s, three demo songs back to back) but not what a real chip does. La32Ramps answers
+	// honestly, using the same ramp law mt32emu's own LA32Ramp uses, and does fix that - but
+	// as of 2026-08-03 every note after the first plays 95-97% quieter under it, an upstream-
+	// acknowledged, open, unexplained regression (see the comment on setPoweredOn() below).
+	// That makes it unusable for actual chords today, hence the default below, but the
+	// switch is one parameter rather than a rebuild for whenever it gets fixed upstream.
+	params.push_back(std::make_unique<juce::AudioParameterBool>(
+		juce::ParameterID{"la32Ramps", 1},
+		"LA32 Ramps engine (unofficial, quiet extra notes)", false));
+
 	return {params.begin(), params.end()};
 }
 
@@ -86,6 +99,7 @@ D110AudioProcessor::D110AudioProcessor()
 	masterVolumeParam = parameters.getRawParameterValue("masterVolume");
 	reverbEnabledParam = parameters.getRawParameterValue("reverbEnabled");
 	superModeParam = parameters.getRawParameterValue("superMode");
+	la32RampsParam = parameters.getRawParameterValue("la32Ramps");
 
 	tryAutoLoadRoms();
 }
@@ -127,6 +141,18 @@ void D110AudioProcessor::setPcmRomPath(const juce::String &path) {
 	}
 	pcmRomPath = path;
 	openSynthIfReady();
+}
+
+// The two LA32 stuck-voice policies trade one bug for another (see the comment inside
+// setPoweredOn(), where this is first applied) - both cheap atomic stores, so switching is
+// safe to do live rather than only at power-on. Called from there and, every block, from
+// processBlock(), so toggling the la32Ramps parameter takes effect on the next block with
+// no reopen and no audio-thread cost worth mentioning.
+void D110AudioProcessor::applyStuckPolicy() {
+	const bool wantRamps = la32RampsParam != nullptr && la32RampsParam->load() > 0.5f;
+	core.setStuckPolicy(wantRamps ? D110Core::StuckPolicy::La32Ramps
+	                               : D110Core::StuckPolicy::La32Stub);
+	core.setLa32StatusMode(wantRamps ? 1 : 0);
 }
 
 void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
@@ -178,8 +204,17 @@ void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
 		// firmware's own release code (ROM 0x3502) runs on its own: eec0[voice] reaches 7,
 		// edc0[voice] gets 0x80 back, and every key released now leaves 0 of 32 slots busy,
 		// not 31. See docs/la32_interface.md and plugin/slot_life_probe.cpp.
-		core.setStuckPolicy(D110Core::StuckPolicy::La32Ramps);
-		core.setLa32StatusMode(1);
+		//
+		// 2026-08-04: shipped as the default for one day, then reverted. A real user's chords
+		// came back essentially monophonic - every note after the first plays 95-97% quieter
+		// under La32Ramps, an anomaly this project's own commit history already measured and
+		// left open the same day La32Ramps became the default. La32Stub's slot bookkeeping
+		// quirk above is silent in practice (see the stress/single-note/demo-song validation
+		// above it); a wrong volume on every note but the first is not. Back to La32Stub by
+		// default until that regression has an actual fix, with the la32Ramps parameter as
+		// the switch - also re-applied live in processBlock(), so trying it costs nothing
+		// more than a click.
+		applyStuckPolicy();
 		if (virgin) core.factoryReset();
 	} else {
 		// Stopping is what makes MAME write its NVRAM out, so this is where the state
@@ -524,6 +559,11 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 	if (!synth || !sampleRateConverter || !poweredOn.load()) {
 		return;
 	}
+
+	// Cheap atomic stores either way (see applyStuckPolicy()'s own comment), so re-applied
+	// unconditionally every block rather than only on change - same reasoning as
+	// setReverbEnabled() below, which already does this.
+	applyStuckPolicy();
 
 	// Super Mode can only be applied when the synth is (re)opened, not live. This reopen
 	// happens on the audio thread for simplicity - acceptable for a hobby project where the

@@ -588,14 +588,22 @@ void D110Panel::showOptionsMenu()
 {
 	auto *reverb = processor.parameters.getParameter("reverbEnabled");
 	auto *superMode = processor.parameters.getParameter("superMode");
+	auto *la32Ramps = processor.parameters.getParameter("la32Ramps");
 	const bool reverbOn = reverb != nullptr && reverb->getValue() > 0.5f;
 	const bool superOn = superMode != nullptr && superMode->getValue() > 0.5f;
+	const bool rampsOn = la32Ramps != nullptr && la32Ramps->getValue() > 0.5f;
 
 	juce::PopupMenu m;
 	m.addItem(1, "Import SysEx/MIDI Bank...");
 	m.addSeparator();
 	m.addItem(2, "Reverb", true, reverbOn);
 	m.addItem(3, "Super Mode (unofficial, extra polyphony)", true, superOn);
+	// Off (La32Stub) is the default: it never tells the firmware a voice's envelope really
+	// finished, which is silent in practice (validated with real chords/demo songs), where
+	// On (La32Ramps) does that correctly but currently plays every note after the first
+	// 95-97% quieter, an open, upstream-acknowledged bug - see the comment on
+	// D110AudioProcessor::applyStuckPolicy(). Live-switchable, so this is safe to try.
+	m.addItem(8, "LA32 Ramps engine (unofficial, quiet extra notes)", true, rampsOn);
 	// Движок защиты от записи - он на самой карте, а не в приборе, поэтому и в меню он стоит
 	// отдельно от настроек эмулятора. Прошивка читает его как бит 0 порта состояния матрицы
 	// карты; см. docs/memory_card.md.
@@ -655,7 +663,7 @@ void D110Panel::showOptionsMenu()
 		false, false);
 
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
-		[this, reverb, superMode, reverbOn, superOn, ins, outs](int result) {
+		[this, reverb, superMode, la32Ramps, reverbOn, superOn, rampsOn, ins, outs](int result) {
 			// The port lists are captured as they were when the menu opened, so an entry
 			// always means the device the user actually saw and picked.
 			if (result == 300) { processor.setMidiInputDevice({}); return; }
@@ -696,6 +704,13 @@ void D110Panel::showOptionsMenu()
 				break;
 			case 4:
 				processor.getCore().setCardWriteProtect(!processor.getCore().cardWriteProtect());
+				break;
+			case 8:
+				if (la32Ramps != nullptr) {
+					la32Ramps->beginChangeGesture();
+					la32Ramps->setValueNotifyingHost(rampsOn ? 0.0f : 1.0f);
+					la32Ramps->endChangeGesture();
+				}
 				break;
 			default:
 				break;
