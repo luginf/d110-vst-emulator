@@ -765,6 +765,19 @@ target_link_libraries(d110_stuck_notes PRIVATE
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_stuck_notes PRIVATE /ignore:4099 /FORCE:MULTIPLE)
 
+# MAME-backed counterpart to d110_native_ramp_edge_stress - same dense overlapping/legato
+# pattern, against D110Core.cpp's own midiTick() fix.
+add_executable(d110_mame_ramp_edge_stress mame_ramp_edge_stress_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_mame_ramp_edge_stress PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_mame_ramp_edge_stress PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_mame_ramp_edge_stress PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_mame_ramp_edge_stress PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
 # Играет каждую ритм-клавишу по отдельности и меряет пик. Отвечает на "closed hat не
 # звучит" измерением, а не догадкой - список молчащих клавиш даёт прямо, без предположений
 # о том, какая именно сломана.
@@ -1019,6 +1032,13 @@ add_executable(d110_native_polyphony_stress native_polyphony_stress_probe.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp)
 target_include_directories(d110_native_polyphony_stress PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# Targeted repro for the specific EXTINT-falling-edge-skipped mechanism found while reading
+# serviceStuckPolicy() - see the probe's own header comment.
+add_executable(d110_native_ramp_edge_stress native_ramp_edge_stress_probe.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp)
+target_include_directories(d110_native_ramp_edge_stress PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 add_executable(d110_native_plugin_smoke native_plugin_smoke_test.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp

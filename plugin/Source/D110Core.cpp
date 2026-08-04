@@ -739,7 +739,18 @@ public:
 		// (same debug-state API IOC1 is already read through), so no MAME patch is
 		// needed - mask off bit 0x80 (IRQ_EXTINT, private in i8x9x.h, hence the literal)
 		// in the same place the line itself is dropped.
-		if (m_stuckIntHigh && (m_la32NeedClear || !stuck)) {
+		//
+		// La32Ramps is excluded from the `!stuck` fallback here and handles its own clearing
+		// below instead: under real ramps the CPU is essentially never AT the wait-loop PC (a
+		// dispatch ack IS answered here too now, but through the same one-tick-delayed path as
+		// a landing - see below), so `!stuck` is almost always true and would drop the line
+		// one tick after every assert regardless of whether the firmware's handler had
+		// actually read the status yet - a landed/answered event whose interrupt arrived
+		// slightly late could have its edge withdrawn before the CPU ever took it. Ported from
+		// the native core's own fix (D110CoreNative.cpp) after the same class of bug was
+		// measured there.
+		const bool la32Ramps = core->stuckPolicy_() == D110Core::StuckPolicy::La32Ramps;
+		if (m_stuckIntHigh && !la32Ramps && (m_la32NeedClear || !stuck)) {
 			m_cpu->set_input_line(i8x9x_device::EXTINT_LINE, CLEAR_LINE);
 			const uint64_t pending = m_cpu->state_int(mcs96_device::MCS96_INT_PENDING);
 			m_cpu->set_state_int(mcs96_device::MCS96_INT_PENDING, pending & ~uint64_t(0x80));
@@ -751,7 +762,21 @@ public:
 		// Рампы идут ВСЕГДА, а не только когда процессор во что-то упёрся: на железе
 		// микросхема считает их сама и поднимает прерывание по прибытию, чем бы процессор в
 		// этот момент ни занимался. Поэтому эта ветка стоит до проверки «застрял».
-		if (core->stuckPolicy_() == D110Core::StuckPolicy::La32Ramps) {
+		if (la32Ramps) {
+			// The line must actually go LOW for a tick before it can go high again (see the
+			// comment above `la32Ramps`'s declaration) - so when the previous event has just
+			// been read, clear and return; promoting/answering the next one waits for the
+			// NEXT tick, guaranteeing a real edge in between. Ported from D110CoreNative.cpp.
+			if (m_stuckIntHigh && m_la32NeedClear) {
+				m_cpu->set_input_line(i8x9x_device::EXTINT_LINE, CLEAR_LINE);
+				const uint64_t pending = m_cpu->state_int(mcs96_device::MCS96_INT_PENDING);
+				m_cpu->set_state_int(mcs96_device::MCS96_INT_PENDING, pending & ~uint64_t(0x80));
+				m_stuckIntHigh = false;
+				m_la32NeedClear = false;
+				m_stuckIntHighTicks = 0;
+				return;
+			}
+
 			advanceRamps(D110Core::kLa32SampleRate / D110Core::kMidiBytesPerSecond);
 			if (!m_la32Pending && !m_rampLanded.empty()) {
 				const auto ev = m_rampLanded.front();
@@ -759,6 +784,34 @@ public:
 				m_la32Status = rampStatusByte(ev.first, ev.second);
 				m_la32Pending = true;
 			}
+
+			// The actual freeze the user hit in a real DAW session, root-caused and measured
+			// via the native core port (native_ramp_edge_stress_probe.cpp, 100% reproducible
+			// under dense overlapping notes/chords): a ramp landing only ever answers a
+			// voice's OWN envelope-stage completion, never the DISPATCH wait every note-on
+			// parks at (kStuckLoopPc/kStuckLoopPcAlt - see "the missing external interrupt"
+			// above) - because nothing has been written to a brand-new voice's ramp registers
+			// yet for anything to land; the firmware can't get there until this very wait
+			// releases it. Dispatch-ack and envelope-stage-ack are the same physical
+			// interrupt/status-byte channel on real hardware (this is exactly what the
+			// La32Stub case below answers), so when the channel is idle, service this
+			// handshake here too, sharing rampStatusByte()'s own encoding rather than
+			// encodeLa32Status() - the two use DIFFERENT mode numbering for the same "+1"
+			// behaviour, and this event goes out through the ramp channel, not La32Stub's.
+			if (!m_la32Pending && !m_stuckIntHigh && stuck && m_ram && m_regFile) {
+				const int reg = D110Core::kWaitIndexReg - D110Core::kRegFileBase;
+				const uint8_t context = m_regFile[reg];
+				for (int n = 0; n < D110Core::kNumHardwareVoices; ++n) {
+					const uint8_t busy = m_ram[D110Core::kSlotStateTable + 2 * n];
+					if ((busy == D110Core::kSlotBusyValue || busy == D110Core::kSlotBusyValueAlt) &&
+					    m_ram[D110Core::kSlotContextTable + 2 * n] == context) {
+						m_la32Status = rampStatusByte(0, n);
+						m_la32Pending = true;
+						break;
+					}
+				}
+			}
+
 			if (m_la32Pending && !m_stuckIntHigh) {
 				m_cpu->set_input_line(i8x9x_device::EXTINT_LINE, ASSERT_LINE);
 				m_stuckIntHigh = true;

@@ -195,13 +195,23 @@ void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
 		// La32Ramps (the real amplitude/filter envelope model - see D110CoreNative.h's own
 		// comment on La32RampState) measurably fixes La32Stub's voice-starvation problem
 		// (native_polyphony_stress_probe: 31/32 hardware slots stuck busy under La32Stub vs
-		// 2/32 under La32Ramps after a 60-note run) - but a live DAW session reported a full
-		// freeze (silent, LCD not updating) under real fast notes + chords that no offline
-		// stress test built so far reproduces, even a 20-second dense chord/note sequence with
-		// real audio rendering. Reverted to La32Stub here - occasional dropped notes under
-		// heavy load beats a hang - while that freeze gets root-caused for real rather than
-		// shipped on the strength of tests that didn't happen to trigger it.
-		core.setStuckPolicy(D110CoreType::StuckPolicy::La32Stub);
+		// 2/32 under La32Ramps after a 60-note run). A live DAW session previously hit a real
+		// freeze under fast overlapping notes/chords that offline tests didn't reproduce at
+		// the time; root-caused since (native_ramp_edge_stress_probe.cpp - a ramp landing only
+		// answers a voice's own envelope completion, never the separate per-note DISPATCH wait,
+		// so a newly dispatched voice under heavy overlap could starve forever) and fixed in
+		// both cores' serviceStuckPolicy()/midiTick() by also answering the dispatch handshake
+		// through the same channel. Re-verified clean against the exact pattern that hung
+		// before (100% reproducible pre-fix, matches the La32Stub control post-fix).
+		core.setStuckPolicy(D110CoreType::StuckPolicy::La32Ramps);
+#ifndef D110_NATIVE_CORE
+		// Only D110Core (MAME-backed) has a configurable status-byte encoding; the native
+		// core's own rampStatusByte() hardcodes the already-proven-correct form directly (see
+		// D110CoreNative.h) and has no such setter. Mode 1 is the one docs/la32_interface.md's
+		// disassembly proved correct for this mechanism specifically - a different default
+		// than La32Stub's own encoding needs.
+		core.setLa32StatusMode(1);
+#endif
 		if (virgin) core.factoryReset();
 	} else {
 		// Stopping is what makes MAME write its NVRAM out, so this is where the state

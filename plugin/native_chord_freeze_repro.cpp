@@ -5,6 +5,7 @@
 #include "Source/native/D110CoreNative.h"
 
 #include <cstdio>
+#include <cstring>
 
 int main(int argc, char **argv) {
 	std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -21,9 +22,25 @@ int main(int argc, char **argv) {
 		const uint16_t pc2 = core.pcForTest();
 		// A live CPU visits many different PCs in 0.1s; seeing it land on the exact same
 		// address is not proof of a hang by itself (a tight, legitimate loop could do that
-		// briefly), but "same PC, and it stays that way for several checks in a row" is.
-		std::printf("%-28s pc %04x -> %04x %s\n", label, pc1, pc2, pc1 == pc2 ? "(SAME)" : "");
-		return pc1 != pc2;
+		// briefly - measured false positive in an earlier session). If it lands on the same PC,
+		// don't conclude anything from that alone: wait longer and check the thing that
+		// actually matters - is the firmware still completing notes and updating its own RAM -
+		// same discipline as native_ramp_edge_stress_probe.cpp.
+		bool samePc = pc1 == pc2;
+		if (samePc) {
+			const uint64_t onBefore = core.firmwareNoteOns(), offBefore = core.firmwareNoteOffs();
+			uint8_t ramBefore[D110CoreNative::kRamSize], ramAfter[D110CoreNative::kRamSize];
+			core.getRam(ramBefore);
+			core.runForSeconds(2.0);
+			core.getRam(ramAfter);
+			const bool ramStatic = std::memcmp(ramBefore, ramAfter, sizeof(ramBefore)) == 0;
+			const bool notesStalled = core.firmwareNoteOns() == onBefore && core.firmwareNoteOffs() == offBefore;
+			std::printf("%-28s pc %04x -> %04x (SAME) - 2s follow-up: RAM %s, notes %s\n", label, pc1, pc2,
+			            ramStatic ? "STATIC" : "changed", notesStalled ? "STALLED" : "progressed");
+			return !(ramStatic && notesStalled);
+		}
+		std::printf("%-28s pc %04x -> %04x\n", label, pc1, pc2);
+		return true;
 	};
 
 	D110CoreNative::NoteEvent ev;

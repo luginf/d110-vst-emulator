@@ -149,29 +149,68 @@ void D110CoreNative::runForSeconds(double seconds) {
 
 void D110CoreNative::serviceStuckPolicy() {
 	// La32Ramps runs unconditionally, every tick, regardless of the CPU's PC - real hardware
-	// counts ramps and raises the interrupt whatever the processor happens to be doing, and
-	// under a genuinely working La32Ramps the CPU is essentially never parked at the
-	// La32Stub wait-loop PC at all (that loop is what real ramps make unnecessary). See the
-	// class comment on La32RampState for the bug this deliberately does NOT reproduce: the
-	// original's clear condition included "CPU not at the wait-loop PC" as a fallback, which
-	// - since that's almost always true here - dropped the edge-triggered EXTINT line about
-	// one tick (~320us) after every assert, independent of whether the firmware's handler had
-	// actually read the status yet. This port's only clear condition is la32Pending having
-	// genuinely gone false, i.e. the read happened.
+	// counts ramps and raises the interrupt whatever the processor happens to be doing.
 	if (stuckPolicy_ == StuckPolicy::La32Ramps) {
 		advanceRamps(kLa32SampleRate / kMidiBytesPerSecond);
+
+		// The line must actually go LOW for a tick before it can go high again - see
+		// Mcs96Cpu::setExtIntLine()'s own comment: level 7 is the one interrupt the CPU never
+		// auto-clears on take, specifically so a level-triggered line's requester (here, us)
+		// is the one responsible for lowering it once serviced. Without this, promoting the
+		// next queued landing in the SAME tick the previous one was read would leave
+		// extIntHigh_ true straight through - no falling edge ever reaches the CPU, and
+		// pending_irq's EXTINT bit is never cleared. This alone turned out NOT to be the
+		// user's reported freeze (measured: native_ramp_edge_stress_probe.cpp still hung with
+		// only this fix), but it is still a real, separate correctness bug worth keeping fixed.
+		if (extIntHigh_ && !bus_.la32Pending) {
+			cpu_.setExtIntLine(false);
+			extIntHigh_ = false;
+			return;
+		}
+
 		if (!bus_.la32Pending && !rampLanded_.empty()) {
 			const auto ev = rampLanded_.front();
 			rampLanded_.pop_front();
 			bus_.la32Status = rampStatusByte(ev.first, ev.second);
 			bus_.la32Pending = true;
 		}
+
+		// The actual root cause (found by reading, THEN confirmed by measurement - first
+		// reproduction of this freeze in any offline probe): a ramp landing only ever answers
+		// a voice's OWN envelope-stage completion. It says nothing about a voice still parked
+		// at the dispatch wait-loop below (D110Core.h's "the missing external interrupt":
+		// every note-on spins at kStuckLoopPc polling its own f440[] flag until an interrupt
+		// sets it) - because nothing has been written to THAT voice's ramp registers yet for
+		// anything to land; the firmware can't get there until this very wait releases it.
+		// Dispatch-ack and envelope-stage-ack are the SAME physical interrupt/status-byte
+		// channel on real hardware (this is exactly what La32Stub's branch below answers), so
+		// when the channel is idle, service this handshake here too - a lone note's own
+		// dispatch has nothing else competing for the channel and resolves practically
+		// instantly, which is why single/well-spaced notes essentially never showed this; dense
+		// overlapping notes/chords do, 100% reproducibly, within about 50 chords
+		// (native_ramp_edge_stress_probe.cpp): the newly dispatched voice's context never gets
+		// its own bit set, the CPU never leaves the busy-wait, and since that wait is the
+		// firmware's entire mainline execution, NOTHING else - other dispatches, panel scan,
+		// LCD refresh - runs again either. Silent full freeze, matching the user's report.
+		if (!bus_.la32Pending && !extIntHigh_) {
+			const uint16_t pc = cpu_.pc();
+			if (pc == kStuckLoopPc || pc == kStuckLoopPcAlt) {
+				const uint8_t context = cpu_.regFile[kWaitIndexReg];
+				for (int n = 0; n < kNumHardwareVoices; ++n) {
+					const uint8_t busy = bus_.rams[kSlotStateTable + 2 * n];
+					if ((busy == kSlotBusyValue || busy == kSlotBusyValueAlt) &&
+					    bus_.rams[kSlotContextTable + 2 * n] == context) {
+						bus_.la32Status = uint8_t((n + 1) & 0x1f); // same encoding as La32Stub
+						bus_.la32Pending = true;
+						break;
+					}
+				}
+			}
+		}
+
 		if (bus_.la32Pending && !extIntHigh_) {
 			cpu_.setExtIntLine(true);
 			extIntHigh_ = true;
-		} else if (extIntHigh_ && !bus_.la32Pending) {
-			cpu_.setExtIntLine(false);
-			extIntHigh_ = false;
 		}
 		return;
 	}
