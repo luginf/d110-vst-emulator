@@ -183,13 +183,36 @@ class D110Osd : public osd_common_t {
 			if (part > 8) return;                     // 0-7 voice parts, 8 rhythm
 			m_ctxPart[ctx] = part;
 			// Third write of the triple completes a note - but ONLY if this run actually
-			// began with a note write. The part byte is also written on its own in other
-			// situations, and firing on those emitted note 0 out of a stale context, which
-			// mt32emu rejected as "Attempted to play invalid key 0".
-			if (m_ctxNoteFresh[ctx] && m_ctxNote[ctx] > 0 && m_ctxNote[ctx] <= 127) {
-				core->osdPushNoteEvent({part, m_ctxNote[ctx], m_ctxVelocity[ctx], true});
-				m_ctxSounding[ctx] = true;
-				m_ctxOnTime[ctx] = std::chrono::steady_clock::now();
+			// began with a note write.
+			if (m_ctxNoteFresh[ctx]) {
+				uint8_t note = m_ctxNote[ctx];
+				// A handful of rhythm timbres (measured: 64, 65, 66 - the very start of
+				// preset group B) make the firmware write a small number - 0 or 1 - into its
+				// own note-completion table (f400[]) instead of the real key, for reasons
+				// that live earlier than the CPU's own register file can currently show us
+				// (measured: the real key is nowhere in regs 0x40-0x50 by the time this
+				// write happens). mt32emu's RhythmPart::noteOn only accepts 24-108, so left
+				// uncorrected these three drums are either rejected outright (note 0 never
+				// even reaches it, caught by the stale-trigger guard below) or play 10-50x
+				// quieter than every other one (note 1, which munt's own valid-range check
+				// rejects with "Attempted to play invalid key"). We know the real key because
+				// we sent it: hintRhythmKey() queued it when the note-on was forwarded to the
+				// firmware, in the same order the firmware processes hits, so a lookup here
+				// - before the stale-trigger guard, which was written for a different
+				// failure and would otherwise eat note 0 silently - recovers it.
+				if (part == 8 && (note < 24 || note > 108)) {
+					uint8_t hinted = 0;
+					if (core->osdTakeRhythmKeyHint(hinted)) note = hinted;
+				}
+				// The part byte is also written on its own in other situations, and firing
+				// on those emitted note 0 out of a stale context, which mt32emu rejected as
+				// "Attempted to play invalid key 0" - this guard is what stops that, for
+				// every context the rhythm hint above did not just repair.
+				if (note > 0 && note <= 127) {
+					core->osdPushNoteEvent({part, note, m_ctxVelocity[ctx], true});
+					m_ctxSounding[ctx] = true;
+					m_ctxOnTime[ctx] = std::chrono::steady_clock::now();
+				}
 			}
 			m_ctxNoteFresh[ctx] = false;
 			return;
@@ -978,21 +1001,19 @@ const D110Core::MirrorRegion D110Core::kMirrorRegions[] = {
 	//     documented 0-127 -> 432.1-457.6 Hz mapping makes 0x4A about 447, so the two
 	//     scales disagree and mirroring it would detune everything against the display.
 
-	// Время и уровень ревербератора - системные смещения 2 и 3. Измерено панелью
-	// (plugin/reverb_path_probe.cpp): страница Patch Edit, Reverb Time сдвигает ровно
-	// 0x2D96, Reverb Level - ровно 0x2D97, а смена патча переписывает обе, потому что
-	// D-110 хранит настройки ревербератора в патче. Диапазоны совпадают с полями движка
-	// байт в байт: Time на экране 1-8 это байт 0-7, Level 0-7 это байт 0-7.
+	// Тип, время и уровень ревербератора - системные смещения 1, 2 и 3. Время и уровень
+	// измерены панелью (plugin/reverb_path_probe.cpp): страница Patch Edit, Reverb Time
+	// сдвигает ровно 0x2D96, Reverb Level - ровно 0x2D97, а смена патча переписывает обе,
+	// потому что D-110 хранит настройки ревербератора в патче. Диапазоны совпадают с
+	// полями движка байт в байт: Time на экране 1-8 это байт 0-7, Level 0-7 это байт 0-7.
 	//
-	// Тип ревербератора (смещение 1) СЮДА НЕ ВХОДИТ, и поэтому регион начинается со
-	// второго байта: у D-110 восемь типов плюс OFF, у движка четыре режима, и никакого
-	// однозначного отображения между ними нет - его пришлось бы придумать. Пока тип не
-	// переносится, режим остаётся тем, что движок выбрал сам.
-	//
-	// Оговорка, которая никуда не девается: сам блок чужой. У D-110 ревербератор - это
-	// отдельная микросхема BOSS со своим ПЗУ, которую не эмулирует никто; звучит
-	// ревербератор MT-32. Переносятся параметры, а не прибор.
-	{ 0x2D96, 0x100002, 2, "System (reverb time+level)" },
+	// Тип (смещение 1) раньше сюда не входил: у D-110 восемь типов, у стандартных четырёх
+	// режимов движка не было однозначного соответствия. Теперь есть - ниже подключена
+	// настоящая микросхема BOSS (BossEmu, ROM 2026-08-04), и её восемь банков ПЗУ
+	// адресуются тем же нулевым индексом, что уже лежит в этом самом байте: измерено
+	// (docs/sysex_address_map.md), что выбранный на панели «Тип 5» хранится как байт `04`,
+	// то есть прибор УЖЕ считает с нуля - переносить байт как есть, без пересчёта.
+	{ 0x2D95, 0x100001, 3, "System (reverb type+time+level)" },
 
 	{ 0x2D98, 0x100004, 18, "System (reserve + channels)" },
 };
@@ -1010,7 +1031,7 @@ static_assert(kMaxRegionBytes >= 246, "a Tone Temporary region no longer fits in
 D110Core::D110Core()
 	: lcd(kLcdBytes, 0), ram(kRamSize, 0),
 	  sysexBuf((size_t)kSysexSlots * kMaxSysexBytes, 0), sysexLen(kSysexSlots, 0),
-	  midiBuf(kMidiSlots, 0), noteBuf(kNoteSlots) {
+	  midiBuf(kMidiSlots, 0), noteBuf(kNoteSlots), rhythmHintBuf(kRhythmHintSlots, 0) {
 	cardImage.assign((size_t)kCardSize, kCardAbsentByte);
 	mirrorPrev.resize(kNumMirrorRegions);
 	for (int i = 0; i < kNumMirrorRegions; ++i) {
@@ -1468,6 +1489,24 @@ bool D110Core::popNoteEvent(NoteEvent &out) {
 	if (r == nW.load(std::memory_order_acquire)) return false;
 	out = noteBuf[(size_t)r];
 	nR.store((r + 1) & kNoteMask, std::memory_order_release);
+	return true;
+}
+
+void D110Core::hintRhythmKey(uint8_t note) {
+	const int w = rhW.load(std::memory_order_relaxed);
+	const int next = (w + 1) & kRhythmHintMask;
+	// Full means more hits are in flight than the hardware has voices for - dropping the
+	// oldest hint is fine, since it is for a hit whose sound has certainly already resolved.
+	if (next == rhR.load(std::memory_order_acquire)) return;
+	rhythmHintBuf[(size_t)w] = note;
+	rhW.store(next, std::memory_order_release);
+}
+
+bool D110Core::osdTakeRhythmKeyHint(uint8_t &outNote) {
+	const int r = rhR.load(std::memory_order_relaxed);
+	if (r == rhW.load(std::memory_order_acquire)) return false;
+	outNote = rhythmHintBuf[(size_t)r];
+	rhR.store((r + 1) & kRhythmHintMask, std::memory_order_release);
 	return true;
 }
 

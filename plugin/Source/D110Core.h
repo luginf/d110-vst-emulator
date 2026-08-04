@@ -213,6 +213,27 @@ public:
 	// thread; the machine thread consumes them.
 	void pushMidi(const uint8_t *bytes, int len);
 
+	// A handful of rhythm timbres (measured: 64, 65, 66 - the very start of preset group B)
+	// make the firmware's own note-completion write (ROM 0x278B, f400[ctx]) carry a small
+	// number like 1 or 0 instead of the real MIDI key, for reasons that live somewhere
+	// earlier than the internal register window this project can currently trace - the real
+	// key is nowhere in the CPU's own register file by the time this write happens (measured:
+	// regs 0x40-0x50 hold neither the key nor anything resembling it). Rather than forward
+	// that number to the sound engine, where RhythmPart::noteOn's own range check (24-108)
+	// rejects it and the drum is heard 10-50x quieter than every other one, the bridge
+	// remembers the key WE sent in the first place and substitutes it back in.
+	//
+	// Fed from forwardMidiToFirmware() - but ONLY for the three timbres actually measured
+	// broken, checked against the live Rhythm Setup at forward time, not for every rhythm
+	// note-on. The queue has no link back to which key a hint was for, so an ordinary,
+	// already-correct drum hit sitting in it would eventually get handed to some later,
+	// unrelated broken-key completion and print the wrong drum onto that key - measured by
+	// ear after the first version of this fix queued everything indiscriminately.
+	// Consumed on the machine thread when a rhythm-part triple completes with an
+	// out-of-range note. A fixed ring rather than one slot, because a fast run on the same
+	// broken key can have more than one hit in flight before the firmware answers either.
+	void hintRhythmKey(uint8_t note);
+
 	// --- the missing external interrupt ---------------------------------------
 	// When a note reaches it, the firmware enables the CPU's external interrupt and then
 	// spins at 0x29E9 waiting for a flag in its own RAM to have bit 7 set:
@@ -644,6 +665,10 @@ public:
 	// empty. Safe to call from the audio thread.
 	bool popNoteEvent(NoteEvent &out);
 	void osdPushNoteEvent(const NoteEvent &ev);
+	// See hintRhythmKey() above. Pops the oldest remembered key, or returns false if none is
+	// waiting - which happens if a rhythm note WASN'T forwarded by us (e.g. it came from the
+	// panel itself rather than MIDI), and the firmware's own value has to stand uncorrected.
+	bool osdTakeRhythmKeyHint(uint8_t &outNote);
 	// Каждая запись в байт партии f3a0[], посчитанная по названной ею партии, ДО любых
 	// собственных отсечек моста. См. partByteWrites().
 	void osdCountPartByte(uint8_t rawValue) {
@@ -966,6 +991,15 @@ private:
 	static constexpr int kNoteMask = kNoteSlots - 1;
 	std::vector<NoteEvent> noteBuf;
 	std::atomic<int> nW{0}, nR{0};
+
+	// Same shape, for hintRhythmKey()/osdTakeRhythmKeyHint(): audio thread pushes the MIDI
+	// key of every note-on it forwards to the rhythm channel, machine thread pops the oldest
+	// one when the firmware's own note-completion write is out of range. 32 slots is already
+	// more concurrent rhythm hits than the hardware has voices for.
+	static constexpr int kRhythmHintSlots = 32;
+	static constexpr int kRhythmHintMask = kRhythmHintSlots - 1;
+	std::vector<uint8_t> rhythmHintBuf;
+	std::atomic<int> rhW{0}, rhR{0};
 	std::atomic<uint64_t> noteOnCount{0}, noteOffCount{0}, noteMsTotal{0};
 	// Счётчики фиксированного размера: в отличие от двух журналов они НЕ МОГУТ ничего
 	// потерять. Почему это важно - см. методы доступа выше.

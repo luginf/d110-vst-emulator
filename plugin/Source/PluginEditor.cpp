@@ -21,8 +21,8 @@ constexpr float kCharX0 = 610.0f;   // left edge of column 0
 constexpr float kCellW = 14.408f;   // 17.5 px on the real module
 constexpr float kLine0Y = 99.1f;    // top of line 1's dot rows
 constexpr float kLineStep = 26.35f; // line 1 -> line 2
-constexpr int kCols = D110Core::kCols;
-constexpr int kLines = D110Core::kLines;
+constexpr int kCols = D110CoreType::kCols;
+constexpr int kLines = D110CoreType::kLines;
 
 // A character cell fills its width in 6 dot columns (5 dots + 1 gap), so the
 // horizontal pitch follows from the cell. The vertical pitch does NOT follow
@@ -217,7 +217,7 @@ void D110Panel::rebuildLcdImage()
 			// leftmost dot. The glyphs are therefore the genuine mask CGROM's, and the
 			// cursor and its blink are the controller's own - nothing here interprets
 			// character codes or consults a font.
-			const juce::uint8 *rows = lcdRows + ((size_t)line * kCols + col) * D110Core::kRowsPerChar;
+			const juce::uint8 *rows = lcdRows + ((size_t)line * kCols + col) * D110CoreType::kRowsPerChar;
 			for (int dy = 0; dy < kDotRows; ++dy)
 				for (int dx = 0; dx < 5; ++dx) {
 					if (!((rows[dy] >> (4 - dx)) & 1))
@@ -271,7 +271,7 @@ void D110Panel::timerCallback()
 	// The display is whatever the emulated MSM6222B is actually showing. While the unit
 	// is off there is no machine running, so the glass just sits dark.
 	if (power) {
-		juce::uint8 rows[D110Core::kLcdBytes];
+		juce::uint8 rows[D110CoreType::kLcdBytes];
 		if (processor.getCore().getLcd(rows)) {
 			if (!lcdLive || std::memcmp(rows, lcdRows, sizeof(rows)) != 0) {
 				std::memcpy(lcdRows, rows, sizeof(rows));
@@ -464,11 +464,25 @@ int D110Panel::buttonAt(juce::Point<float> p) const
 void D110Panel::setButtonState(int index, bool down)
 {
 	if (index < 0 || index >= kNumButtons) return;
-	if (!processor.getCore().isRunning()) return; // nothing to press while the unit is off
+	// Раньше здесь стоял ранний выход, пока прибор выключен ("nothing to press while the
+	// unit is off") - и он молча ломал ДОКУМЕНТИРОВАННУЮ процедуру факт-сброса: она прямо
+	// требует защёлкнуть WRITE/COPY, ПОКА ПРИБОР ВЫКЛЮЧЕН, и только потом включить. Ctrl-клик
+	// в этот момент попадал сюда, отражался ранним выходом, и `core.setButton()` не
+	// вызывался вовсе - защёлкивался только локальный флаг панели `m.latched`, который ничего
+	// не значит для настоящей матрицы опроса. Прибор включался, ничего не видел зажатым, и
+	// пятишаговая процедура из README не срабатывала НИКОГДА, ни для одного пользователя -
+	// не через раз, а структурно, самим порядком проверки.
+	//
+	// Убирать защиту можно без риска: `D110Core::setButton()` - это голая атомарная запись в
+	// `wantButtons`, ей ничего не нужно от работающей машины, и `D110Core::factoryReset()`
+	// делает ровно то же самое внутри себя - защёлкивает Write/Copy ДО вызова `start()` - и
+	// это работает, им пользуется даже `plugin/nvram_recovery.cpp`. Обычный, незащёлкнутый
+	// клик по-прежнему безвреден на выключенном приборе: mouseUp снимает то же самое
+	// нажатие, и итог - ноль.
 	const auto &b = kButtons[index];
 	int bit = 0;
 	while (bit < 7 && !((b.scanBit >> bit) & 1)) ++bit;
-	processor.getCore().setButton(D110Core::buttonIndex(b.scanPort, bit), down);
+	processor.getCore().setButton(D110CoreType::buttonIndex(b.scanPort, bit), down);
 }
 
 void D110Panel::mouseDown(const juce::MouseEvent &e)
@@ -635,7 +649,10 @@ void D110Panel::showOptionsMenu()
 	// way.
 	m.addSeparator();
 	m.addItem(106, "Factory init, as on the hardware:", false, false);
-	m.addItem(107, "   POWER off, Ctrl+click WRITE/COPY, POWER on, then ENTER", false, false);
+	m.addItem(107,
+		"   POWER off, Ctrl+click WRITE/COPY, POWER on, Ctrl+click WRITE/COPY "
+		"again, then ENTER",
+		false, false);
 
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
 		[this, reverb, superMode, reverbOn, superOn, ins, outs](int result) {
@@ -763,7 +780,7 @@ juce::String noteName(int note) {
 
 D110EditorPane::D110EditorPane(D110AudioProcessor &p) : processor(p) {
 	setOpaque(true);
-	ram.assign(D110Core::kRamSize, 0);
+	ram.assign(D110CoreType::kRamSize, 0);
 
 	// Поле ввода одно на весь редактор: любое имя набирается им же, просто в разных местах.
 	// Прибор принимает только печатные ASCII, поэтому набрать что-то другое здесь нельзя -
@@ -781,12 +798,12 @@ D110EditorPane::D110EditorPane(D110AudioProcessor &p) : processor(p) {
 	                                    juce::Font::plain));
 	textEntry.onReturnKey = [this] {
 		switch (textEntryTarget) {
-		case 1: processor.sendName(D110Core::kSysexToneTemp, part * D110Core::kToneRecord,
+		case 1: processor.sendName(D110CoreType::kSysexToneTemp, part * D110CoreType::kToneRecord,
 		                           textEntry.getText()); break;
 		case 2: processor.sendDisplayMessage(textEntry.getText()); break;
-		case 3: processor.sendName(D110Core::kSysexPatches, patchSlot * D110Core::kPatchRecord,
+		case 3: processor.sendName(D110CoreType::kSysexPatches, patchSlot * D110CoreType::kPatchRecord,
 		                           textEntry.getText()); break;
-		case 4: processor.sendName(D110Core::kSysexTones, toneSlot * D110Core::kToneMemRecord,
+		case 4: processor.sendName(D110CoreType::kSysexTones, toneSlot * D110CoreType::kToneMemRecord,
 		                           textEntry.getText()); break;
 		default: break;
 		}
@@ -837,7 +854,7 @@ void D110EditorPane::refreshFromInstrument() {
 	// тем, как они меняются.
 	const uint64_t gen = processor.getCore().ramGeneration();
 	if (tab == Tab::Monitor) {
-		if (processor.getCore().getRam(ram.data())) { ramGen = gen; ramValid = true; }
+		if (processor.getCore().getRam(ram.data())) { ramGen = gen; ramValid = true; reapplyPendingEdits(); }
 		repaint();
 		return;
 	}
@@ -845,7 +862,28 @@ void D110EditorPane::refreshFromInstrument() {
 	if (!processor.getCore().getRam(ram.data())) return;
 	ramGen = gen;
 	ramValid = true;
+	reapplyPendingEdits();
 	repaint();
+}
+
+void D110EditorPane::reapplyPendingEdits() {
+	if (pendingEdits.empty()) return;
+	// Дольше любой реально измеренной задержки моста (0-18 мс, note_latency_probe.cpp) с
+	// большим запасом, но не бесконечно: если прошивка так и не подтвердила байт за это
+	// время, доверять свежепрочитанному значению безопаснее, чем зависнуть на неверном.
+	constexpr juce::int64 kGraceMs = 400;
+	const juce::int64 now = juce::Time::getMillisecondCounter();
+	for (size_t i = 0; i < pendingEdits.size();) {
+		const PendingEdit &p = pendingEdits[i];
+		const bool confirmed = p.address < ram.size() && ram[p.address] == p.value;
+		const bool expired = now - p.sentMs > kGraceMs;
+		if (confirmed || expired) {
+			pendingEdits.erase(pendingEdits.begin() + long(i));
+			continue;
+		}
+		if (p.address < ram.size()) ram[p.address] = p.value;
+		++i;
+	}
 }
 
 // --- разметка ---------------------------------------------------------------
@@ -1104,7 +1142,7 @@ void D110EditorPane::layoutRhythm(juce::Rectangle<float> area) {
 	const float w = area.getWidth();
 	rowHeight = juce::jlimit(18.0f, 30.0f, area.getHeight() / 14.0f);
 	const int visible = juce::jmax(1, int(area.getHeight() / rowHeight));
-	rhythmScroll = juce::jlimit(0, juce::jmax(0, D110Core::kNumRhythmKeys - visible), rhythmScroll);
+	rhythmScroll = juce::jlimit(0, juce::jmax(0, D110CoreType::kNumRhythmKeys - visible), rhythmScroll);
 
 	const float colFrac[5] = { 0.00f, 0.16f, 0.52f, 0.68f, 0.84f };
 	const char *kHead[5] = { "KEY", "DRUM SOUND", "LEVEL", "PAN", "OUTPUT" };
@@ -1118,9 +1156,9 @@ void D110EditorPane::layoutRhythm(juce::Rectangle<float> area) {
 
 	for (int i = 0; i < visible; ++i) {
 		const int slot = rhythmScroll + i;
-		if (slot >= D110Core::kNumRhythmKeys) break;
+		if (slot >= D110CoreType::kNumRhythmKeys) break;
 		auto row = area.removeFromTop(rowHeight).reduced(0.0f, 2.0f);
-		const int key = D110Core::kRhythmFirstKey + slot;
+		const int key = D110CoreType::kRhythmFirstKey + slot;
 		labels.push_back({ colAt(0, row),
 		                   juce::String(key) + "  " + noteName(key), true });
 		// Диапазон 0..127, а не MT-32-шные 0..94: заводская установка ударных D-110 держит
@@ -1166,11 +1204,11 @@ void D110EditorPane::layoutPatches(juce::Rectangle<float> area) {
 	tableArea = listArea;
 	rowHeight = juce::jlimit(16.0f, 24.0f, listArea.getHeight() / 13.0f);
 	const int rows = juce::jmax(1, int(listArea.getHeight() / rowHeight));
-	patchScroll = juce::jlimit(0, juce::jmax(0, D110Core::kNumPatches - rows), patchScroll);
+	patchScroll = juce::jlimit(0, juce::jmax(0, D110CoreType::kNumPatches - rows), patchScroll);
 
 	for (int i = 0; i < rows; ++i) {
 		const int patch = patchScroll + i;
-		if (patch >= D110Core::kNumPatches) break;
+		if (patch >= D110CoreType::kNumPatches) break;
 		auto row = listArea.removeFromTop(rowHeight).reduced(0.0f, 2.0f);
 		// Номер - кнопка: по ней прибор переходит на этот патч. Подписан так же, как его
 		// показывает индикатор: банк 1-8 и номер 1-8.
@@ -1184,7 +1222,7 @@ void D110EditorPane::layoutPatches(juce::Rectangle<float> area) {
 	}
 
 	// --- партии выбранного патча -------------------------------------------------
-	const int chosen = juce::jlimit(0, D110Core::kNumPatches - 1, patchSlot);
+	const int chosen = juce::jlimit(0, D110CoreType::kNumPatches - 1, patchSlot);
 	labels.push_back({ area.removeFromTop(15.0f),
 	                   "PARTS OF PATCH I-" + juce::String(chosen / 8 + 1)
 	                       + juce::String(chosen % 8 + 1)
@@ -1265,11 +1303,11 @@ void D110EditorPane::layoutTimbres(juce::Rectangle<float> area) {
 	tableArea = area;
 	rowHeight = juce::jlimit(18.0f, 28.0f, area.getHeight() / 14.0f);
 	const int rows = juce::jmax(1, int(area.getHeight() / rowHeight));
-	timbreScroll = juce::jlimit(0, juce::jmax(0, D110Core::kNumTimbres - rows), timbreScroll);
+	timbreScroll = juce::jlimit(0, juce::jmax(0, D110CoreType::kNumTimbres - rows), timbreScroll);
 
 	for (int i = 0; i < rows; ++i) {
 		const int slot = timbreScroll + i;
-		if (slot >= D110Core::kNumTimbres) break;
+		if (slot >= D110CoreType::kNumTimbres) break;
 		auto row = area.removeFromTop(rowHeight).reduced(0.0f, 2.0f);
 		buttons.push_back({ colAt(0, row), juce::String(slot + 1), 600 + slot });
 		cells.push_back({ colAt(1, row), Area::Timbres, slot, 0, 0, 3 });
@@ -1312,12 +1350,12 @@ void D110EditorPane::layoutTones(juce::Rectangle<float> area) {
 	tableArea = area;
 	rowHeight = juce::jlimit(18.0f, 26.0f, area.getHeight() / 12.0f);
 	const int rows = juce::jmax(1, int(area.getHeight() / rowHeight));
-	toneScroll = juce::jlimit(0, juce::jmax(0, D110Core::kNumTones - rows * 3), toneScroll);
+	toneScroll = juce::jlimit(0, juce::jmax(0, D110CoreType::kNumTones - rows * 3), toneScroll);
 	const float colW = w / 3.0f;
 	for (int col = 0; col < 3; ++col)
 		for (int r = 0; r < rows; ++r) {
 			const int slot = toneScroll + col * rows + r;
-			if (slot >= D110Core::kNumTones) break;
+			if (slot >= D110CoreType::kNumTones) break;
 			buttons.push_back({ juce::Rectangle<float>(area.getX() + colW * float(col),
 			                                           area.getY() + rowHeight * float(r),
 			                                           colW - 12.0f, rowHeight - 3.0f),
@@ -1400,9 +1438,10 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 	labels.push_back({ area.removeFromTop(15.0f), "FACTORY INITIALISATION", true });
 	labels.push_back({ area.removeFromTop(18.0f),
 	                   "The instrument has its own, and this plugin can perform it exactly: "
-	                   "POWER off, Ctrl+click WRITE/COPY to latch the cap down, POWER on, then "
-	                   "ENTER. There is no button for it here, because there is none on the "
-	                   "hardware either.", false });
+	                   "POWER off, Ctrl+click WRITE/COPY to latch the cap down, POWER on, "
+	                   "Ctrl+click WRITE/COPY again to release it, then ENTER to confirm - "
+	                   "release before confirming, not after. There is no button for it here, "
+	                   "because there is none on the hardware either.", false });
 	area.removeFromTop(12.0f);
 
 	labels.push_back({ area.removeFromTop(15.0f), "WHERE THE EDITS GO", true });
@@ -1418,24 +1457,24 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 size_t D110EditorPane::addressOf(const Cell &c) const {
 	switch (c.area) {
 	case Area::ToneTemp:
-		return size_t(D110Core::kRamToneTemp) + size_t(c.index) * D110Core::kToneRecord
+		return size_t(D110CoreType::kRamToneTemp) + size_t(c.index) * D110CoreType::kToneRecord
 		     + size_t(c.field);
 	case Area::Rhythm:
-		return size_t(D110Core::kRamRhythmTemp) + size_t(c.index) * D110Core::kRhythmRecord
+		return size_t(D110CoreType::kRamRhythmTemp) + size_t(c.index) * D110CoreType::kRhythmRecord
 		     + size_t(c.field);
 	case Area::System:
-		return size_t(D110Core::kRamSystem) + size_t(c.index);
+		return size_t(D110CoreType::kRamSystem) + size_t(c.index);
 	case Area::Timbres:
-		return size_t(D110Core::kRamTimbres) + size_t(c.index) * D110Core::kTimbreRecord
+		return size_t(D110CoreType::kRamTimbres) + size_t(c.index) * D110CoreType::kTimbreRecord
 		     + size_t(c.field);
 	case Area::Patches:
-		return size_t(D110Core::kRamPatches) + size_t(c.index) * D110Core::kPatchRecord
+		return size_t(D110CoreType::kRamPatches) + size_t(c.index) * D110CoreType::kPatchRecord
 		     + size_t(c.field);
 	case Area::Tones:
-		return size_t(D110Core::kRamTones) + size_t(c.index) * D110Core::kToneMemRecord
+		return size_t(D110CoreType::kRamTones) + size_t(c.index) * D110CoreType::kToneMemRecord
 		     + size_t(c.field);
 	default:
-		return size_t(D110Core::kRamTimbreTemp) + size_t(c.index) * D110Core::kTimbreTempRecord
+		return size_t(D110CoreType::kRamTimbreTemp) + size_t(c.index) * D110CoreType::kTimbreTempRecord
 		     + size_t(c.field);
 	}
 }
@@ -1461,13 +1500,22 @@ void D110EditorPane::setValue(const Cell &c, int value) {
 	// увидит: иначе поле под курсором отставало бы на десятую долю секунды.
 	const size_t at = addressOf(c);
 	if (ramValid && at < ram.size()) ram[at] = uint8_t(v);
+
+	// Отмечено как непринятое - см. PendingEdit. Тот же адрес заменяет свою прежнюю запись
+	// (не копится), потому что важен только самый последний запрошенный шаг колеса.
+	const juce::int64 now = juce::Time::getMillisecondCounter();
+	bool replaced = false;
+	for (auto &p : pendingEdits)
+		if (p.address == at) { p.value = uint8_t(v); p.sentMs = now; replaced = true; break; }
+	if (!replaced) pendingEdits.push_back({at, uint8_t(v), now});
+
 	repaint();
 }
 
 juce::String D110EditorPane::nameAt(size_t ramOffset) const {
 	if (!ramValid) return {};
 	juce::String name;
-	for (int i = 0; i < D110Core::kNameChars && ramOffset + size_t(i) < ram.size(); ++i) {
+	for (int i = 0; i < D110CoreType::kNameChars && ramOffset + size_t(i) < ram.size(); ++i) {
 		const char ch = char(ram[ramOffset + size_t(i)]);
 		if (ch < 32 || ch > 126) break;
 		name += ch;
@@ -1482,7 +1530,7 @@ juce::String D110EditorPane::nameAt(size_t ramOffset) const {
 juce::String D110EditorPane::toneName(int group, int number) const {
 	if (group < 0 || group > 3 || number < 0 || number > 63) return {};
 	if (group == 2)
-		return nameAt(size_t(D110Core::kRamTones) + size_t(number) * D110Core::kToneMemRecord);
+		return nameAt(size_t(D110CoreType::kRamTones) + size_t(number) * D110CoreType::kToneMemRecord);
 
 	const size_t slot = size_t(group) * 64 + size_t(number);
 	if (romToneNameKnown[slot]) return romToneNames[slot];
@@ -1490,8 +1538,8 @@ juce::String D110EditorPane::toneName(int group, int number) const {
 
 	// Адрес в упакованном виде, как его ждёт readEngineMemory: SysEx 08 00 00 - это 0x020000,
 	// а запись банка тембров у движка занимает 256 байт.
-	uint8_t buf[D110Core::kNameChars] = {};
-	if (!processor.readEngineMemory(juce::uint32(0x020000 + slot * 256), D110Core::kNameChars,
+	uint8_t buf[D110CoreType::kNameChars] = {};
+	if (!processor.readEngineMemory(juce::uint32(0x020000 + slot * 256), D110CoreType::kNameChars,
 	                                buf))
 		return {};
 	juce::String name;
@@ -1688,7 +1736,7 @@ void D110EditorPane::paint(juce::Graphics &g) {
 	if (tab == Tab::Tone && !textEntry.isVisible()) {
 		g.setColour(kEdValue);
 		g.setFont(valueFont);
-		g.drawText(nameAt(size_t(D110Core::kRamToneTemp) + size_t(part) * D110Core::kToneRecord),
+		g.drawText(nameAt(size_t(D110CoreType::kRamToneTemp) + size_t(part) * D110CoreType::kToneRecord),
 		           toneNameBounds, juce::Justification::centredLeft);
 	}
 
@@ -1706,8 +1754,8 @@ void D110EditorPane::paint(juce::Graphics &g) {
 			const int slot = b.id - 100;
 			const bool chosen = (slot == toneSlot);
 			drawBox(g, b.bounds, chosen);
-			const juce::String name = nameAt(size_t(D110Core::kRamTones)
-			                                 + size_t(slot) * D110Core::kToneMemRecord);
+			const juce::String name = nameAt(size_t(D110CoreType::kRamTones)
+			                                 + size_t(slot) * D110CoreType::kToneMemRecord);
 			g.setColour(chosen ? kEdValue : kEdDim);
 			g.setFont(valueFont);
 			g.drawText(juce::String(slot + 1).paddedLeft(' ', 2) + "  "
@@ -1720,8 +1768,8 @@ void D110EditorPane::paint(juce::Graphics &g) {
 			drawBox(g, b.bounds, false);
 			g.setColour(kEdValue);
 			g.setFont(valueFont);
-			g.drawText(nameAt(size_t(D110Core::kRamPatches)
-			                  + size_t(patch) * D110Core::kPatchRecord),
+			g.drawText(nameAt(size_t(D110CoreType::kRamPatches)
+			                  + size_t(patch) * D110CoreType::kPatchRecord),
 			           b.bounds.reduced(6.0f, 0.0f), juce::Justification::centredLeft);
 			continue;
 		}
@@ -1729,7 +1777,7 @@ void D110EditorPane::paint(juce::Graphics &g) {
 		// кнопок не говорит, где ты находишься.
 		const bool current = (b.id >= 200 && b.id < 300)
 		                   && ramValid
-		                   && int(ram[(size_t)D110Core::kRamPatchNumber]) == b.id - 200;
+		                   && int(ram[(size_t)D110CoreType::kRamPatchNumber]) == b.id - 200;
 		const bool chosenPatch = (b.id >= 200 && b.id < 300) && (b.id - 200 == patchSlot);
 		drawBox(g, b.bounds, current || chosenPatch);
 		g.setColour(current ? kEdValue : (b.text.isEmpty() ? kEdDim : kEdLabel));
@@ -1812,10 +1860,10 @@ void D110EditorPane::paintMonitor(juce::Graphics &g, juce::Rectangle<float> area
 	auto pool = area.removeFromTop(52.0f);
 	const float bw = pool.getWidth() / 16.0f;
 	int busy = 0;
-	for (int s = 0; s < D110Core::kNumHardwareVoices; ++s) {
-		const size_t at = size_t(D110Core::kSlotStateTable) + size_t(s) * 2;
+	for (int s = 0; s < D110CoreType::kNumHardwareVoices; ++s) {
+		const size_t at = size_t(D110CoreType::kSlotStateTable) + size_t(s) * 2;
 		const int state = (at < ram.size()) ? int(ram[at]) : -1;
-		const bool on = (state == D110Core::kSlotBusyValue || state == D110Core::kSlotBusyValueAlt);
+		const bool on = (state == D110CoreType::kSlotBusyValue || state == D110CoreType::kSlotBusyValueAlt);
 		if (on) ++busy;
 		const juce::Rectangle<float> r(pool.getX() + bw * float(s % 16),
 		                               pool.getY() + 26.0f * float(s / 16), bw - 4.0f, 22.0f);
@@ -1827,7 +1875,7 @@ void D110EditorPane::paintMonitor(juce::Graphics &g, juce::Rectangle<float> area
 	area.removeFromTop(4.0f);
 	g.setColour(kEdDim);
 	g.setFont(valueFont);
-	g.drawText(juce::String(busy) + " of " + juce::String(D110Core::kNumHardwareVoices)
+	g.drawText(juce::String(busy) + " of " + juce::String(D110CoreType::kNumHardwareVoices)
 	               + " busy   -   and the sound engine has "
 	               + juce::String(processor.engineActivePartials()) + " of "
 	               + juce::String(int(processor.enginePartialCount())) + " partials sounding",
@@ -1973,8 +2021,8 @@ void D110EditorPane::buttonPressed(int id) {
 			patchSlot = id - 400;
 			textEntryTarget = 3;
 			textEntryButton = id;
-			textEntry.setText(nameAt(size_t(D110Core::kRamPatches)
-			                         + size_t(patchSlot) * D110Core::kPatchRecord), false);
+			textEntry.setText(nameAt(size_t(D110CoreType::kRamPatches)
+			                         + size_t(patchSlot) * D110CoreType::kPatchRecord), false);
 			textEntry.setBounds(b.bounds.toNearestInt());
 			textEntry.setVisible(true);
 			textEntry.grabKeyboardFocus();
@@ -1996,12 +2044,98 @@ int D110EditorPane::cellAt(juce::Point<float> p) const {
 	return -1;
 }
 
+// Список всех тонов сразу, по правому клику - см. вызов в mouseDown(). Группа и номер идут
+// парой в одном же нажатии пункта меню: разводить их на два отдельных шага (сначала группа,
+// потом номер) значило бы на мгновение отправить прибору несуществующую пару, как это уже
+// было измерено и задокументировано для переноса группы/номера патча. Общий код для живой
+// области партии (Parts, groupField=0, пишет через sendTimbreTempParam) и записи патча
+// (PARTS OF PATCH внутри Patches, groupField=31+12*p, пишет через editPatchField) - у обеих
+// та же пара байт группа+номер, разнится только куда её слать и с каким смещением записи.
+void D110EditorPane::showToneListMenu(Area area, int index, int groupField) {
+	juce::PopupMenu menu;
+	for (int group = 0; group < 4; ++group) {
+		juce::PopupMenu sub;
+		for (int number = 0; number < 64; ++number) {
+			juce::String label = juce::String(number + 1) + "  " + toneName(group, number);
+			sub.addItem(group * 64 + number + 1, label);
+		}
+		menu.addSubMenu(toneGroupLabel(group), sub);
+	}
+	menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
+		[this, area, index, groupField](int result) {
+			if (result <= 0) return; // отменено
+			const int id = result - 1;
+			const int group = id / 64, number = id % 64;
+			if (area == Area::Patches) {
+				processor.editPatchField(index, groupField, uint8_t(group));
+				processor.editPatchField(index, groupField + 1, uint8_t(number));
+			} else {
+				processor.sendTimbreTempParam(index, groupField, uint8_t(group));
+				processor.sendTimbreTempParam(index, groupField + 1, uint8_t(number));
+			}
+			repaint();
+		});
+}
+
+// Правый клик по DRUM SOUND на вкладке Rhythm - тот же приём, но поле не пара группа+номер,
+// а один байт 0..127: 0..63 - тембры внутренней памяти (TIMBRE), 64..127 - звуки ударных
+// (RHY), см. textOf() Area::Rhythm case 0.
+void D110EditorPane::showRhythmSoundMenu(int slot) {
+	juce::PopupMenu menu;
+	juce::PopupMenu timbreSub;
+	for (int n = 0; n < 64; ++n)
+		timbreSub.addItem(n + 1, juce::String(n + 1) + "  " + toneName(2, n));
+	menu.addSubMenu(toneGroupLabel(2), timbreSub);
+
+	juce::PopupMenu rhySub;
+	for (int n = 0; n < 64; ++n)
+		rhySub.addItem(64 + n + 1, juce::String(n + 1) + "  " + toneName(3, n));
+	menu.addSubMenu(toneGroupLabel(3), rhySub);
+
+	menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
+		[this, slot](int result) {
+			if (result <= 0) return; // отменено
+			processor.sendRhythmParam(slot, 0, uint8_t(result - 1));
+			repaint();
+		});
+}
+
 void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 	const auto p = e.position;
 	for (int i = 0; i < kNumTabs; ++i) {
 		if (!tabBounds[(size_t)i].contains(p)) continue;
 		selectTab(i);
 		return;
+	}
+
+	// Правый клик по группе/номеру тона открывает список всех тонов сразу, вместо того чтобы
+	// перебирать их колесом по одному. Только TONE GROUP/TONE - у остальных полей нет
+	// естественного «имени» на каждое значение, список был бы бессмыслен. Работает и на живой
+	// области партии (Parts), и на записи патча (PARTS OF PATCH внутри Patches), и на DRUM
+	// SOUND ритм-секции (Rhythm) - три разных поля со своим адресом, но один и тот же приём.
+	if (e.mods.isPopupMenu()) {
+		const int i = cellAt(p);
+		if (i >= 0) {
+			const Cell &c = cells[(size_t)i];
+			if (tab == Tab::Parts && c.area == Area::TimbreTemp
+			    && (c.field == 0 || c.field == 1)) {
+				showToneListMenu(c.area, c.index, 0);
+				return;
+			}
+			if (tab == Tab::Patches && c.area == Area::Patches) {
+				// Запись партии внутри патча начинается на 31-м байте, по 12 байт на партию
+				// (см. layoutPatches()); группа стоит первым байтом записи, номер - вторым.
+				const int off = c.field - 31;
+				if (off >= 0 && off < 8 * 12 && (off % 12 == 0 || off % 12 == 1)) {
+					showToneListMenu(c.area, c.index, c.field - (off % 12));
+					return;
+				}
+			}
+			if (tab == Tab::Rhythm && c.area == Area::Rhythm && c.field == 0) {
+				showRhythmSoundMenu(c.index);
+				return;
+			}
+		}
 	}
 	if (tab == Tab::Tone || tab == Tab::Timbres || tab == Tab::Tones) {
 		for (int i = 0; i < 8; ++i) {
@@ -2024,8 +2158,8 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 		// прибор показывает его на своём индикаторе.
 		if (toneNameBounds.contains(p)) {
 			textEntryTarget = 1;
-			textEntry.setText(nameAt(size_t(D110Core::kRamToneTemp)
-			                         + size_t(part) * D110Core::kToneRecord), false);
+			textEntry.setText(nameAt(size_t(D110CoreType::kRamToneTemp)
+			                         + size_t(part) * D110CoreType::kToneRecord), false);
 			textEntry.setBounds(toneNameBounds.toNearestInt());
 			textEntry.setVisible(true);
 			textEntry.grabKeyboardFocus();
@@ -2038,7 +2172,7 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 	if (tab == Tab::Patches && tableArea.contains(p) && rowHeight > 0.0f) {
 		const int row = int((p.y - tableArea.getY()) / rowHeight);
 		const int patch = patchScroll + row;
-		if (row >= 0 && patch >= 0 && patch < D110Core::kNumPatches && patch != patchSlot) {
+		if (row >= 0 && patch >= 0 && patch < D110CoreType::kNumPatches && patch != patchSlot) {
 			patchSlot = patch;
 			processor.selectPatch(patch);
 			layout();

@@ -1,8 +1,16 @@
 ﻿cmake_minimum_required(VERSION 3.22)
 # Номер версии - это оценка готовности в процентах, а не порядковый счётчик выпусков.
 # 0.9.9 обещала девяносто девять и была слишком щедра: микросхема ревербератора BOSS не
-# эмулирована вовсе, а это заметная часть звука прибора, и восьми индивидуальных выходов
-# тоже нет. Оценка честно опущена, хотя номер при этом идёт назад.
+# была эмулирована вовсе, а это заметная часть звука прибора, и восьми индивидуальных
+# выходов тоже нет. Оценка честно опущена, хотя номер при этом идёт назад.
+#
+# 2026-08-04: оба исправлены. Ревербератор BOSS (чип HG61H20R36F/BOS-007, ПЗУ IC6)
+# теперь звучит настоящей эмуляцией микрокода (BossEmu, перенесена из
+# github.com/davidhsilaban/munt с сохранением авторства - Sergey V. Mikayev), а не
+# приближением через четыре режима MT-32. Шесть индивидуальных выходов (MULTI OUT 1-6,
+# плюс основная стерео-шина MIX) подключены как отдельные шины VST3, по умолчанию
+# выключены - маршрутизация по Output Assign партии проверена измерением, звук приходит
+# ровно в назначенный канал и ни в один другой.
 project(D110Emulator VERSION 0.9.5)
 
 # C++20 because MAME's headers need it.
@@ -95,6 +103,63 @@ foreach(_fmt VST3 Standalone)
 endforeach()
 
 target_link_libraries(D110Emulator PUBLIC
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+# ---------------------------------------------------------------------------
+# D110EmulatorNative: the SAME PluginProcessor/PluginEditor, compiled with D110_NATIVE_CORE
+# so D110CoreType resolves to D110CoreNative instead of the MAME-backed D110Core - see the
+# "Native D-110 CPU core port" plan and PluginProcessor.h's own comment on D110CoreType.
+# Deliberately links none of MAME_LIBS/MAME_INCLUDES/D110Core.cpp/MAME_DRIVLIST - that
+# absence is the whole point of this target, not an optimisation. A separate plugin (own
+# product name, own plugin code, own install dir) so it can sit beside the real, proven
+# D110Emulator in a DAW's plugin list rather than replacing it, exactly as the plan's
+# "Backend switch design" calls for: the MAME-backed plugin stays the shipping default
+# until this one has passed the full probe suite pairwise against it.
+juce_add_plugin(D110EmulatorNative
+    VERSION ${PROJECT_VERSION}
+    COMPANY_NAME "DIY"
+    IS_SYNTH TRUE
+    NEEDS_MIDI_INPUT TRUE
+    NEEDS_MIDI_OUTPUT FALSE
+    IS_MIDI_EFFECT FALSE
+    EDITOR_WANTS_KEYBOARD_FOCUS FALSE
+    COPY_PLUGIN_AFTER_BUILD TRUE
+    VST3_COPY_DIR "C:/Program Files/Common Files/VST3"
+    PLUGIN_MANUFACTURER_CODE Manu
+    PLUGIN_CODE Dvsn
+    FORMATS VST3 Standalone
+    PRODUCT_NAME "D-110 Emulator (Native)"
+)
+
+target_sources(D110EmulatorNative PRIVATE
+    Source/PluginProcessor.cpp
+    Source/PluginEditor.cpp
+    Source/native/mcs96_cpu.cpp
+    Source/native/d110_bus.cpp
+    Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp
+    Source/native/ram_mirror.cpp
+)
+
+target_compile_definitions(D110EmulatorNative PRIVATE D110_NATIVE_CORE=1)
+
+target_compile_definitions(D110EmulatorNative PUBLIC
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_VST3_CAN_REPLACE_VST2=0
+    JUCE_DISPLAY_SPLASH_SCREEN=0
+)
+
+target_link_libraries(D110EmulatorNative PRIVATE
+    D110PanelData
+    MT32Emu::mt32emu
+    juce::juce_audio_utils
+    juce::juce_audio_processors
+)
+
+target_link_libraries(D110EmulatorNative PUBLIC
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags
 )
@@ -671,3 +736,316 @@ target_link_libraries(d110_midi_congestion PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_midi_congestion PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Заливка банка тонов в настоящую память прибора. Отдельный инструмент, а не часть
+# nvram_recovery: тот возвращает заводское состояние, а память тонов заводским состоянием
+# ПУСТА, и наполнить её можно только банком со стороны.
+add_executable(d110_bank_import bank_import.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_bank_import PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_bank_import PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_bank_import PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_bank_import PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Воспроизведение жалобы «ноты залипают на всех партиях сразу». Отдельно от d110_polyphony:
+# тот меряет ПОТЕРИ нот на одной партии, а этот - ОСТАТОК при отпущенных клавишах на всех
+# девяти, и это противоположные признаки.
+add_executable(d110_stuck_notes stuck_notes_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_stuck_notes PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_stuck_notes PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_stuck_notes PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_stuck_notes PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Играет каждую ритм-клавишу по отдельности и меряет пик. Отвечает на "closed hat не
+# звучит" измерением, а не догадкой - список молчащих клавиш даёт прямо, без предположений
+# о том, какая именно сломана.
+add_executable(d110_rhythm_key rhythm_key_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_rhythm_key PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_rhythm_key PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_rhythm_key PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_rhythm_key PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Проверка: возвращает ли повторный выбор текущего патча живую Timbre Temp к данным патча.
+# Живая область читалась сплошным центром (pan 7 у всех восьми) при верных данных в самом
+# патче - вопрос в том, чинится ли это тем же нажатием, каким пользуется панель.
+add_executable(d110_pan_resync pan_resync_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_pan_resync PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_pan_resync PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(d110_pan_resync PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_pan_resync PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Проверка на девственной, временной НВР: сразу после заводского сброса, ДО единого нажатия
+# пользователем, читается ли живая панорама верно или сплошным центром - разводит "баг
+# загрузки прошивки" и "накопленный след сегодняшних опытов в реальном файле".
+add_executable(d110_virgin_boot virgin_boot_probe.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_virgin_boot PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_virgin_boot PRIVATE ${MAME_DEFS})
+target_link_libraries(d110_virgin_boot PRIVATE ${MAME_LIBS} ${MAME_SYS_LIBS})
+target_link_options(d110_virgin_boot PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Трассирует запись в таблицы полного круга голоса (dispatch + completion) для одного удара
+# по ритм-клавише, чтобы найти источник "Attempted to play invalid key 1" рядом с closed
+# hat/open hat: пишет ли это сама прошивка в f400[], или подмена происходит в нашем мосте.
+add_executable(d110_rhythm_ctx rhythm_ctx_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_rhythm_ctx PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_rhythm_ctx PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_rhythm_ctx PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_rhythm_ctx PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# «Патчи в демо-песне не соответствуют» - разводит два возможных объяснения: демо трогает
+# Patch/Timbre Memory (значит зависит от того, что реально лежит в батарейной памяти
+# пользователя, у которой нет настоящих заводских имён без карты FACTORY PRESET), или демо
+# полностью самодостаточна и патчей пользователя не касается вовсе.
+add_executable(d110_demo_patch demo_patch_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_demo_patch PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_demo_patch PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(d110_demo_patch PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_demo_patch PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# «Синхронизация с Ableton плывёт» - меряет реальную задержку между подачей ноты в
+# processBlock и моментом, когда прошивка сама её регистрирует (NoteLog). Демо-песня этого
+# круга не проходит вовсе (прошивка играет сама себе), поэтому и не плывёт.
+add_executable(d110_note_latency note_latency_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_note_latency PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_note_latency PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_note_latency PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_note_latency PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Проверяет перенесённый BOSS-ревербератор не на компиляции, а на звуке: грузится ли
+# ic6.bin, доходит ли байт типа ревербератора (System 0x2D95) до BossEmu, и дают ли разные
+# из восьми типов заметно разный хвост затухания.
+add_executable(d110_boss_reverb boss_reverb_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_boss_reverb PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_boss_reverb PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(d110_boss_reverb PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_boss_reverb PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Проверка одного типа ревербератора в СВЕЖЕМ экземпляре (аргумент argv[1]) - разводит
+# "тип сам по себе тих" от "переключение между типами что-то ломает".
+add_executable(d110_boss_reverb_iso boss_reverb_isolated_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_boss_reverb_iso PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_boss_reverb_iso PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(d110_boss_reverb_iso PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_boss_reverb_iso PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Проверяет перенесённые шесть индивидуальных выходов на маршрутизации звука, не только на
+# компиляции: включает все доп. шины, меняет Output Assign партии 1, меряет энергию в
+# каждом из восьми каналов.
+add_executable(d110_multi_output multi_output_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_multi_output PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_multi_output PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(d110_multi_output PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_multi_output PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Регрессия по слуху: играешь кик (35), потом Closed Hi-Hat (42) - и на хай-хэте звучит
+# соседний барабан. Причина была в том, что подсказка для подмены ставилась в очередь для
+# ЛЮБОЙ ритм-ноты, а не только для трёх сломанных клавиш - рабочие клавиши душили очередь.
+add_executable(d110_rhythm_hint_bleed rhythm_hint_bleed_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_rhythm_hint_bleed PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_rhythm_hint_bleed PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(d110_rhythm_hint_bleed PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_rhythm_hint_bleed PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Диагностика: pan_verify.cpp только что показал 6 из 8 партий беззвучными после заводского
+# сброса. Дамп живой Timbre Temp/Tone Temp для всех восьми партий сразу после того же
+# сброса - разделяет "правки Synth.cpp сломали рендер" и "живая область просто не
+# заполняется сбросом для большинства партий".
+add_executable(d110_pan_verify_diag pan_verify_diag_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_pan_verify_diag PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_pan_verify_diag PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(d110_pan_verify_diag PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_pan_verify_diag PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Настоящее звуковое измерение панорамы барабанов - до сих пор сверяли только байт в
+# памяти против заводского дампа, никогда реальный звук по обоим каналам.
+add_executable(d110_rhythm_pan_audio rhythm_pan_audio_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_rhythm_pan_audio PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_rhythm_pan_audio PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(d110_rhythm_pan_audio PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_rhythm_pan_audio PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# ---------------------------------------------------------------------------
+# Native D-110 CPU core port (see the "Native D-110 CPU core port" plan) - the D-110's own
+# i8x9x/MCS-96 CPU, hand-ported out of MAME's device/scheduler framework into a standalone
+# interpreter (Source/native/), the same treatment DX100-VST already gave its DX100. Runs
+# stepped inline on the audio thread instead of on MAME's own real-time thread, which is
+# what the MAME-backed D110Core needs and is the root cause of its measured MIDI-to-sound
+# jitter (note_latency_probe.cpp). Phase 1 scope only: CPU core + a minimal memory map
+# (bank register, ROM windows, rams window; LCD/panel/SO stubbed) - enough to boot the real
+# firmware ROM and prove the interpreter itself is correct via a PC-trace comparison against
+# the MAME-backed core. Deliberately links NONE of MAME_LIBS/MAME_INCLUDES/JUCE - that
+# absence is itself the thing this phase has to prove, not just an optimization.
+# ---------------------------------------------------------------------------
+add_executable(d110_native_boot native_boot_probe.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp)
+target_include_directories(d110_native_boot PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# Phase 2 gate: LCD + panel buttons, verified by the same ASCII-art dump technique as
+# core_test.cpp (the MAME-backed original) - run both, compare the printed screens by eye.
+# Still zero MAME/JUCE dependency, same as d110_native_boot above.
+add_executable(d110_native_core_test native_core_test.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp)
+target_include_directories(d110_native_core_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# Phase 3 gate, NVRAM half: round-trip through D110CoreNative::start()/stop(), and format
+# compatibility against a folder an existing MAME-backed D110Core session already wrote.
+add_executable(d110_native_nvram native_nvram_probe.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp)
+target_include_directories(d110_native_nvram PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# Phase 3 gate, RAM-mirror half: does popSysex() actually hand back well-formed DT1 messages
+# once the native core is past its boot-settle resync.
+add_executable(d110_native_mirror native_mirror_probe.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp)
+target_include_directories(d110_native_mirror PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# Phase 4 gate: MIDI-in -> firmware -> NoteEvent round trip.
+add_executable(d110_native_note native_note_probe.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp)
+target_include_directories(d110_native_note PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# Chord stress test - exercises serviceLa32Stub()'s per-context slot lookup, which a single
+# note never needs to distinguish.
+add_executable(d110_native_chord native_chord_probe.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp)
+target_include_directories(d110_native_chord PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# First real sound: native core + real mt32emu Synth, rendered to a WAV file. Links MT32Emu
+# only - still no MAME, no JUCE.
+add_executable(d110_native_audio native_audio_probe.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp)
+target_include_directories(d110_native_audio PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(d110_native_audio PRIVATE MT32Emu::mt32emu)
+
+# Phase 6 gate: factory reset done entirely through the native core, checked against the
+# same known factory-default bytes the MAME-backed tool's output was checked against by hand.
+add_executable(d110_native_factory_reset native_factory_reset_probe.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp)
+target_include_directories(d110_native_factory_reset PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# The actual jitter measurement, same technique as note_latency_probe.cpp against the
+# MAME-backed core - see that file's own header for why this is the real question.
+add_executable(d110_native_note_latency native_note_latency_probe.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp)
+target_include_directories(d110_native_note_latency PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# The check that actually matters: the REAL D110AudioProcessor, compiled against the native
+# backend, driven by processBlock() exactly as a DAW would - not a probe that steps
+# D110CoreNative directly. This is what caught the missing runForSeconds() call.
+add_executable(d110_native_chord_freeze_repro native_chord_freeze_repro.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp)
+target_include_directories(d110_native_chord_freeze_repro PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_executable(d110_native_chord_audio_repro native_chord_audio_repro.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp)
+target_include_directories(d110_native_chord_audio_repro PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(d110_native_chord_audio_repro PRIVATE MT32Emu::mt32emu)
+
+add_executable(d110_native_polyphony_stress native_polyphony_stress_probe.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp)
+target_include_directories(d110_native_polyphony_stress PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_executable(d110_native_plugin_smoke native_plugin_smoke_test.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp)
+target_include_directories(d110_native_plugin_smoke PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_plugin_smoke PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_native_plugin_smoke PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
+# One-shot MAME-backed helper: produces a properly factory-reset nvram folder for
+# native_note_probe.cpp to load (see that file's header comment).
+add_executable(d110_mame_factory_reset_tool mame_factory_reset_tool.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_mame_factory_reset_tool PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_mame_factory_reset_tool PRIVATE ${MAME_DEFS})
+target_link_libraries(d110_mame_factory_reset_tool PRIVATE ${MAME_LIBS} ${MAME_SYS_LIBS})
+target_link_options(d110_mame_factory_reset_tool PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
+# Diagnostic: same raw pushMidi()->popNoteEvent() experiment as native_note_probe.cpp, but
+# against the real MAME-backed core directly - isolates a native-core bug from a property of
+# the raw D110Core interface itself.
+add_executable(d110_mame_note_probe mame_note_probe.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_mame_note_probe PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_mame_note_probe PRIVATE ${MAME_DEFS})
+target_link_libraries(d110_mame_note_probe PRIVATE ${MAME_LIBS} ${MAME_SYS_LIBS})
+target_link_options(d110_mame_note_probe PRIVATE /ignore:4099 /FORCE:MULTIPLE)

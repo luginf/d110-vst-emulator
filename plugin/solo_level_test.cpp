@@ -21,8 +21,14 @@ constexpr int kBlock = 512;
 constexpr double kBlockSeconds = double(kBlock) / kSampleRate;
 using Clock = std::chrono::steady_clock;
 
+// The song title is only ever available as dots on the LCD, so reading it back means owning
+// the character generator. It is found by content rather than by filename: the ROM set names
+// vary between dumps, and a wrong file here would silently turn every title into '?'.
 std::vector<uint8_t> g_cgrom;
 
+// Checked against the glyph for 'A' specifically because it is the one character whose shape
+// is unmistakable at 5x7 and identical across every revision of this part - a crossbar and
+// two uprights. Only the low five bits count; the top three are not part of the cell.
 bool isCgrom(const juce::MemoryBlock &data) {
 	if (data.getSize() != 4096) return false;
 	const auto *p = static_cast<const uint8_t *>(data.getData());
@@ -45,6 +51,9 @@ void loadCgrom() {
 	}
 }
 
+// Dots back to a character, by searching the generator for a cell that matches exactly.
+// Backwards, but there is no other direction available: what the firmware handed the display
+// was a code, and what can be read out of the display afterwards is only the shape it drew.
 char decodeCell(const uint8_t *rows) {
 	if (g_cgrom.empty()) return '?';
 	for (int code = 0x20; code < 0x80; ++code) {
@@ -56,6 +65,8 @@ char decodeCell(const uint8_t *rows) {
 	return '?';
 }
 
+// The SECOND line: the top one carries the running status, which changes constantly, while
+// the song's name sits underneath it and holds still for as long as the song plays.
 std::string lcdLine2(D110AudioProcessor &proc) {
 	uint8_t rows[D110Core::kLcdBytes];
 	if (!proc.getCore().getLcd(rows)) return {};
@@ -65,6 +76,9 @@ std::string lcdLine2(D110AudioProcessor &proc) {
 	return s;
 }
 
+// Takes a LIST of buttons because the demo is started by a combination, and a combination is
+// not the same event as its buttons pressed one after another - the firmware reads the panel
+// as a whole and only sees a combination if the keys overlap in one of its sweeps.
 void press(D110AudioProcessor &proc, std::initializer_list<int> idx, int hold, int settle) {
 	for (int i : idx) proc.getCore().setButton(i, true);
 	std::this_thread::sleep_for(std::chrono::milliseconds(hold));
@@ -106,8 +120,14 @@ Result runSolo(int solo, double seconds) {
 		}
 	}
 
+	// Соло ставится ДО пуска демо, а счётчики обнуляются ДО первой ноты: иначе в цифры
+	// попадёт то, чем прошивка занималась на загрузке, и разница между партиями окажется
+	// разницей между их стартовыми хлопотами.
 	proc.getCore().setSoloPart(solo);
 	proc.getCore().resetTallies();
+	// Пуск демо с панели, как на приборе: Edit+Enter вместе, потом Enter отдельно -
+	// подтверждение. Обе паузы по 200/500 мс не запас на всякий случай: прошивка опрашивает
+	// панель своим сроком, и нажатие короче обхода она просто не заметит.
 	press(proc, {D110Core::buttonIndex(1, 7), D110Core::buttonIndex(1, 0)}, 200, 500);
 	press(proc, {D110Core::buttonIndex(1, 0)}, 200, 500);
 	proc.getCore().startNoteLog();

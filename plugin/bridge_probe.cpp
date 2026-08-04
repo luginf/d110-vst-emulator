@@ -53,9 +53,14 @@ std::vector<uint8_t> snapshot() {
 	return v;
 }
 
+// ASCII only, and deliberately strict at both ends: 0x20..0x7E. Letting control bytes or the
+// high half count as "printable" is what makes a brute-force scan like this useless - a run
+// of zeros or of 0xFF would match everywhere and drown the real names in candidates.
 bool printable(uint8_t c) { return c >= 0x20 && c < 0x7f; }
 
-// Every offset where at least `len` printable characters run.
+// Every offset where at least `len` printable characters run. Every offset, not every
+// 246-byte-aligned one: the base is precisely what is unknown here, so assuming an alignment
+// would assume the answer.
 std::vector<int> nameCandidates(const std::vector<uint8_t> &ram, int len) {
 	std::vector<int> out;
 	for (int i = 0; i + len <= D110Core::kRamSize; ++i) {
@@ -85,6 +90,9 @@ int main(int argc, char **argv) {
 	std::this_thread::sleep_for(std::chrono::seconds(8));
 	std::printf("running: %s\n\n", core.isRunning() ? "yes" : "NO");
 
+	// Exit twice: once is enough from most screens, but the panel is a tree and there is no
+	// way to know from here how deep the boot state left it. A second press from the top does
+	// nothing, so it costs a screen redraw and buys a known starting point.
 	press("Exit", 2);
 	std::this_thread::sleep_for(std::chrono::milliseconds(1500));
 	const auto ram = snapshot();
@@ -94,9 +102,15 @@ int main(int argc, char **argv) {
 	const auto cands = nameCandidates(ram, 10);
 	std::printf("printable 10-char runs: %d\n\n", int(cands.size()));
 
+	// The candidate list flipped into a lookup table. The test below asks "is c+246 also a
+	// candidate?" once per candidate per link, and searching the list itself each time turns
+	// a scan of the whole RAM into something quadratic for no reason.
 	std::vector<char> isName(D110Core::kRamSize, 0);
 	for (int c : cands) isName[(size_t)c] = 1;
 
+	// Two links, not one. A single hit at +246 happens by chance often enough to be worthless
+	// in a RAM this full of text; requiring +246 AND +492 is what makes the signature stand
+	// up, and the chain length printed beside it is how a coincidence still gets spotted.
 	std::printf("=== offsets that repeat with a 246-byte stride ===\n");
 	int found = 0;
 	for (int c : cands) {
@@ -114,7 +128,9 @@ int main(int argc, char **argv) {
 	}
 	if (!found) std::printf("  none - the tone name may not be stored as plain ASCII here\n");
 
-	// For orientation, also show which names sit near the inferred region.
+	// For orientation, also show which names sit near the inferred region. This is the part
+	// that gets read when the block above finds nothing: it answers "were there any names at
+	// all?" separately from "did they form an array?", and those are different failures.
 	std::printf("\n=== 10-char runs anywhere in 0x2000..0x2C00 ===\n");
 	int shown = 0;
 	for (int c : cands) {

@@ -6,7 +6,18 @@
 // reach the hardware, beside whatever the host routes in.
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <mt32emu/mt32emu.h>
+// D110_NATIVE_CORE (off by default) builds this processor against the native, MAME-free
+// CPU port (Source/native/D110CoreNative.h) instead of the MAME-backed D110Core - see the
+// "Native D-110 CPU core port" plan. D110CoreType is a plain type alias, not a new
+// abstraction: every existing D110Core:: reference in this file becomes D110CoreType:: and
+// is byte-for-byte the same code when the flag is off, since the alias just IS D110Core then.
+#ifdef D110_NATIVE_CORE
+#include "native/D110CoreNative.h"
+using D110CoreType = D110CoreNative;
+#else
 #include "D110Core.h"
+using D110CoreType = D110Core;
+#endif
 #include <array>
 #include <memory>
 #include <thread>
@@ -37,6 +48,14 @@ public:
 	void prepareToPlay(double sampleRate, int samplesPerBlock) override;
 	void releaseResources() override;
 	void processBlock(juce::AudioBuffer<float> &buffer, juce::MidiBuffer &midiMessages) override;
+
+	// One stereo MIX bus (always on, same as before this existed) plus six mono INDIVIDUAL
+	// buses matching the real rear panel's MULTI OUT jacks - off by default, since most
+	// hosts and most users only ever want the mix. A part's Output Assign value (System
+	// Reverb byte's old neighbour, repurposed - see munt/mt32emu/src/Synth.cpp) chooses
+	// which of the seven it feeds.
+	static BusesProperties createBuses();
+	bool isBusesLayoutSupported(const BusesLayout &layouts) const override;
 
 	juce::AudioProcessorEditor *createEditor() override;
 	bool hasEditor() const override { return true; }
@@ -113,7 +132,7 @@ public:
 
 	// The emulated D-110 control board: the firmware, its menus, its MSM6222B display and
 	// its 16 panel buttons. Supplies everything mt32emu has no notion of.
-	D110Core &getCore() { return core; }
+	D110CoreType &getCore() { return core; }
 
 	// Reads the LA engine's own copy of a parameter area back out. `packedAddress` is a
 	// Roland address in mt32emu's packed form (three 7-bit bytes squeezed together, so
@@ -329,6 +348,9 @@ private:
 	bool identifyRomData(const juce::MemoryBlock &data, MT32Emu::ROMInfo::Type &typeOut) const;
 
 	juce::MemoryBlock controlRomData, pcmRomData;
+	// The BOSS reverb chip's own 32 KiB program ROM (IC6). Optional: absent, the engine
+	// falls back to its own four built-in modes, same as before this was wired in.
+	juce::MemoryBlock bossRomData;
 	std::unique_ptr<MT32Emu::ArrayFile> controlRomFile;
 	std::unique_ptr<MT32Emu::ArrayFile> pcmRomFile;
 	const MT32Emu::ROMImage *controlROMImage = nullptr;
@@ -358,7 +380,7 @@ private:
 	std::vector<MT32Emu::Bit32u> pendingShortMessages;
 	juce::String lastImportMessage;
 
-	D110Core core;
+	D110CoreType core;
 
 	bool powerBlocked = false;
 

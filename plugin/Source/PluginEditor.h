@@ -107,7 +107,7 @@ private:
 	// The display exactly as the real MSM6222B renders it: one byte per dot row, bit 4
 	// leftmost. No font table and no character codes are involved on this path - the
 	// glyphs come from the controller's own mask CGROM inside the emulated machine.
-	juce::uint8 lcdRows[D110Core::kLcdBytes] = {};
+	juce::uint8 lcdRows[D110CoreType::kLcdBytes] = {};
 	bool lcdLive = false;
 
 	static constexpr int kNumButtons = 16;
@@ -250,6 +250,10 @@ public:
 
 private:
 	void timerCallback() override;
+	// Держит недавно посланные, ещё не подтверждённые правки поверх свежепрочитанной ram -
+	// см. комментарий у PendingEdit. Вызывается сразу после каждого getRam() в
+	// refreshFromInstrument(), обоих мест.
+	void reapplyPendingEdits();
 
 	// Куда пишет поле. Области - те же, что у Roland, и адрес каждой в ОЗУ прошивки
 	// измерен; см. D110Core.
@@ -262,6 +266,16 @@ private:
 		int field = 0;   // смещение внутри записи; для System не используется
 		int lo = 0, hi = 127;
 	};
+
+	// Правый клик по TONE GROUP/TONE - список всех тонов (a/b/i/r, 64 в каждой) вместо
+	// перебора колесом по одному. Общий для живой области партии (Parts) и записи патча
+	// (PARTS OF PATCH внутри Patches) - у обеих одна и та же пара байт группа+номер, разнится
+	// только куда её послать (index) и с каким смещением записи (groupField - адрес байта
+	// группы; номер идёт следующим байтом).
+	void showToneListMenu(Area area, int index, int groupField);
+	// Правый клик по DRUM SOUND на вкладке Rhythm - список всех тембров ударных и памяти,
+	// тем же чтением их имён, что и showToneListMenu.
+	void showRhythmSoundMenu(int slot);
 
 	enum class Tab { Parts, Tone, Rhythm, Patches, Timbres, Tones, System, Monitor, Utility };
 	static constexpr int kNumTabs = 9;
@@ -357,6 +371,19 @@ private:
 	std::vector<uint8_t> ram;
 	uint64_t ramGen = 0;
 	bool ramValid = false;
+
+	// Правки, посланные пользователем и ещё не подтверждённые настоящим ответом прибора.
+	// setValue() ставит оптимистичное значение в `ram` сразу, чтобы поле под курсором не
+	// отставало, - но правка идёт в прошивку тем же путём, что и нота, с той же реальной
+	// задержкой (0-18 мс измерено сегодня), а сама память прошивки меняется постоянно по
+	// не связанным с этим причинам (мигание курсора, лампа MIDI), и каждое такое изменение
+	// поднимает общий счётчик поколения. Без этого списка ближайшее срабатывание таймера
+	// перечитывает ВСЮ память и стирает ещё не принятую прошивкой правку до её настоящего
+	// значения - подёргивание при быстрой прокрутке колесом это ровно оно. Список удерживает
+	// оптимистичное значение до тех пор, пока прошивка сама не подтвердит его или не истечёт
+	// срок ожидания.
+	struct PendingEdit { size_t address; uint8_t value; juce::int64 sentMs; };
+	std::vector<PendingEdit> pendingEdits;
 
 	// Имена тонов из ПЗУ спрашиваются у движка по одному разу: они не меняются, а читать их
 	// на каждой перерисовке значило бы лезть в чужой поток по десять раз в секунду.

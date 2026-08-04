@@ -19,7 +19,15 @@ constexpr double kBlockSeconds = double(kBlock) / kSampleRate;
 using Clock = std::chrono::steady_clock;
 
 // The same gentle, realistic pattern as la32_realistic_test.cpp: one note at a time,
-// ~350ms held, ~150ms gap - NOT a chord stress test.
+// ~350ms held, ~150ms gap - NOT a chord stress test. Being gentle is the whole point: the
+// surprise this probe chases is that the LIGHT load fails worse than the heavy one, so a
+// stress pattern here would answer a question nobody asked.
+//
+// The cycle is counted in blocks because that is the only clock the render loop has: 43
+// blocks of 512 frames at 44100 is ~500ms, and note-off at block 30 puts the held part at
+// ~350ms. Notes walk up a chromatic run (step % 12) so that no two consecutive notes are the
+// same pitch - a repeated pitch can be re-triggered on the voice already holding it, and
+// then the allocation being traced here never happens at all.
 void playRealistic(D110AudioProcessor &proc, double seconds) {
 	juce::AudioBuffer<float> buffer(2, kBlock);
 	const auto begin = Clock::now();
@@ -42,6 +50,11 @@ void playRealistic(D110AudioProcessor &proc, double seconds) {
 	}
 }
 
+// A raw address is unreadable in a trace hundreds of lines long, and worse, the two families
+// below are indexed differently - a dispatch table by voice SLOT at stride 2, a completion
+// table by CONTEXT at stride 1. Printing "eec0[3]" instead of "2EC6" is what makes the two
+// halves of the log comparable at a glance; doing that arithmetic by eye while reading is
+// where the earlier confusion between slots and contexts came from.
 struct Decoded { const char *array; int index; };
 
 Decoded decode(uint16_t addr) {
@@ -86,6 +99,10 @@ int main() {
 	const auto events = proc.getCore().takeCtxEvents();
 	std::printf("\n%d write events captured\n\n", int(events.size()));
 
+	// Filtered, and the count of what was dropped is printed with it. The firmware writes all
+	// over this window for reasons that have nothing to do with voices, and an unfiltered
+	// trace buries the events being looked for - but a filter whose losses are not reported
+	// is how you end up reading "nothing happened" off a screen that was simply not shown it.
 	uint64_t unnamed = 0;
 	std::printf("chronological trace, NAMED tables only (background noise elsewhere filtered):\n");
 	for (const auto &e : events) {
@@ -98,6 +115,12 @@ int main() {
 
 	// Summary: which hardware slots (edc0[]) went busy (0x40) and which ever got a
 	// completion write (f440[] or f460[] touched for the corresponding context).
+	//
+	// Read as three columns of the same story: handed out, handler ran, given back. A slot in
+	// the first list and not the third is one the firmware still believes it is using, and
+	// enough of those is exactly how the instrument runs out of voices while sounding almost
+	// nothing. The lists are printed as raw appearances rather than a tally because an index
+	// showing up twice is itself informative - it means the slot was re-issued.
 	std::printf("\nslots marked busy (edc0[n] = 0x40): ");
 	std::map<int, bool> busySlot;
 	for (const auto &e : events) {

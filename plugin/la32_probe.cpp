@@ -26,6 +26,11 @@ constexpr int kBlock = 512;
 constexpr double kBlockSeconds = double(kBlock) / kSampleRate;
 using Clock = std::chrono::steady_clock;
 
+// Chords rather than single notes, because the interface is what is being looked for and
+// three voices at once make the firmware exercise more of it per cycle. The cycle is 24
+// blocks (~280ms) with note-off at block 16 (~185ms held): short and repeated many times,
+// so that whatever the sound board is talked to about appears often enough to rise above the
+// housekeeping traffic in the log. `chords == false` gives the idle baseline instead.
 void play(D110AudioProcessor &proc, double seconds, bool chords) {
 	juce::AudioBuffer<float> buffer(2, kBlock);
 	const auto begin = Clock::now();
@@ -51,6 +56,10 @@ void play(D110AudioProcessor &proc, double seconds, bool chords) {
 	}
 }
 
+// Reads and writes are counted apart because they answer different questions. A write says
+// the firmware is telling the sound board something; a READ says it is waiting for an answer,
+// and an answer that never comes the way it expects is the thing that leaves it spinning. The
+// PCs are kept per address so a register can be traced back to the routine that touches it.
 struct Access {
 	uint64_t reads = 0, writes = 0;
 	std::map<std::string, uint64_t> pcs;
@@ -79,6 +88,10 @@ void summarise(const std::vector<std::string> &lines) {
 	std::printf("  %d distinct unmapped addresses (%llu log lines, %llu not parsed)\n",
 	            int(byAddress.size()), (unsigned long long)lines.size(),
 	            (unsigned long long)unparsed);
+	// "Zero addresses found" and "the regex stopped matching MAME's wording" look identical
+	// from the outside, and the second one silently reads as the first - as proof that the
+	// firmware touches nothing. So when nothing parsed, print the raw lines instead of a
+	// clean empty table, and the next reader can see at once which of the two happened.
 	if (byAddress.empty() && unparsed) {
 		std::printf("\n  first few raw lines, to fix the pattern:\n");
 		for (size_t i = 0; i < std::min<size_t>(6, lines.size()); ++i)
@@ -108,6 +121,8 @@ int main() {
 
 	D110AudioProcessor proc;
 	proc.prepareToPlay(kSampleRate, kBlock);
+	// Logging on BEFORE power, so the boot sequence is captured too - if the firmware probes
+	// the sound board while starting up, that is part of the interface and it happens once.
 	proc.getCore().setLogUnmapped(true);
 	proc.setPoweredOn(true);
 	std::this_thread::sleep_for(std::chrono::seconds(9));
@@ -120,7 +135,9 @@ int main() {
 	std::printf("\n=== IDLE ===\n");
 	summarise(proc.getCore().takeLogLines());
 
-	// Now play, which is what sends it to the sound board.
+	// Now play, which is what sends it to the sound board. Notes go THROUGH the firmware -
+	// handed straight to the sound engine they would never reach the code under study, and
+	// the log would come back looking exactly like the idle baseline above.
 	proc.setForwardNotesToFirmware(true);
 	play(proc, 8.0, true);
 	std::printf("\n=== WHILE PLAYING ===\n");

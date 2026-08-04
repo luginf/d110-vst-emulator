@@ -80,8 +80,28 @@ static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
 	return {params.begin(), params.end()};
 }
 
+juce::AudioProcessor::BusesProperties D110AudioProcessor::createBuses() {
+	// Bus 0 keeps its original name and stays default-on, unchanged from before individual
+	// outputs existed - a project or host state that only knows this one bus is not affected
+	// by there now being six more.
+	BusesProperties buses;
+	buses = buses.withOutput("Output", juce::AudioChannelSet::stereo(), true);
+	for (int output = 1; output <= 6; ++output)
+		buses = buses.withOutput("INDIVIDUAL " + juce::String(output), juce::AudioChannelSet::mono(), false);
+	return buses;
+}
+
+bool D110AudioProcessor::isBusesLayoutSupported(const BusesLayout &layouts) const {
+	if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo()) return false;
+	for (int bus = 1; bus < layouts.outputBuses.size(); ++bus) {
+		const auto set = layouts.getChannelSet(false, bus);
+		if (!set.isDisabled() && set != juce::AudioChannelSet::mono()) return false;
+	}
+	return true;
+}
+
 D110AudioProcessor::D110AudioProcessor()
-	: AudioProcessor(BusesProperties().withOutput("Output", juce::AudioChannelSet::stereo(), true)),
+	: AudioProcessor(createBuses()),
 	  parameters(*this, nullptr, "PARAMS", createParameterLayout()) {
 	masterVolumeParam = parameters.getRawParameterValue("masterVolume");
 	reverbEnabledParam = parameters.getRawParameterValue("reverbEnabled");
@@ -145,7 +165,17 @@ void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
 		// where the last one left off.
 		const bool virgin = !getMachineNvramFolder().getChildFile("rams").existsAsFile();
 
-		if (!core.start(getMameRomPath().toStdString(), nvram.getFullPathName().toStdString())) {
+		// D110CoreNative wants the plain folder the ROM files sit loose in (same one
+		// getAutoRomFolder() already points every other ROM-loading path at); D110Core wants
+		// a MAME rompath, which is why getMameRomPath() mirrors those same files into a
+		// MAME-shaped romset directory first. Two different search conventions for the same
+		// underlying files, not two different ROM sets.
+#ifdef D110_NATIVE_CORE
+		const auto romArg = getAutoRomFolder().getFullPathName().toStdString();
+#else
+		const auto romArg = getMameRomPath().toStdString();
+#endif
+		if (!core.start(romArg, nvram.getFullPathName().toStdString())) {
 			// Another instance already holds the emulated control board. Stay off rather
 			// than start a second machine, which crashes the host outright.
 			powerBlocked = true;
@@ -162,7 +192,16 @@ void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
 		// realistic single-note test (120 notes over 60s) and the real demo song (three
 		// songs back to back, panel responsive throughout). Safe to leave on unconditionally
 		// - it only ever acts while the firmware is genuinely parked waiting for it.
-		core.setStuckPolicy(D110Core::StuckPolicy::La32Stub);
+		// La32Ramps (the real amplitude/filter envelope model - see D110CoreNative.h's own
+		// comment on La32RampState) measurably fixes La32Stub's voice-starvation problem
+		// (native_polyphony_stress_probe: 31/32 hardware slots stuck busy under La32Stub vs
+		// 2/32 under La32Ramps after a 60-note run) - but a live DAW session reported a full
+		// freeze (silent, LCD not updating) under real fast notes + chords that no offline
+		// stress test built so far reproduces, even a 20-second dense chord/note sequence with
+		// real audio rendering. Reverted to La32Stub here - occasional dropped notes under
+		// heavy load beats a hang - while that freeze gets root-caused for real rather than
+		// shipped on the strength of tests that didn't happen to trigger it.
+		core.setStuckPolicy(D110CoreType::StuckPolicy::La32Stub);
 		if (virgin) core.factoryReset();
 	} else {
 		// Stopping is what makes MAME write its NVRAM out, so this is where the state
@@ -313,8 +352,11 @@ bool D110AudioProcessor::tryAutoLoadRoms() {
 	}
 
 	// Nothing recognised as a whole image? The folder may still hold a MAME romset,
-	// whose per-chip dumps have to be joined before mt32emu will know them.
-	if (controlRomData.getSize() == 0 || pcmRomData.getSize() == 0)
+	// whose per-chip dumps have to be joined before mt32emu will know them. Also runs
+	// whenever the BOSS ROM specifically is still missing: it is never a "whole image" as
+	// far as identifyRomData() is concerned (it isn't Control or PCM), so the loop above
+	// can never find it even when Control/PCM already came from whole-image files.
+	if (controlRomData.getSize() == 0 || pcmRomData.getSize() == 0 || bossRomData.getSize() == 0)
 		tryAssembleRomsFromChipDumps(folder);
 
 	if (controlRomData.getSize() == 0 || pcmRomData.getSize() == 0) return false;
@@ -338,6 +380,10 @@ bool D110AudioProcessor::tryAssembleRomsFromChipDumps(const juce::File &folder) 
 	static const Chip kPresets      = { "05587a0542b01625dcde37de5bb339880e47eb93", 131072 };
 	static const Chip kWaveIc7      = { "6760d14900161b8715c2bfd4ebe997877087c90c", 524288 };
 	static const Chip kWaveIc8      = { "9c59f50518a070461b2ec6cb4e43ee7cc1e905b6", 524288 };
+	// IC6, the BOSS reverb chip's own program ROM (HG61H20R36F / BOS-007). Unlike the other
+	// four chips this one is not folded into a Control/PCM image mt32emu already knows how
+	// to identify - it goes to setBossReverbROM() separately, in openSynthIfReady() below.
+	static const Chip kBoss         = { "17bd2887711c5c5458aba6d3be5972b2096eb450", 32768 };
 
 	juce::MemoryBlock firmwareV110, firmwareV106, presets, waveIc7, waveIc8;
 
@@ -355,6 +401,7 @@ bool D110AudioProcessor::tryAssembleRomsFromChipDumps(const juce::File &folder) 
 		take(kPresets, presets);
 		take(kWaveIc7, waveIc7);
 		take(kWaveIc8, waveIc8);
+		take(kBoss, bossRomData);
 	};
 
 	for (const auto &entry : juce::RangedDirectoryIterator(folder, true, "*", juce::File::findFiles)) {
@@ -436,6 +483,13 @@ bool D110AudioProcessor::openSynthIfReady() {
 	}
 
 	auto newSynth = std::make_unique<MT32Emu::Synth>();
+	// Must happen before open() - initReverbModels() decides right there whether to build
+	// the engine's own four modes or all eight of the real chip's, and open() is what calls
+	// it. Absent or the wrong size, this is silently a no-op and the engine falls back to
+	// its own four modes exactly as it did before the BOSS ROM was wired in.
+	if (bossRomData.getSize() != 0)
+		newSynth->setBossReverbROM(static_cast<const MT32Emu::Bit8u *>(bossRomData.getData()),
+		                            static_cast<MT32Emu::Bit32u>(bossRomData.getSize()));
 	bool useSuper = superModeParam != nullptr && superModeParam->load() > 0.5f;
 	if (!newSynth->open(*newControlImage, *newPcmImage, MT32Emu::DEFAULT_MAX_PARTIALS,
 						 MT32Emu::AnalogOutputMode_COARSE, useSuper)) {
@@ -475,6 +529,34 @@ void D110AudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
 	interleavedScratch.resize(static_cast<size_t>(samplesPerBlock) * 2);
 	osMidiCollector.reset(sampleRate);
 	if (synth) rebuildSampleRateConverter();
+
+	// Switched on by default, at the user's request: a rack unit you have to reach for and
+	// flip on every time you open the project is a step nobody wants between loading a
+	// session and hearing it. setPoweredOn(true) is idempotent - already-on is a no-op - so
+	// calling it on every prepareToPlay (a host may call this more than once) is harmless,
+	// and it fails exactly as a manual click would if the ROMs are missing or another
+	// instance already holds the machine: poweredOn stays false, the panel shows POWER up,
+	// and the reason is on the right-click menu, same as before.
+	setPoweredOn(true);
+
+	// A note reaching the firmware is not the same event as a note reaching the engine
+	// directly: it goes processBlock -> D110CoreType::pushMidi()'s ring buffer -> the machine
+	// thread's own 3125Hz timer, shifted in exactly as a real MIDI cable would, then the
+	// firmware's own dispatch code before the sound is actually audible. Measured
+	// (plugin/note_latency_probe.cpp, isolated single notes, no MIDI congestion): 0-18ms,
+	// close to uniformly spread rather than clustered around one number - the audio thread
+	// and the machine thread are genuinely two different clocks, and this plugin was
+	// reporting zero latency to the host regardless, so a DAW's own delay compensation
+	// never accounted for any of it.
+	//
+	// setLatencySamples() cannot make the jitter itself disappear - PDC shifts everything
+	// else by a FIXED amount, and the true delay here varies note to note. What it can fix
+	// is the SYSTEMATIC part: without it, this plugin's audio was always emitted late
+	// relative to a perfectly compensated track, never early. Reporting one block's worth
+	// centres that jitter on the grid instead of trailing behind it - one block because
+	// that quantisation (host hands us MIDI once per callback; the firmware's clock is not
+	// the audio thread's clock) is the one piece of this delay that is not itself random.
+	setLatencySamples(samplesPerBlock);
 }
 
 void D110AudioProcessor::releaseResources() {
@@ -554,7 +636,7 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 	// действуют в момент разбора очередей, и порядок этого цикла - параметры, потом
 	// ноты - становится настоящим.
 	{
-		MT32Emu::Bit8u sysex[D110Core::kMaxSysexBytes];
+		MT32Emu::Bit8u sysex[D110CoreType::kMaxSysexBytes];
 		while (const int len = core.popSysex(sysex))
 			synth->playSysexNow(sysex, static_cast<MT32Emu::Bit32u>(len));
 	}
@@ -570,7 +652,7 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 	// playMsgOnPart addresses the part directly (0-7 voice, 8 rhythm), which is exactly
 	// what the firmware hands over, so no channel-to-part mapping has to be re-derived here.
 	{
-		D110Core::NoteEvent ev;
+		D110CoreType::NoteEvent ev;
 		while (core.popNoteEvent(ev)) {
 			if (ev.part > 8) continue;
 			synth->playMsgOnPart(ev.part, ev.on ? 0x9 : 0x8, ev.note, ev.velocity);
@@ -582,6 +664,20 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 
 	const float masterVolume = masterVolumeParam->load();
 	const int numOutChannels = buffer.getNumChannels();
+
+	// The six INDIVIDUAL buses are disabled by default (createBuses()), so most hosts and
+	// most projects never pay for this at all: MULTI_OUTPUT_STREAMS below only gets built,
+	// and renderD110MultiOutput() only gets called, when a host has actually connected at
+	// least one of them. Otherwise this takes the exact code path it always did.
+	bool multiOutputActive = false;
+	float *individualChannel[6] = {};
+	for (int output = 0; output < 6; ++output) {
+		auto bus = getBusBuffer(buffer, false, output + 1);
+		if (bus.getNumChannels() > 0) {
+			individualChannel[output] = bus.getWritePointer(0);
+			multiOutputActive = true;
+		}
+	}
 
 	auto midiIterator = midiMessages.cbegin();
 	const auto midiEnd = midiMessages.cend();
@@ -599,8 +695,17 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 
 		const int samplesToRender = nextEventSample - samplePos;
 		if (samplesToRender > 0) {
-			sampleRateConverter->getOutputSamples(interleavedScratch.data(),
-												   static_cast<unsigned int>(samplesToRender));
+			if (multiOutputActive) {
+				MT32Emu::D110MultiOutputStreams streams = {};
+				streams.mixStereo = interleavedScratch.data();
+				for (int output = 0; output < 6; ++output)
+					streams.individualMono[output] =
+						individualChannel[output] != nullptr ? individualChannel[output] + samplePos : nullptr;
+				synth->renderD110MultiOutput(streams, static_cast<MT32Emu::Bit32u>(samplesToRender));
+			} else {
+				sampleRateConverter->getOutputSamples(interleavedScratch.data(),
+													   static_cast<unsigned int>(samplesToRender));
+			}
 			float *left = buffer.getWritePointer(0, samplePos);
 			float *right = numOutChannels > 1 ? buffer.getWritePointer(1, samplePos) : nullptr;
 			// Насыщение ЦАПа, и только потом ручка громкости - в приборе они стоят
@@ -638,6 +743,22 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 		handleIncomingMidiMessage((*midiIterator).getMessage());
 		++midiIterator;
 	}
+
+#ifdef D110_NATIVE_CORE
+	// The MAME-backed D110Core advances on its own real-time thread regardless of whether
+	// processBlock() is even being called, which is exactly the two-clocks problem this whole
+	// port exists to remove - so nothing in the original code ever had to step it forward from
+	// here. D110CoreNative has no thread of its own: it only advances when explicitly told to,
+	// and this is that call. Placed at the END of the block, after every host MIDI event above
+	// has already reached core.pushMidi() (inside forwardMidiToFirmware(), called from
+	// handleIncomingMidiMessage()) - so this step is what actually processes everything this
+	// block just queued, and the results (popSysex/popNoteEvent, drained at the TOP of this
+	// function) surface on the NEXT processBlock call. That's the measured, fixed one-block
+	// latency (native_note_latency_probe.cpp: 11.61ms, zero jitter across 15 trials) -
+	// setLatencySamples(samplesPerBlock) in prepareToPlay() already reports and compensates
+	// for exactly this.
+	core.runForSeconds(double(numSamples) / currentSampleRate);
+#endif
 }
 
 void D110AudioProcessor::handleIncomingMidiMessage(const juce::MidiMessage &message) {
@@ -724,6 +845,34 @@ void D110AudioProcessor::forwardMidiToFirmware(const juce::MidiMessage &message)
 	if (!forwardNotes.load(std::memory_order_relaxed)
 	    && (message.isNoteOnOrOff() || message.isAftertouch() || message.isChannelPressure()))
 		return;
+
+	// See D110CoreType::hintRhythmKey(): a handful of rhythm timbres make the firmware's own
+	// note-completion write carry a small placeholder instead of the real key, and this is
+	// the one place that still knows what the real key was. Channel 10 is the factory
+	// rhythm channel, the same assumption the rest of this project already makes (rhythm
+	// probes, docs) rather than something tracked per chanAssign here.
+	//
+	// Gated to the three measured-broken timbres (64, 65, 66) specifically - NOT every
+	// rhythm hit. Queuing a hint for every drum, working ones included, was the bug a
+	// session found by ear: the queue is a plain FIFO with no link back to which key it was
+	// for, so an ordinary kick or snare played earlier sat in it and later got handed to an
+	// unrelated hi-hat hit whose own completion happened to need a substitute, printing the
+	// wrong drum onto that key until the backlog cleared. Checking the CURRENT Rhythm Setup
+	// tembr keeps the queue holding only entries a broken completion could plausibly be
+	// asking for.
+	if (message.isNoteOn() && message.getChannel() == 10) {
+		const int note = message.getNoteNumber();
+		if (note >= D110CoreType::kRhythmFirstKey && note < D110CoreType::kRhythmFirstKey + D110CoreType::kNumRhythmKeys) {
+			std::vector<uint8_t> ram(D110CoreType::kRamSize, 0);
+			if (core.getRam(ram.data())) {
+				const size_t at = size_t(D110CoreType::kRamRhythmTemp)
+				                + size_t(note - D110CoreType::kRhythmFirstKey) * D110CoreType::kRhythmRecord;
+				const uint8_t tembr = ram[at];
+				if (tembr == 64 || tembr == 65 || tembr == 66)
+					core.hintRhythmKey(juce::uint8(note));
+			}
+		}
+	}
 
 	core.pushMidi(static_cast<const juce::uint8 *>(raw), size);
 }
@@ -839,7 +988,7 @@ void D110AudioProcessor::importSysexBank(const juce::File &file) {
 	for (const auto &m : messages) bytes += m.size();
 	// It goes into the control board down an emulated MIDI cable at the real 31250 baud,
 	// so a big bank genuinely takes a few seconds to land, exactly as on the hardware.
-	const int seconds = int(double(bytes) / D110Core::kMidiBytesPerSecond + 0.5);
+	const int seconds = int(double(bytes) / D110CoreType::kMidiBytesPerSecond + 0.5);
 	lastImportMessage = "Sending " + juce::String(messages.size()) + " SysEx message(s) from "
 		+ file.getFileName()
 		+ (seconds >= 2 ? " (about " + juce::String(seconds) + "s at MIDI speed)" : juce::String());
@@ -873,7 +1022,7 @@ void D110AudioProcessor::stepPatch(int direction) {
 // Every one of these builds a Roland "Data set 1" and hands it to the CONTROL BOARD's own
 // MIDI input, which is the same door an external editor knocks on. Nothing goes to the
 // sound engine from here: the firmware writes its memory, and the mirror
-// (D110Core::emitRegionSysex) carries that across on its next snapshot - so a drawer edit
+// (D110CoreType::emitRegionSysex) carries that across on its next snapshot - so a drawer edit
 // and a panel edit are the same event, and the instrument's own display shows both.
 //
 // That the firmware accepts them, and where each one lands, is MEASURED - see
@@ -883,29 +1032,29 @@ void D110AudioProcessor::stepPatch(int direction) {
 void D110AudioProcessor::sendAreaData(juce::uint32 sysexAddress, int offset,
                                       const juce::uint8 *data, int length) {
 	if (!core.isRunning() || data == nullptr || length <= 0) return;
-	juce::uint8 msg[D110Core::kMaxSysexBytes];
-	const int n = D110Core::buildDt1Message(sysexAddress, offset, data, length, msg);
+	juce::uint8 msg[D110CoreType::kMaxSysexBytes];
+	const int n = D110CoreType::buildDt1Message(sysexAddress, offset, data, length, msg);
 	if (n > 0) core.pushMidi(msg, n);
 }
 
 void D110AudioProcessor::sendTimbreTempParam(int part, int field, juce::uint8 value) {
-	if (part < 0 || part >= D110Core::kNumParts) return;
-	if (field < 0 || field >= D110Core::kTimbreTempRecord) return;
+	if (part < 0 || part >= D110CoreType::kNumParts) return;
+	if (field < 0 || field >= D110CoreType::kTimbreTempRecord) return;
 	const juce::uint8 v = value & 0x7f;
-	sendAreaData(D110Core::kSysexTimbreTemp, part * D110Core::kTimbreTempRecord + field, &v, 1);
+	sendAreaData(D110CoreType::kSysexTimbreTemp, part * D110CoreType::kTimbreTempRecord + field, &v, 1);
 }
 
 void D110AudioProcessor::sendToneTempParam(int part, int offset, juce::uint8 value) {
-	if (part < 0 || part > 7 || offset < 0 || offset >= D110Core::kToneRecord) return;
+	if (part < 0 || part > 7 || offset < 0 || offset >= D110CoreType::kToneRecord) return;
 	const juce::uint8 v = value & 0x7f;
-	sendAreaData(D110Core::kSysexToneTemp, part * D110Core::kToneRecord + offset, &v, 1);
+	sendAreaData(D110CoreType::kSysexToneTemp, part * D110CoreType::kToneRecord + offset, &v, 1);
 }
 
 void D110AudioProcessor::sendRhythmParam(int slot, int field, juce::uint8 value) {
-	if (slot < 0 || slot >= D110Core::kNumRhythmKeys) return;
-	if (field < 0 || field >= D110Core::kRhythmRecord) return;
+	if (slot < 0 || slot >= D110CoreType::kNumRhythmKeys) return;
+	if (field < 0 || field >= D110CoreType::kRhythmRecord) return;
 	const juce::uint8 v = value & 0x7f;
-	sendAreaData(D110Core::kSysexRhythmTemp, slot * D110Core::kRhythmRecord + field, &v, 1);
+	sendAreaData(D110CoreType::kSysexRhythmTemp, slot * D110CoreType::kRhythmRecord + field, &v, 1);
 }
 
 void D110AudioProcessor::sendSystemParam(int field, juce::uint8 value) {
@@ -915,31 +1064,31 @@ void D110AudioProcessor::sendSystemParam(int field, juce::uint8 value) {
 	// области, а не по тому, что редактор рисует.
 	if (field < 0 || field > 22) return;
 	const juce::uint8 v = value & 0x7f;
-	sendAreaData(D110Core::kSysexSystem, field, &v, 1);
+	sendAreaData(D110CoreType::kSysexSystem, field, &v, 1);
 }
 
 void D110AudioProcessor::sendTimbreMemoryParam(int slot, int field, juce::uint8 value) {
-	if (slot < 0 || slot >= D110Core::kNumTimbres) return;
-	if (field < 0 || field >= D110Core::kTimbreRecord) return;
+	if (slot < 0 || slot >= D110CoreType::kNumTimbres) return;
+	if (field < 0 || field >= D110CoreType::kTimbreRecord) return;
 	const juce::uint8 v = value & 0x7f;
-	sendAreaData(D110Core::kSysexTimbres, slot * D110Core::kTimbreRecord + field, &v, 1);
+	sendAreaData(D110CoreType::kSysexTimbres, slot * D110CoreType::kTimbreRecord + field, &v, 1);
 }
 
 void D110AudioProcessor::sendPatchMemoryParam(int patch, int field, juce::uint8 value) {
-	if (patch < 0 || patch >= D110Core::kNumPatches) return;
-	if (field < 0 || field >= D110Core::kPatchRecord) return;
+	if (patch < 0 || patch >= D110CoreType::kNumPatches) return;
+	if (field < 0 || field >= D110CoreType::kPatchRecord) return;
 	const juce::uint8 v = value & 0x7f;
-	sendAreaData(D110Core::kSysexPatches, patch * D110Core::kPatchRecord + field, &v, 1);
+	sendAreaData(D110CoreType::kSysexPatches, patch * D110CoreType::kPatchRecord + field, &v, 1);
 }
 
 void D110AudioProcessor::sendName(juce::uint32 sysexAddress, int offset,
                                   const juce::String &name) {
-	juce::uint8 data[D110Core::kNameChars];
-	for (int i = 0; i < D110Core::kNameChars; ++i) {
+	juce::uint8 data[D110CoreType::kNameChars];
+	for (int i = 0; i < D110CoreType::kNameChars; ++i) {
 		const juce::juce_wchar ch = (i < name.length()) ? name[i] : ' ';
 		data[i] = juce::uint8((ch >= 32 && ch < 127) ? ch : ' ');
 	}
-	sendAreaData(sysexAddress, offset, data, D110Core::kNameChars);
+	sendAreaData(sysexAddress, offset, data, D110CoreType::kNameChars);
 }
 
 void D110AudioProcessor::sendDisplayMessage(const juce::String &text) {
@@ -951,7 +1100,7 @@ void D110AudioProcessor::sendDisplayMessage(const juce::String &text) {
 		const juce::juce_wchar ch = (i < text.length()) ? text[i] : ' ';
 		data[i] = juce::uint8((ch >= 32 && ch < 127) ? ch : ' ');
 	}
-	sendAreaData(D110Core::kSysexDisplay, 0, data, 20);
+	sendAreaData(D110CoreType::kSysexDisplay, 0, data, 20);
 }
 
 void D110AudioProcessor::selectTimbreForPart(int part, int timbre) {
@@ -961,9 +1110,9 @@ void D110AudioProcessor::selectTimbreForPart(int part, int timbre) {
 	// Канал берётся из карты самой прошивки (System Area, chanAssign), а не считается по
 	// заводской формуле "партия N на канале N+1": эту карту можно изменить, и тогда
 	// формула отправила бы смену программы мимо.
-	std::vector<uint8_t> ram(D110Core::kRamSize, 0);
+	std::vector<uint8_t> ram(D110CoreType::kRamSize, 0);
 	if (!core.getRam(ram.data())) return;
-	const int chan = ram[(size_t)D110Core::kRamSystem + 13 + (size_t)part];
+	const int chan = ram[(size_t)D110CoreType::kRamSystem + 13 + (size_t)part];
 	if (chan > 15) return;   // партия выключена - слать некуда
 
 	const juce::uint8 bytes[2] = { juce::uint8(0xC0 | chan), juce::uint8(timbre & 0x7f) };
@@ -985,19 +1134,19 @@ void D110AudioProcessor::selectTimbreForPart(int part, int timbre) {
 // - измерено plugin/editor_write_probe.cpp. Отсюда путь до любого патча: не больше семи
 // нажатий Bank+ и семи Number+.
 void D110AudioProcessor::selectPatch(int patch) {
-	if (patch < 0 || patch >= D110Core::kNumPatches) return;
+	if (patch < 0 || patch >= D110CoreType::kNumPatches) return;
 	if (!core.isRunning() || patchSteps > 0) return;
 
-	std::vector<uint8_t> ram(D110Core::kRamSize, 0);
+	std::vector<uint8_t> ram(D110CoreType::kRamSize, 0);
 	if (!core.getRam(ram.data())) return;
-	const int current = ram[(size_t)D110Core::kRamPatchNumber];
-	if (current < 0 || current >= D110Core::kNumPatches) return;
+	const int current = ram[(size_t)D110CoreType::kRamPatchNumber];
+	if (current < 0 || current >= D110CoreType::kNumPatches) return;
 
 	patchQueue.clear();
 	// Сперва на страницу выбора патча - оттуда Bank и Number значат номер патча, а не
 	// что-нибудь ещё. Нажимается всегда, даже если патч уже нужный: пользователь щёлкнул
 	// по патчу и вправе увидеть его на индикаторе.
-	patchQueue.push_back(D110Core::buttonIndex(0, 6));   // Patch
+	patchQueue.push_back(D110CoreType::buttonIndex(0, 6));   // Patch
 
 	// Ход считается СО ЗНАКОМ, и вниз идут кнопки со стрелкой вниз. Кольцевая арифметика
 	// здесь не работает, и это измерено: Bank+ у прибора НЕ перекатывается с восьмого банка
@@ -1005,8 +1154,8 @@ void D110AudioProcessor::selectPatch(int patch) {
 	// оставлял прибор на I-84 - ровно там, где кончился банк (plugin/editor_test.cpp).
 	const int bankStep = (patch / 8) - (current / 8);
 	const int numberStep = (patch % 8) - (current % 8);
-	const int bankButton = D110Core::buttonIndex(bankStep >= 0 ? 0 : 1, 2);     // Bank+ / Bank-
-	const int numberButton = D110Core::buttonIndex(numberStep >= 0 ? 0 : 1, 1); // Number+ / Number-
+	const int bankButton = D110CoreType::buttonIndex(bankStep >= 0 ? 0 : 1, 2);     // Bank+ / Bank-
+	const int numberButton = D110CoreType::buttonIndex(numberStep >= 0 ? 0 : 1, 1); // Number+ / Number-
 	for (int i = 0; i < std::abs(bankStep); ++i) patchQueue.push_back(bankButton);
 	for (int i = 0; i < std::abs(numberStep); ++i) patchQueue.push_back(numberButton);
 
@@ -1039,10 +1188,10 @@ void D110AudioProcessor::timerCallback() {
 
 int D110AudioProcessor::currentPatchNumber() const {
 	if (!core.isRunning()) return -1;
-	std::vector<uint8_t> ram(D110Core::kRamSize, 0);
+	std::vector<uint8_t> ram(D110CoreType::kRamSize, 0);
 	if (!core.getRam(ram.data())) return -1;
-	const int n = ram[(size_t)D110Core::kRamPatchNumber];
-	return (n >= 0 && n < D110Core::kNumPatches) ? n : -1;
+	const int n = ram[(size_t)D110CoreType::kRamPatchNumber];
+	return (n >= 0 && n < D110CoreType::kNumPatches) ? n : -1;
 }
 
 // Правка патча, слышная сразу. Память патча пишется всегда, а если правится тот патч,
@@ -1067,16 +1216,16 @@ void D110AudioProcessor::editPatchField(int patch, int field, juce::uint8 value)
 		// называют разные тона. Измерено: развели группы, покрутили номер, получили патч
 		// (1,0) против живой области (0,0) (plugin/editor_test.cpp, раздел 5).
 		if (offset == 0 || offset == 1) {
-			std::vector<uint8_t> ram(D110Core::kRamSize, 0);
+			std::vector<uint8_t> ram(D110CoreType::kRamSize, 0);
 			if (!core.getRam(ram.data())) return;
-			const size_t at = size_t(D110Core::kRamPatches)
-			                + size_t(patch) * D110Core::kPatchRecord + 31 + size_t(part) * 12;
+			const size_t at = size_t(D110CoreType::kRamPatches)
+			                + size_t(patch) * D110CoreType::kPatchRecord + 31 + size_t(part) * 12;
 			// Второй байт пары берётся из самой записи патча: та, что в ОЗУ, ещё не знает о
 			// правке, которая только что ушла эксклюзивным сообщением, поэтому правимый байт
 			// подставляется вручную.
 			juce::uint8 pair[2] = { ram[at], ram[at + 1] };
 			pair[offset] = value & 0x7f;
-			sendAreaData(D110Core::kSysexTimbreTemp, part * D110Core::kTimbreTempRecord, pair, 2);
+			sendAreaData(D110CoreType::kSysexTimbreTemp, part * D110CoreType::kTimbreTempRecord, pair, 2);
 			return;
 		}
 		sendTimbreTempParam(part, offset, value);
@@ -1094,28 +1243,28 @@ void D110AudioProcessor::editPatchField(int patch, int field, juce::uint8 value)
 static void sendToneBlock(D110AudioProcessor &proc, juce::uint32 address, int offset,
                           const uint8_t *from) {
 	constexpr int kChunk = 123;
-	for (int off = 0; off < D110Core::kToneRecord; off += kChunk) {
-		const int len = juce::jmin(kChunk, D110Core::kToneRecord - off);
+	for (int off = 0; off < D110CoreType::kToneRecord; off += kChunk) {
+		const int len = juce::jmin(kChunk, D110CoreType::kToneRecord - off);
 		proc.sendAreaData(address, offset + off, from + off, len);
 	}
 }
 
 void D110AudioProcessor::auditionTone(int part, int slot) {
-	if (part < 0 || part > 7 || slot < 0 || slot >= D110Core::kNumTones) return;
+	if (part < 0 || part > 7 || slot < 0 || slot >= D110CoreType::kNumTones) return;
 	if (!core.isRunning()) return;
-	std::vector<uint8_t> ram(D110Core::kRamSize, 0);
+	std::vector<uint8_t> ram(D110CoreType::kRamSize, 0);
 	if (!core.getRam(ram.data())) return;
-	sendToneBlock(*this, D110Core::kSysexToneTemp, part * D110Core::kToneRecord,
-	              ram.data() + D110Core::kRamTones + slot * D110Core::kToneMemRecord);
+	sendToneBlock(*this, D110CoreType::kSysexToneTemp, part * D110CoreType::kToneRecord,
+	              ram.data() + D110CoreType::kRamTones + slot * D110CoreType::kToneMemRecord);
 }
 
 void D110AudioProcessor::storeToneFromPart(int part, int slot) {
-	if (part < 0 || part > 7 || slot < 0 || slot >= D110Core::kNumTones) return;
+	if (part < 0 || part > 7 || slot < 0 || slot >= D110CoreType::kNumTones) return;
 	if (!core.isRunning()) return;
-	std::vector<uint8_t> ram(D110Core::kRamSize, 0);
+	std::vector<uint8_t> ram(D110CoreType::kRamSize, 0);
 	if (!core.getRam(ram.data())) return;
-	sendToneBlock(*this, D110Core::kSysexTones, slot * D110Core::kToneMemRecord,
-	              ram.data() + D110Core::kRamToneTemp + part * D110Core::kToneRecord);
+	sendToneBlock(*this, D110CoreType::kSysexTones, slot * D110CoreType::kToneMemRecord,
+	              ram.data() + D110CoreType::kRamToneTemp + part * D110CoreType::kToneRecord);
 }
 
 void D110AudioProcessor::logIncomingMidi(const juce::MidiMessage &message) {
@@ -1190,7 +1339,7 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	// back to the file only when powered off.
 	juce::MemoryBlock rams;
 	if (core.isRunning()) {
-		rams.setSize(D110Core::kRamSize);
+		rams.setSize(D110CoreType::kRamSize);
 		if (!core.getRam(static_cast<juce::uint8 *>(rams.getData()))) rams.reset();
 	}
 	if (rams.getSize() == 0) rams = readNvramFile("rams");
@@ -1200,7 +1349,7 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	// которой в разделяемой памяти машины сейчас одни 0xFF.
 	juce::MemoryBlock memcs;
 	if (core.isRunning()) {
-		memcs.setSize(D110Core::kCardSize);
+		memcs.setSize(D110CoreType::kCardSize);
 		if (!core.getCardImage(static_cast<juce::uint8 *>(memcs.getData()))) memcs.reset();
 	}
 	if (memcs.getSize() == 0) memcs = readNvramFile("memcs");
@@ -1256,7 +1405,7 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 
 	// Проект старше этой возможности карту не вынимал, поэтому по умолчанию она на месте.
 	// Содержимое её при этом уже лежит в файле выше, и ядро подхватит его при включении даже
-	// с вынутой картой - см. D110Core::osdApplyCard.
+	// с вынутой картой - см. D110CoreType::osdApplyCard.
 	core.setCardInserted(xml->getIntAttribute("cardInserted", 1) != 0);
 	core.setCardWriteProtect(xml->getIntAttribute("cardWriteProtect", 0) != 0);
 }

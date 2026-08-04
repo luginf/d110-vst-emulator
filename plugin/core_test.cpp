@@ -12,6 +12,10 @@
 
 namespace {
 
+// Two search roots, semicolon-separated, handed to MAME as its -rompath: it tries each in
+// turn, so both ROM sets can sit side by side and whichever holds d110 wins. Hardcoded on
+// purpose - this is a bench tool started by hand, not the plugin, which finds its ROMs
+// through the processor's own settings.
 const char *kRomPath =
 	"C:\\Users\\bd260\\Downloads\\MAME 0.288 ROMs (non-merged);"
 	"C:\\Users\\bd260\\Downloads\\MAME_0.288_ROMs_[merged]";
@@ -51,6 +55,10 @@ void printLcd(D110Core &core, const char *label) {
 	}
 }
 
+// Held down for 120ms, then left alone for 400. Both waits are real time and both are
+// needed: the firmware sweeps the panel matrix on its own timer, so a press shorter than a
+// sweep is simply never seen, and the screen it opens is drawn some way after the button
+// comes back up. Reading the LCD straight after the release catches the previous menu.
 void press(D110Core &core, const char *name, int holdMs = 120) {
 	const int idx = indexOf(name);
 	if (idx < 0) { std::printf("!! unknown button %s\n", name); return; }
@@ -74,10 +82,15 @@ int main(int argc, char **argv) {
 	for (int i = 0; i < 12 && !core.isRunning(); ++i)
 		std::this_thread::sleep_for(std::chrono::milliseconds(500));
 	std::printf("running: %s\n", core.isRunning() ? "yes" : "NO");
+	// isRunning() only promises the CPU is stepping. The patch screen settles seconds after
+	// that, so the first LCD frame is worth nothing until this wait is over.
 	std::this_thread::sleep_for(std::chrono::seconds(8));
 
 	printLcd(core, "boot");
 
+	// Exit between menus rather than trusting each screen to replace the last: the panel is
+	// a tree, and Timbre pressed from inside Part is not the same key as Timbre pressed from
+	// the top. Without the Exits this walk drifts and the labels stop matching the screens.
 	press(core, "Part");    printLcd(core, "after Part");
 	press(core, "Exit");
 	press(core, "Timbre");  printLcd(core, "after Timbre");

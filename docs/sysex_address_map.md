@@ -146,16 +146,18 @@ The base is certain — read as Roland's structure, `0x2D94` gives
 **1 2 3 4 5 6 7 8 9**, the D-110's documented "Part 1 answers on MIDI channel 2"
 assignment. Neither could be coincidence.
 
-But three fields must **not** be sent to the engine:
+Two fields must **not** be sent to the engine, and one field that used to be
+excluded for the same kind of reason no longer needs to be:
 
-| Offset | Field | Reads | Why it is excluded |
+| Offset | Field | Reads | Why |
 | --- | --- | --- | --- |
-| 0 | `masterTune` | `0x4A` | The panel shows 442, while Roland's documented 0–127 → 432.1–457.6 Hz mapping makes `0x4A` ≈ 447. The two scales disagree, so mirroring it would detune everything against the display. |
-| 1–3 | reverb type/time/level | `04 04 04` | **The D-110 has more reverb types than the engine can represent.** Stepped through on the panel, its Reverb Type runs `1…8` plus `OFF`; mt32emu models the MT-32's four modes only (`reverbMode` 0–3: room, hall, plate, tap delay). The stored `04` is the D-110's Type 5 — a perfectly valid setting with no MT-32 equivalent. See below. |
-| 22 | `masterVol` | `00` | **The D-110's volume is a physical knob**, so the firmware never fills this byte in. Sending it set the engine's master volume to zero and dropped the whole instrument by about 30 dB — which is how this was found. |
+| 0 | `masterTune` | `0x4A` | The panel shows 442, while Roland's documented 0–127 → 432.1–457.6 Hz mapping makes `0x4A` ≈ 447. The two scales disagree, so mirroring it would detune everything against the display. Still excluded. |
+| 22 | `masterVol` | `00` | **The D-110's volume is a physical knob**, so the firmware never fills this byte in. Sending it set the engine's master volume to zero and dropped the whole instrument by about 30 dB — which is how this was found. Still excluded. |
+| 1–3 | reverb type/time/level | `04 04 04` | Was excluded: mt32emu's own four reverb modes have no honest correspondence to the D-110's eight. **No longer excluded** — since 2026-08-04 the engine runs a real emulation of the BOSS reverb chip (`BossEmu`, `plugin/... setBossReverbROM()`), with all eight of the D-110's own ROM banks addressed by the same zero-based index this byte already holds (measured: the panel's "Type 5" reads back as `04`). The byte needs no translation, only forwarding - see `D110Core::kMirrorRegions`. |
 
-So only the verified middle is mirrored:
+So the whole run from offset 1 through the verified middle is mirrored:
 
+> **RAM `0x2D95` == SysEx `0x100001`** — reverb type + time + level, 3 bytes
 > **RAM `0x2D98` == SysEx `0x100004`** — partial reserve + MIDI channel map, 18 bytes
 
 Not yet found: the Part Set page's first parameter did not move any byte by the
