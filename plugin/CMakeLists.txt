@@ -692,6 +692,19 @@ target_link_libraries(d110_multi_part_polyphony PRIVATE
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_multi_part_polyphony PRIVATE /ignore:4099 /FORCE:MULTIPLE)
 
+# Measures the real DSP cost of raising mt32emu's usePartialCount - no real-time pacing in its
+# timed section, unlike every other probe here, on purpose.
+add_executable(d110_partial_count_cpu partial_count_cpu_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
+target_include_directories(d110_partial_count_cpu PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_partial_count_cpu PRIVATE ${MAME_DEFS}
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_partial_count_cpu PRIVATE
+    D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+target_link_options(d110_partial_count_cpu PRIVATE /ignore:4099 /FORCE:MULTIPLE)
+
 # Кто пишет в таблицу слотов LA32 и освобождает ли её хоть кто-нибудь. Перехват записей в
 # окно диспетчеризации даёт адрес, значение и PC - то есть отвечает не догадкой, а именем
 # подпрограммы. См. docs/la32_interface.md.

@@ -1450,6 +1450,18 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 	                   "message - the firmware changes its own memory, and the sound engine is "
 	                   "brought into line from there. Nothing here writes to the sound engine "
 	                   "behind the instrument's back.", false });
+	area.removeFromTop(12.0f);
+
+	labels.push_back({ area.removeFromTop(15.0f), D110AudioProcessor::kExtendedPolyphonyLabel, true });
+	labels.push_back({ area.removeFromTop(28.0f),
+	                   "The real D-110 shares just 32 synthesis voices across all nine parts, "
+	                   "and fast, overlapping playing on more than one part at once can "
+	                   "genuinely run out and drop notes - measured, not assumed "
+	                   "(plugin/multi_part_polyphony_probe.cpp). This is our own sound engine, "
+	                   "so it isn't held to that ceiling: it renders with four times the "
+	                   "voices, measured comfortably cheap on a modern CPU even with all nine "
+	                   "parts playing at once. Everything else about the instrument - the "
+	                   "firmware, the panel, the sound itself - is unchanged.", false });
 }
 
 // --- значения ---------------------------------------------------------------

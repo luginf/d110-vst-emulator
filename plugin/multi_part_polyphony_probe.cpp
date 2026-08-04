@@ -64,13 +64,25 @@ int main() {
 	// mechanism from what the user described and not what's actually on their panel.
 	proc.sendTimbreTempParam(0, 5, 2);
 	proc.sendTimbreTempParam(1, 5, 2);
+	// A third part, a held pad chord on Fantasy again, sustained throughout - a fuller,
+	// more realistic arrangement than just two fast lines with nothing else sounding.
+	constexpr int kPadChannel = 4;
+	setPartTone(proc, 2, 1, 0);
+	proc.sendTimbreTempParam(2, 5, 2);
 	render(proc, 1.5);
 	std::printf("partials at engine: %u\n", proc.enginePartialCount());
+	{
+		juce::MidiBuffer padOn;
+		const int padNotes[4] = { 48, 52, 55, 60 };
+		for (int i = 0; i < 4; ++i) padOn.addEvent(juce::MidiMessage::noteOn(kPadChannel, padNotes[i], 0.8f), i);
+		renderBlocks(proc, 3, &padOn);
+	}
 
 	// Both parts play fast, overlapping 32nd-note-ish lines SIMULTANEOUSLY for several
 	// seconds, exactly the "bass and solo both dropping notes at once" shape - not one part
-	// tested in isolation. ~80ms per note (roughly 32nds at ~190bpm), next note-on fires
-	// before the previous one's release has necessarily finished.
+	// tested in isolation, and now with the pad chord sounding throughout too. ~46ms/step
+	// (faster than the first pass's ~70ms), next note-on fires well before the previous
+	// one's release has necessarily finished.
 	constexpr int kSteps = 60;
 	int peakPartials = 0;
 	uint64_t onsBefore = proc.getCore().firmwareNoteOns();
@@ -81,7 +93,7 @@ int main() {
 		const int soloNote = 72 + (i % 2) * 2;       // do-re alternation, high octave
 		on.addEvent(juce::MidiMessage::noteOn(kBassChannel, bassNote, 0.9f), 0);
 		on.addEvent(juce::MidiMessage::noteOn(kSoloChannel, soloNote, 0.9f), 1);
-		renderBlocks(proc, 3, &on); // ~35ms
+		renderBlocks(proc, 2, &on); // ~23ms
 		peakPartials = std::max(peakPartials, proc.engineActivePartials());
 
 		juce::MidiBuffer off;
@@ -91,7 +103,7 @@ int main() {
 			off.addEvent(juce::MidiMessage::noteOff(kBassChannel, prevBassNote), 0);
 			off.addEvent(juce::MidiMessage::noteOff(kSoloChannel, prevSoloNote), 1);
 		}
-		renderBlocks(proc, 3, &off); // ~35ms - roughly 70ms/note pair overall, ~14 notes/sec/part
+		renderBlocks(proc, 2, &off); // ~23ms - roughly 46ms/note pair overall, ~22 notes/sec/part
 
 		if (i % 10 == 0)
 			std::printf("step %2d: engine partials=%2d firmwareNoteOns=%llu\n", i,

@@ -501,7 +501,7 @@ bool D110AudioProcessor::openSynthIfReady() {
 		newSynth->setBossReverbROM(static_cast<const MT32Emu::Bit8u *>(bossRomData.getData()),
 		                            static_cast<MT32Emu::Bit32u>(bossRomData.getSize()));
 	bool useSuper = superModeParam != nullptr && superModeParam->load() > 0.5f;
-	if (!newSynth->open(*newControlImage, *newPcmImage, MT32Emu::DEFAULT_MAX_PARTIALS,
+	if (!newSynth->open(*newControlImage, *newPcmImage, kExtendedPartialCount,
 						 MT32Emu::AnalogOutputMode_COARSE, useSuper)) {
 		lastError = "Synth failed to open with these ROM files.";
 		MT32Emu::ROMImage::freeROMImage(newControlImage);

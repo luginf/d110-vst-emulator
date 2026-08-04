@@ -26,6 +26,25 @@ class D110AudioProcessor : public juce::AudioProcessor,
                            private juce::MidiInputCallback,
                            private juce::Timer {
 public:
+	// The real D-110 has exactly 32 LA32 partial-generator channels shared across all 9
+	// parts, and this project's sound engine (a vendored mt32emu fork) models that faithfully
+	// by default (MT32Emu::DEFAULT_MAX_PARTIALS). Measured (plugin/multi_part_polyphony_probe.cpp,
+	// plugin/partial_count_cpu_probe.cpp): fast, overlapping playing on just two parts at once
+	// (e.g. bass + solo) genuinely exhausts that budget - mt32emu's own Part::playPoly()
+	// silently drops the note (confirmed: "needed=4, free=0" at the moment of refusal) - this
+	// is authentic Roland LA-architecture behaviour, not a bug in this project's own firmware/
+	// LA32 work. Unlike the firmware's own 32-hardware-voice-slot table (real ROM logic, not
+	// touched), mt32emu's partial count is a plain runtime parameter nothing in Part.cpp/
+	// PartialManager.cpp hardcodes to 32 - so, deliberately, this native plugin's own sound
+	// engine is opened with more: 128 measured comfortably below where the CPU cost becomes
+	// noticeable (~10-15% of one audio thread even under an all-8-parts-at-once stress test,
+	// plugin/partial_count_cpu_probe.cpp), and enough headroom that the two-part fast-playing
+	// scenario that started this investigation no longer drops notes. This is a deliberate
+	// choice to exceed the real hardware's polyphony ceiling now that this is our own engine,
+	// not an attempt to hide the difference - see kExtendedPolyphonyLabel below.
+	static constexpr MT32Emu::Bit32u kExtendedPartialCount = 128;
+	static constexpr const char *kExtendedPolyphonyLabel = "128-VOICE POLYPHONY";
+
 	D110AudioProcessor();
 	~D110AudioProcessor() override;
 
