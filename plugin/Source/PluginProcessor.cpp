@@ -495,7 +495,6 @@ bool D110AudioProcessor::openSynthIfReady() {
 		return false;
 	}
 
-	closeSynth();
 	lastError.clear();
 
 	// The ROM bytes are held in memory rather than read through a FileStream, because a
@@ -530,7 +529,7 @@ bool D110AudioProcessor::openSynthIfReady() {
 	if (bossRomData.getSize() != 0)
 		newSynth->setBossReverbROM(static_cast<const MT32Emu::Bit8u *>(bossRomData.getData()),
 		                            static_cast<MT32Emu::Bit32u>(bossRomData.getSize()));
-	bool useSuper = superModeParam != nullptr && superModeParam->load() > 0.5f;
+	const bool useSuper = superModeParam != nullptr && superModeParam->load() > 0.5f;
 	if (!newSynth->open(*newControlImage, *newPcmImage, kExtendedPartialCount,
 						 MT32Emu::AnalogOutputMode_COARSE, useSuper)) {
 		lastError = "Synth failed to open with these ROM files.";
@@ -538,20 +537,62 @@ bool D110AudioProcessor::openSynthIfReady() {
 		MT32Emu::ROMImage::freeROMImage(newPcmImage);
 		return false;
 	}
+	newSynth->setReverbEnabled(reverbEnabledParam == nullptr || reverbEnabledParam->load() > 0.5f);
 
-	controlRomFile = std::move(newControlFile);
-	pcmRomFile = std::move(newPcmFile);
-	controlROMImage = newControlImage;
-	pcmROMImage = newPcmImage;
-	synth = std::move(newSynth);
-	lastSuperModeApplied = useSuper;
+	// Built here rather than via rebuildSampleRateConverter(), so the fully-formed engine -
+	// synth AND converter together - is what gets handed over below, not the synth alone
+	// followed by a gap before the converter catches up.
+	auto newSampleRateConverter = std::make_unique<MT32Emu::SampleRateConverter>(
+		*newSynth, currentSampleRate, MT32Emu::SamplerateConversionQuality_GOOD);
 
-	controlRomDescription = controlROMImage->getROMInfo()->description;
-	pcmRomDescription = pcmROMImage->getROMInfo()->description;
+	const auto newControlRomDescription = newControlImage->getROMInfo()->description;
+	const auto newPcmRomDescription = newPcmImage->getROMInfo()->description;
 
-	synth->setReverbEnabled(reverbEnabledParam == nullptr || reverbEnabledParam->load() > 0.5f);
+	// Everything above - ROM checksum/parsing, MT32Emu::Synth::open(), the sample-rate
+	// converter - is the slow part, and none of it needs a lock: it's all local until here.
+	// Only the handover does, because processBlock() (see synthAccessLock's declaration)
+	// reads these same members under the same lock, for the whole of one block. Swap the new
+	// engine in and the old one out here, then destroy the old one AFTER releasing the lock,
+	// so a call arriving from the message thread (a live Super Mode toggle, see
+	// superModeReopenPending in processBlock()) never makes the audio thread wait on
+	// anything but the swap itself - not on freeing the engine it's replacing.
+	std::unique_ptr<MT32Emu::Synth> oldSynth;
+	std::unique_ptr<MT32Emu::SampleRateConverter> oldSampleRateConverter;
+	std::unique_ptr<MT32Emu::ArrayFile> oldControlRomFile, oldPcmRomFile;
+	const MT32Emu::ROMImage *oldControlImage = nullptr;
+	const MT32Emu::ROMImage *oldPcmImage = nullptr;
+	{
+		const juce::ScopedLock sl(synthAccessLock);
+		oldSynth = std::move(synth);
+		oldSampleRateConverter = std::move(sampleRateConverter);
+		oldControlRomFile = std::move(controlRomFile);
+		oldPcmRomFile = std::move(pcmRomFile);
+		oldControlImage = controlROMImage;
+		oldPcmImage = pcmROMImage;
 
-	rebuildSampleRateConverter();
+		controlRomFile = std::move(newControlFile);
+		pcmRomFile = std::move(newPcmFile);
+		controlROMImage = newControlImage;
+		pcmROMImage = newPcmImage;
+		synth = std::move(newSynth);
+		sampleRateConverter = std::move(newSampleRateConverter);
+		lastSuperModeApplied = useSuper;
+		controlRomDescription = newControlRomDescription;
+		pcmRomDescription = newPcmRomDescription;
+	}
+
+	// Same order as closeSynth(): the synth before the ROM images it references, the images
+	// before the file streams backing them. A side effect worth calling out: unlike the old
+	// closeSynth()-first sequence, a failed reopen above (bad ROM data, synth->open()
+	// failing) never reaches here, so the previous, working engine is left running rather
+	// than torn down for nothing.
+	oldSampleRateConverter.reset();
+	oldSynth.reset();
+	if (oldControlImage != nullptr) MT32Emu::ROMImage::freeROMImage(oldControlImage);
+	if (oldPcmImage != nullptr) MT32Emu::ROMImage::freeROMImage(oldPcmImage);
+	oldControlRomFile.reset();
+	oldPcmRomFile.reset();
+
 	return true;
 }
 
@@ -617,18 +658,33 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 			midiMessages.addEvent(meta.getMessage(), meta.samplePosition);
 	}
 
+	// Held for the rest of this block: openSynthIfReady() (below) can run concurrently on the
+	// message thread and swaps `synth`/`sampleRateConverter` out from under us when Super
+	// Mode is toggled live. It only ever costs this an O(1) pointer handover, never the
+	// (slow) rebuild itself - see synthAccessLock's declaration.
+	const juce::ScopedLock sl(synthAccessLock);
+
 	if (!synth || !sampleRateConverter || !poweredOn.load()) {
 		return;
 	}
 
-	// Super Mode can only be applied when the synth is (re)opened, not live. This reopen
-	// happens on the audio thread for simplicity - acceptable for a hobby project where the
-	// toggle is rarely touched, but not real-time safe. A future revision should move this to
-	// the message thread instead.
-	bool wantSuper = superModeParam->load() > 0.5f;
-	if (wantSuper != lastSuperModeApplied) {
-		openSynthIfReady();
-		if (!synth || !sampleRateConverter) return;
+	// Super Mode can only be applied when the synth is (re)opened, not live. Rebuilding it -
+	// ROM checksum/parsing plus a full MT32Emu::Synth::open() - is far too slow for the audio
+	// thread's deadline: doing it right here, synchronously, is what actually produced the
+	// xrun-then-the-host-kills-the-plugin failure this comment used to just warn about. Only
+	// the mismatch is detected here; the rebuild itself runs on the message thread via
+	// openSynthIfReady(), guarded by superModeReopenPending so a run already in flight isn't
+	// queued a second time. This block, and any others before it lands, keep rendering with
+	// whichever engine is currently installed - a toggle takes a few blocks to catch up
+	// rather than landing instantly, which is the same "not live" limitation this always had.
+	const bool wantSuper = superModeParam->load() > 0.5f;
+	if (wantSuper != lastSuperModeApplied && !superModeReopenPending.exchange(true)) {
+		std::weak_ptr<char> weakLife = lifeToken;
+		juce::MessageManager::callAsync([this, weakLife] {
+			if (weakLife.expired()) return; // the processor was destroyed before this ran
+			openSynthIfReady();
+			superModeReopenPending = false;
+		});
 	}
 
 	synth->setReverbEnabled(reverbEnabledParam->load() > 0.5f);
@@ -639,7 +695,7 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 	std::vector<std::vector<MT32Emu::Bit8u>> pendingImportsToSend;
 	std::vector<MT32Emu::Bit32u> pendingShortMessagesToSend;
 	{
-		const juce::ScopedLock sl(engineActionLock);
+		const juce::ScopedLock slEngine(engineActionLock);
 		pendingImportsToSend.swap(pendingSysexImports);
 		pendingShortMessagesToSend.swap(pendingShortMessages);
 	}
