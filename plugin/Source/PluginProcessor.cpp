@@ -197,20 +197,29 @@ void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
 		// (native_polyphony_stress_probe: 31/32 hardware slots stuck busy under La32Stub vs
 		// 2/32 under La32Ramps after a 60-note run). A live DAW session previously hit a real
 		// freeze under fast overlapping notes/chords that offline tests didn't reproduce at
-		// the time; root-caused since (native_ramp_edge_stress_probe.cpp - a ramp landing only
+		// the time; root-caused (native_ramp_edge_stress_probe.cpp - a ramp landing only
 		// answers a voice's own envelope completion, never the separate per-note DISPATCH wait,
-		// so a newly dispatched voice under heavy overlap could starve forever) and fixed in
-		// both cores' serviceStuckPolicy()/midiTick() by also answering the dispatch handshake
-		// through the same channel. Re-verified clean against the exact pattern that hung
-		// before (100% reproducible pre-fix, matches the La32Stub control post-fix).
+		// so a newly dispatched voice under heavy overlap could starve forever) and fixed by
+		// also answering the dispatch handshake through the same channel.
+		//
+		// Native-only, deliberately: the same conceptual fix ported to D110Core.cpp (the
+		// MAME-backed core) introduced a NEW, 100% reproducible regression there - the very
+		// first note-off after every cold boot never completes (measured:
+		// mame_stuck_note_repro.cpp; confirmed absent under La32Stub, present only under
+		// La32Ramps, on identical boot/tone/note sequences; the new dispatch-ack code was
+		// confirmed NOT to be the cause - it never even triggers in the failing runs, and
+		// landed-ramp events look identical between a failing first note and a succeeding
+		// later one). Root cause not yet isolated - suspected interaction between La32Ramps'
+		// faster/more eager EXTINT responses and something in the MAME machine's own real-time
+		// boot sequence, not reproducible on the native core's synchronous, thread-free
+		// stepping. Reported by the owner: D110EmulatorNative plays cleanly, D110Emulator
+		// (MAME-backed) sustains notes forever and freezes the LCD on the very first notes of
+		// a session. Until root-caused, only the native core gets La32Ramps by default; the
+		// MAME-backed core stays on the safe, long-proven La32Stub.
+#ifdef D110_NATIVE_CORE
 		core.setStuckPolicy(D110CoreType::StuckPolicy::La32Ramps);
-#ifndef D110_NATIVE_CORE
-		// Only D110Core (MAME-backed) has a configurable status-byte encoding; the native
-		// core's own rampStatusByte() hardcodes the already-proven-correct form directly (see
-		// D110CoreNative.h) and has no such setter. Mode 1 is the one docs/la32_interface.md's
-		// disassembly proved correct for this mechanism specifically - a different default
-		// than La32Stub's own encoding needs.
-		core.setLa32StatusMode(1);
+#else
+		core.setStuckPolicy(D110CoreType::StuckPolicy::La32Stub);
 #endif
 		if (virgin) core.factoryReset();
 	} else {
