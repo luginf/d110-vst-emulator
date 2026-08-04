@@ -390,6 +390,20 @@ private:
 	bool lastSuperModeApplied = false;
 	std::atomic<bool> poweredOn{false};
 
+	// Guards `synth`/`sampleRateConverter` (and the ROM image/file objects behind them)
+	// against being swapped out from under processBlock() by openSynthIfReady() running on
+	// the message thread - see the note beside superModeReopenPending in processBlock().
+	// Only ever held for the O(1) pointer handover on the writer side and for one block's
+	// processing on the reader side, never for the (re)build itself.
+	juce::CriticalSection synthAccessLock;
+	// Set while an async re-open triggered by a live Super Mode toggle is in flight, so a
+	// mismatch seen on a later block before it lands doesn't queue a second one.
+	std::atomic<bool> superModeReopenPending{false};
+	// Refcount-only; openSynthIfReady()'s async re-open holds a weak_ptr to this so it can
+	// tell the processor was destroyed before the message thread got to run it, rather than
+	// call into a dangling `this`.
+	std::shared_ptr<char> lifeToken = std::make_shared<char>();
+
 	// Guards both pending queues below. Synth's MIDI queue only tolerates a single writer thread
 	// (the audio thread, via processBlock), so anything triggered from the message thread (button
 	// clicks, file loads) is queued here and drained/applied from processBlock instead of calling
