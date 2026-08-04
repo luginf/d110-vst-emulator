@@ -1,7 +1,9 @@
 # Патчи к MAME
 
 Плагин собирается против **неизменённого** дерева MAME - это его свойство, и оно остаётся
-верным: ничего из этой папки для работы плагина применять не нужно. Здесь лежат правки,
+верным для одного из патчей ниже, но не для другого: `mame_mcs96_stale_irq_level.patch`
+**обязателен**, см. его собственный раздел. `mame_roland_d10_dropped_writes.patch`
+по-прежнему опционален - ничего из него не нужно для работы плагина. Здесь лежат правки,
 найденные по ходу работы над D-110 и относящиеся к самой MAME, а не к плагину. Хранятся они
 тут по простой причине: дерево MAME общее у нескольких проектов, не вендорится сюда и держит
 чужие незакоммиченные изменения, так что оставленная в нём правка легко теряется.
@@ -10,10 +12,46 @@
 
 ```
 cd <mame-tree>
+git apply <path>/mame_mcs96_stale_irq_level.patch
 git apply <path>/mame_roland_d10_dropped_writes.patch
 ```
 
-## `mame_roland_d10_dropped_writes.patch`
+## `mame_mcs96_stale_irq_level.patch` — REQUIRED
+
+Fixes a crash: MCS-96 core's interrupt-vector fetch (`src/devices/cpu/mcs96/mcs96ops.lst`,
+the `fetch` block) computes which interrupt level to take from a **fresh** scan of
+`PSW & pending_irq`, but only runs that scan because a **stale** flag (`irq_requested`,
+snapshotted at the end of the previous instruction) said an interrupt was pending. If
+something clears the one bit that flag was based on before this fetch's own re-scan runs -
+which is exactly what `D110Core.cpp`'s `midiTick()` does to work around EXTINT never
+self-clearing (see `docs/la32_interface.md`, 2026-07-31) - the scan finds nothing and `level`
+is left at **-1**. That's taken as a real level anyway: `1<<(-1)` into `pending_irq`, `-1`
+into `OP1`, and `-1` as the index into `standard_irq_callback()`'s `m_input[]` - undefined
+behaviour, reproduced as a SIGSEGV inside `device_execute_interface::device_input::
+default_irq_callback()` (confirmed via `coredumpctl`/gdb backtrace against a real Carla
+crash report, thread running `mcs96_device::execute_run` at the time).
+
+The fix is a defensive guard: if the re-scan finds nothing (`level < 0`), skip taking an
+interrupt this cycle instead of acting on the sentinel value. `check_irq()` re-evaluates
+`irq_requested` fresh after every subsequent instruction regardless, so this cannot lose a
+real interrupt - it only skips the specific cycle where the flag had already gone stale.
+
+Same patch also fixes `fe7f mulb indexed_2b` reading its byte operand through `any_r16()` -
+which masks the address to even before reading a word - instead of `any_r8()`, the only one
+of the eight `indexed_2b` byte ops in the file that didn't already use it. No observed
+audible or crash effect from this one today (the destination is inside the LA32 register
+window this project's stub routes around, and an unmirrored RAM offset - see
+`docs/la32_interface.md`'s 2026-07-31 entry, which found the same bug independently and left
+it unfixed as out of scope at the time), but it's an unambiguous, one-line copy-paste bug
+fixed by the same read while already in this file for the crash above.
+
+Verified after applying: `d110_longrun_test`'s heaviest phase (chords, notes forwarded to
+the firmware - the phase that generates real, sustained EXTINT traffic through
+`StuckPolicy::La32Ramps`) ran a full 28-second stress window with the panel responsive
+throughout and no crash, where the unpatched build reproducibly segfaulted on a real user's
+machine under the same plugin build within seconds of opening the editor.
+
+## `mame_roland_d10_dropped_writes.patch` — optional
 
 Драйвер `roland_d10.cpp` молча теряет две группы записей, которые прошивка D-110 делает
 по-настоящему.

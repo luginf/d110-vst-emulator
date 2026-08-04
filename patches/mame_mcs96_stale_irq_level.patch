@@ -1,0 +1,42 @@
+diff --git a/src/devices/cpu/mcs96/mcs96ops.lst b/src/devices/cpu/mcs96/mcs96ops.lst
+index 72db19af..cdad27ed 100644
+--- a/src/devices/cpu/mcs96/mcs96ops.lst
++++ b/src/devices/cpu/mcs96/mcs96ops.lst
+@@ -4,6 +4,16 @@ fetch
+ 	if(irq_requested) {
+ 		int level;
+ 		for(level = 7; level >= 0 && !(PSW & pending_irq & (1<<level)); level--);
++		// irq_requested is a snapshot taken at the end of the previous instruction; if
++		// something clears the only pending bit it was based on before this fetch re-scans
++		// (e.g. a driver poking MCS96_INT_PENDING through the public state API between
++		// instructions), the loop above finds nothing and leaves level at -1. Taking that
++		// as an interrupt level below fed 1<<(-1) into pending_irq and OP1, and -1 into
++		// standard_irq_callback()'s m_input[] index - undefined behaviour, observed as a
++		// crash. Nothing pending after all is a legitimate outcome here, not a bug in
++		// itself, so just skip taking an interrupt this cycle; check_irq() at the end of
++		// the next instruction re-evaluates normally.
++		if(level >= 0) {
+ 		if(level != 7)
+ 			pending_irq &= ~(1<<level);
+ 		OP1 = level;
+@@ -14,6 +24,7 @@ fetch
+ 		any_w16(TMP, PC);
+ 		PC = any_r16(0x2000+2*OP1);
+ 		check_irq();
++		}
+ 	}
+ 	PPC = PC;
+ 	if(debugger_enabled())
+@@ -1040,7 +1051,11 @@ fe7e  mulb  indirect_2b
+ 
+ fe7f  mulb  indexed_2b
+ 	OP2 &= 0xfe;
+-	TMP = any_r16(OP1);
++	// Was any_r16(OP1): mulb's operand is a byte, and any_r16() masks the address down to
++	// even before reading a word, so a byte at an odd address silently came from its even
++	// neighbour instead. any_r8() is what every other indexed_2b byte op above (andb, addb,
++	// subb, mulub, orb, xorb) already uses.
++	TMP = any_r8(OP1);
+ 	TMP = int8_t(reg_r8(OP2)) * int8_t(TMP);
+ 	reg_w16(OP2, TMP);
+ 	post_indexed 23 24 // +5 when external
