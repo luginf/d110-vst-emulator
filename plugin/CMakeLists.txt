@@ -65,6 +65,13 @@ else()
     set(D110_VST3_COPY_DIR_ARGS)
 endif()
 
+# AU (Audio Unit) only exists on Apple platforms - JUCE errors out if asked to build it
+# elsewhere, so this has to be conditional rather than just always appended.
+set(D110_FORMATS VST3 Standalone)
+if(APPLE)
+    list(APPEND D110_FORMATS AU)
+endif()
+
 juce_add_plugin(D110Emulator
     # Без этого JUCE ставит собственную версию по умолчанию, и хост показывает её вместо
     # той, под которой выпущена сборка. Версия здесь одна и берётся из project() выше.
@@ -79,7 +86,7 @@ juce_add_plugin(D110Emulator
     ${D110_VST3_COPY_DIR_ARGS}
     PLUGIN_MANUFACTURER_CODE Manu
     PLUGIN_CODE Dvst
-    FORMATS VST3 Standalone
+    FORMATS ${D110_FORMATS}
     PRODUCT_NAME "D-110_Emulator"
     PLUGIN_NAME "D-110 Emulator"
 )
@@ -111,10 +118,19 @@ target_link_libraries(D110Emulator PRIVATE
 
 # MAME's own emulator_info definitions collide with ours by design, and its libs are
 # built with a different debug-info setting than JUCE's.
-foreach(_fmt VST3 Standalone)
+foreach(_fmt VST3 Standalone AU)
     if(TARGET D110Emulator_${_fmt})
         target_link_options(D110Emulator_${_fmt} PRIVATE ${MAME_LINK_OPTIONS})
-        if(NOT MSVC)
+        if(APPLE)
+            # Same problem as the Linux branch below (a static-archive member only pulled in
+            # if something already needs it at that point in the link, and nothing does until
+            # the MAME libs reference it later), ld64's answer instead of GNU ld's
+            # --whole-archive/--no-whole-archive: force_load takes one archive, not a region,
+            # so it needs its own flag per invocation rather than a pair of markers.
+            # UNVERIFIED - see the comment at the top of mame.cmake.
+            target_link_options(D110Emulator_${_fmt} PRIVATE
+                -Wl,-force_load,$<TARGET_FILE:D110Emulator>)
+        elseif(NOT MSVC)
             # GNU ld only extracts a .a member when something already needs it at that point
             # in the link. libD-110_Emulator_SharedCode.a (which the MAME_DRIVLIST object -
             # driver_list::s_driver_count/s_drivers_sorted - ends up archived into) is linked
@@ -153,7 +169,7 @@ juce_add_plugin(D110EmulatorNative
     ${D110_VST3_COPY_DIR_ARGS}
     PLUGIN_MANUFACTURER_CODE Manu
     PLUGIN_CODE Dvsn
-    FORMATS VST3 Standalone
+    FORMATS ${D110_FORMATS}
     # Not "D-110 Emulator (Native)": parentheses in the product name end up in the .vst3
     # bundle's own path, and CMake's Unix Makefiles generator doesn't shell-escape them in
     # the generated copy/remove recipes - `(` reaches /bin/sh unquoted and breaks the build.

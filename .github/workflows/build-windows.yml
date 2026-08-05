@@ -1,0 +1,111 @@
+name: Build Windows
+
+# CI/infra branch only - never wired to main or linux-port. Manual re-runs via
+# workflow_dispatch once this is stable; do not change this to a bare `push:` trigger.
+on:
+  push:
+    branches: [ci/windows-macos-builds]
+  workflow_dispatch:
+
+env:
+  MAME_DIR: ${{ github.workspace }}\mame-build
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout d110-vst-emulator
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up MSVC dev environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install make (MSYS2, matches upstream's own build recipe)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: make
+          path-type: inherit
+
+      - name: Cache built MAME tree
+        id: cache-mame
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.MAME_DIR }}
+          key: mame0288-windows-${{ hashFiles('patches/mame_mcs96_stale_irq_level.patch') }}-v1
+
+      - name: Clone MAME 0.288
+        if: steps.cache-mame.outputs.cache-hit != 'true'
+        run: git clone --branch mame0288 --depth 1 https://github.com/mamedev/mame.git "${{ env.MAME_DIR }}"
+        shell: bash
+
+      - name: Apply the required MCS-96 stale-IRQ-level patch
+        if: steps.cache-mame.outputs.cache-hit != 'true'
+        run: git apply "${{ github.workspace }}/patches/mame_mcs96_stale_irq_level.patch"
+        working-directory: ${{ env.MAME_DIR }}
+        shell: bash
+
+      - name: Build MAME's d110 subtarget (SUBTARGET=d110)
+        if: steps.cache-mame.outputs.cache-hit != 'true'
+        working-directory: ${{ env.MAME_DIR }}
+        shell: cmd
+        run: |
+          make vs2022 MSBUILD=1 PTR64=1 MINGW64=C:/msys64/mingw64 MINGW32=C:/msys64/mingw32 NOWERROR=1 PYTHON_EXECUTABLE=python SUBTARGET=d110 SOURCES=src/mame/roland/roland_d10.cpp USE_BGFX=0
+
+      - name: Cache JUCE FetchContent checkout
+        uses: actions/cache@v4
+        with:
+          path: plugin/build/_deps/juce-src
+          key: juce-8.0.15-windows-v1
+
+      - name: Configure plugin
+        working-directory: plugin
+        shell: cmd
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DMAME_DIR="${{ env.MAME_DIR }}"
+
+      - name: Build D110Emulator (MAME-backed, VST3 + Standalone)
+        working-directory: plugin
+        shell: cmd
+        run: |
+          cmake --build build --config Release --target D110Emulator_VST3 D110Emulator_Standalone
+
+      - name: Locate build outputs
+        shell: bash
+        run: |
+          echo "--- VST3 bundles ---"
+          find plugin/build -iname "*.vst3" -maxdepth 6
+          echo "--- Standalone exes ---"
+          find plugin/build -iname "*.exe" -path "*Standalone*"
+
+      - name: Upload VST3 plugins
+        uses: actions/upload-artifact@v4
+        with:
+          name: d110-windows-vst3
+          path: |
+            plugin/build/**/*.vst3
+          if-no-files-found: error
+
+      - name: Upload Standalone executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: d110-windows-standalone
+          path: |
+            plugin/build/**/Standalone/*.exe
+          if-no-files-found: error
+
+      - name: Upload MAME build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mame-build-log-windows
+          path: ${{ env.MAME_DIR }}/build_logs/**
+          if-no-files-found: ignore
