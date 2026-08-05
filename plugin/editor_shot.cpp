@@ -12,6 +12,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <thread>
 
 namespace {
@@ -65,8 +66,10 @@ int main(int argc, char **argv) {
 	            proc.isSynthReady() ? "загружены" : "НЕТ");
 
 	// Ширина окна и высота ящика - те же, что в собранном редакторе, поэтому снимок и
-	// показывает то, что увидит пользователь, а не отдельно подобранный размер.
-	const int width = 1500;
+	// показывает то, что увидит пользователь, а не отдельно подобранный размер. Необязательный
+	// третий довод переопределяет её - удобно проверить, как ЖК-индикатор ведёт себя у самой
+	// нижней границы constrainer'а (900), а не только у окна по умолчанию.
+	const int width = (argc > 3) ? std::atoi(argv[3]) : 1500;
 	const float scale = float(width) / float(D110Panel::kRefW);
 	const int height = int(D110AudioProcessorEditor::kPaneRefH * scale + 0.5f);
 
@@ -115,9 +118,13 @@ int main(int argc, char **argv) {
 			// Ящик открывается прямо здесь: в плагине он выезжает по щелчку за треть
 			// секунды, а снимку показывать надо конечное положение.
 			whole->setExpanded(true);
+			// The test keyboard is open by default, so its own handle band and strip
+			// (D110Keyboard::kRefH) count towards the window height same as the drawer's.
 			whole->setSize(width, int((float(D110Panel::kRefH)
 			                           + D110AudioProcessorEditor::kHandleRefH
-			                           + D110AudioProcessorEditor::kPaneRefH) * scale + 0.5f));
+			                           + D110AudioProcessorEditor::kPaneRefH
+			                           + D110AudioProcessorEditor::kKeyboardHandleRefH
+			                           + D110Keyboard::kRefH) * scale + 0.5f));
 			whole->resized();
 			// Обе половины забирают состояние прибора своими таймерами, а очереди сообщений
 			// здесь нет. Без этого снимок вышел бы с погашенным индикатором и надписью

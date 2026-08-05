@@ -54,6 +54,12 @@ public:
 	// сообщений нет, - например при съёмке панели в файл (plugin/editor_shot.cpp).
 	void refreshFromInstrument() { timerCallback(); }
 
+	// The window/reference-artwork ratio the editor is about to apply as a Component
+	// transform. The LCD's offscreen render is supersampled relative to THIS, not to a
+	// fixed reference-space multiplier, so the resample the transform then performs is
+	// always a modest, fixed ratio - see rebuildLcdImage() for why that matters.
+	void setDisplayScale(float scale);
+
 private:
 	// One front-panel cap as it sits in the photograph. `scanPort`/`scanBit` are this button's
 	// position in the real 2x8 key-scan matrix, straight out of INPUT_PORTS_START(d110) in MAME's
@@ -98,6 +104,7 @@ private:
 	juce::Image panelImage;
 
 	juce::Image lcdImage;                    // offscreen dot-matrix render, rebuilt only on change
+	float lcdDisplayScale = 1.0f;            // last scale passed to setDisplayScale()
 	std::vector<juce::Image> capImages;      // one cut-out per button
 	std::vector<juce::Colour> recessColours; // the recess each cap sinks into
 	juce::Image powerCap;
@@ -213,6 +220,84 @@ private:
 	juce::Point<float> dragGrab;   // где именно за карту взялись, в опорных точках
 
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D110MemoryCard)
+};
+
+// Minimal on-screen test keyboard, under its own handle band - foldable like the extended
+// editor's drawer, but by a separate action, and open by default since it's the most direct
+// way to hear the instrument without any MIDI cabling.
+//
+// A struck key enters by exactly the same path as a real note arriving on the MIDI port:
+// D110AudioProcessor::injectTestNote() hands it to the same collector (osMidiCollector) that
+// handleIncomingMidiMessage(MidiInput*, ...) does, so it goes through the emulated firmware,
+// moves the voice indicator and sounds with the real part assignment - nothing here talks to
+// the sound engine directly.
+//
+// Two ways to strike a key: the mouse, on the drawn keys, and - opt-in, right-click to
+// enable - the computer keyboard, in the layout every tracker (FastTracker2, Impulse
+// Tracker, OpenMPT, Renoise...) has used since the 1990s: two overlapping rows, the lower
+// one ZSXDCVGBHNJM,L.;/ starting at the current base octave, the upper one Q2W3ER5T6Y7UI9O0P
+// one octave above it. QWERTY and AZERTY differ only in which CHARACTER a given physical
+// key sends, not in the note it plays, so kTrackerKeys carries both and the chosen layout
+// just picks which column to compare incoming key text against.
+class D110Keyboard : public juce::Component {
+public:
+	explicit D110Keyboard(D110AudioProcessor &);
+	~D110Keyboard() override;
+
+	void paint(juce::Graphics &) override;
+	void resized() override;
+	void mouseDown(const juce::MouseEvent &) override;
+	void mouseDrag(const juce::MouseEvent &) override;
+	void mouseUp(const juce::MouseEvent &) override;
+	void mouseExit(const juce::MouseEvent &) override;
+	bool keyStateChanged(bool isKeyDown) override;
+	void focusLost(juce::Component::FocusChangeType) override;
+
+	// Reference height, in the same units as D110Panel::kRefH - what the owning editor adds
+	// to its own layout, the same way it already does for the handle band and the extended
+	// editor's drawer.
+	static constexpr float kRefH = 130.0f;
+
+private:
+	static constexpr int kOctaves = 2;
+	static constexpr int kLowestNote = 48; // C3
+
+	enum class PcLayout { qwerty, azerty };
+
+	struct KeyRect { juce::Rectangle<float> bounds; int note; bool black; };
+
+	// One physical key of the tracker layout: the note it plays, relative to the keyboard's
+	// current base octave, and which character it sends under each PC layout this offers.
+	struct TrackerKey { int semitoneFromBase; juce::juce_wchar qwerty; juce::juce_wchar azerty; };
+	static const std::vector<TrackerKey> &trackerKeys();
+
+	void rebuildKeys();
+	int keyAt(juce::Point<float>) const;
+	void setHeldNote(int note); // -1 releases (mouse/touch - only one held note at a time)
+	void changeOctave(int delta);
+	void sendNote(int note, float velocity, bool on); // honours channel/omni
+	void showContextMenu();
+	void releaseAllPcNotes();
+
+	D110AudioProcessor &processor;
+	int octaveShift = 0;
+	int heldNote = -1;
+	bool draggingKey = false; // mouse went down on a key, not on OCT-/OCT+
+
+	int midiChannel = 1;        // 1..16 - which channel injectTestNote() targets
+	bool omni = false;          // when on, every note goes out on all 16 channels at once
+	bool pcKeyboardEnabled = false;
+	PcLayout pcLayout = PcLayout::qwerty;
+	// One flag per trackerKeys() entry, so keyStateChanged() (a single "something changed"
+	// callback with no indication of which key) can diff against last-known state and fire
+	// note-on/off only for the keys that actually moved. Polling juce::KeyPress rather than
+	// overriding keyPressed(): that only fires on press, and a tracker needs release too.
+	std::vector<bool> pcKeyDown;
+
+	juce::Rectangle<float> captionBounds, octaveDownBounds, octaveUpBounds, keysBounds;
+	std::vector<KeyRect> whiteKeys, blackKeys;
+
+	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D110Keyboard)
 };
 
 // Расширенный редактор - ящик, выезжающий из-под прибора.
@@ -424,23 +509,34 @@ public:
 	// (1500 точек, масштаб 0.71) ящик выходил около 640 точек - в нём помещается таблица на
 	// девять партий и подробная страница партиала, ради которых он и нужен.
 	static constexpr float kPaneRefH = 900.0f;
+	// Handle band above the test keyboard - slimmer than the editor's own, in keeping with
+	// the keyboard being the minimal add-on rather than the main drawer.
+	static constexpr float kKeyboardHandleRefH = 26.0f;
 
 private:
 	void timerCallback() override;
 	float totalRefHeight() const;
 	void applySize();
 	juce::Rectangle<float> handleBand() const;
+	juce::Rectangle<float> keyboardHandleBand() const;
 
 	D110Panel panel;
 	D110EditorPane editorPane;
 	// Карта добавляется ПОСЛЕ ящика и потому лежит поверх него - иначе выехавшая карта
 	// пряталась бы за полями редактора.
 	D110MemoryCard card;
+	// Stacked below the extended editor's own drawer, with its own independent fold state -
+	// see D110Keyboard's header comment for why.
+	D110Keyboard keyboard;
 	juce::ComponentBoundsConstrainer constrainer;
 
 	float expansion = 0.0f;        // сглаженное 0..1
 	float expansionTarget = 0.0f;  // то, что задал щелчок по ручке
 	bool handleHover = false;
+
+	float keyboardExpansion = 1.0f;       // eased 0..1, open by default
+	float keyboardExpansionTarget = 1.0f;
+	bool keyboardHandleHover = false;
 
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D110AudioProcessorEditor)
 };

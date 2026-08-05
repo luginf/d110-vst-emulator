@@ -1,7 +1,9 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+#include <algorithm>
 #include <cstdlib>
+#include <cstring>
 
 // Scans raw bytes for concatenated F0...F7 SysEx messages, e.g. the contents of a bare .syx file.
 static std::vector<std::vector<MT32Emu::Bit8u>> extractSysexMessagesFromRawBytes(const juce::MemoryBlock &data) {
@@ -926,6 +928,15 @@ void D110AudioProcessor::handleIncomingMidiMessage(juce::MidiInput *, const juce
 	osMidiCollector.addMessageToQueue(m);
 }
 
+void D110AudioProcessor::injectTestNote(int channel, int note, float velocity, bool on) {
+	auto message = on ? juce::MidiMessage::noteOn(channel, note, velocity)
+	                   : juce::MidiMessage::noteOff(channel, note, velocity);
+	// addMessageToQueue times messages against Time::getMillisecondCounter()'s base, same as
+	// the real MidiInput callback above stamps its own messages before handing them here.
+	message.setTimeStamp(juce::Time::getMillisecondCounterHiRes() * 0.001);
+	osMidiCollector.addMessageToQueue(message);
+}
+
 void D110AudioProcessor::forwardMidiToFirmware(const juce::MidiMessage &message) {
 	if (!core.isRunning()) return;
 
@@ -1088,6 +1099,165 @@ void D110AudioProcessor::importSysexBank(const juce::File &file) {
 	lastImportMessage = "Sending " + juce::String(messages.size()) + " SysEx message(s) from "
 		+ file.getFileName()
 		+ (seconds >= 2 ? " (about " + juce::String(seconds) + "s at MIDI speed)" : juce::String());
+}
+
+namespace {
+// "D1SN" + format version, so a stray file (or a future incompatible layout) is refused
+// rather than fed to the instrument as garbage.
+constexpr char kSnapshotMagic[4] = { 'D', '1', 'S', 'N' };
+constexpr juce::uint8 kSnapshotVersion = 1;
+} // namespace
+
+void D110AudioProcessor::exportMemorySnapshot(const juce::File &file) {
+	// Same rule as getStateInformation: while the machine is running the file on disk is
+	// stale (MAME/the native core only flush NVRAM out on power-off), so the live image in
+	// the core is authoritative whenever it's available, and the file is the fallback.
+	juce::MemoryBlock rams;
+	if (core.isRunning()) {
+		rams.setSize(D110CoreType::kRamSize);
+		if (!core.getRam(static_cast<juce::uint8 *>(rams.getData()))) rams.reset();
+	}
+	if (rams.getSize() == 0) rams = readNvramFile("rams");
+
+	if (rams.getSize() != size_t(D110CoreType::kRamSize)) {
+		lastImportMessage = "Nothing to snapshot yet - switch the instrument on at least once first.";
+		return;
+	}
+
+	juce::MemoryBlock memcs;
+	if (core.isRunning()) {
+		memcs.setSize(D110CoreType::kCardSize);
+		if (!core.getCardImage(static_cast<juce::uint8 *>(memcs.getData()))) memcs.reset();
+	}
+	if (memcs.getSize() == 0) memcs = readNvramFile("memcs");
+	memcs.setSize(size_t(D110CoreType::kCardSize), true); // zero-pad if the card was never imaged
+
+	juce::MemoryBlock out;
+	out.append(kSnapshotMagic, sizeof(kSnapshotMagic));
+	const juce::uint8 header[3] = { kSnapshotVersion,
+	                                juce::uint8(core.cardInserted() ? 1 : 0),
+	                                juce::uint8(core.cardWriteProtect() ? 1 : 0) };
+	out.append(header, sizeof(header));
+	out.append(rams.getData(), rams.getSize());
+	out.append(memcs.getData(), memcs.getSize());
+
+	if (!file.replaceWithData(out.getData(), out.getSize())) {
+		lastImportMessage = "Could not write snapshot: " + file.getFullPathName();
+		return;
+	}
+
+	lastImportMessage = "Saved memory snapshot: " + file.getFileName();
+}
+
+void D110AudioProcessor::importMemorySnapshot(const juce::File &file) {
+	constexpr int kHeaderSize = 4 + 1 + 1 + 1;
+	juce::MemoryBlock data;
+	if (!file.loadFileAsData(data)
+	    || data.getSize() != size_t(kHeaderSize) + size_t(D110CoreType::kRamSize) + size_t(D110CoreType::kCardSize)
+	    || memcmp(data.getData(), kSnapshotMagic, sizeof(kSnapshotMagic)) != 0
+	    || static_cast<const juce::uint8 *>(data.getData())[4] != kSnapshotVersion) {
+		lastImportMessage = "Not a D-110 memory snapshot: " + file.getFileName();
+		return;
+	}
+
+	const auto *bytes = static_cast<const juce::uint8 *>(data.getData());
+	const bool cardInserted = bytes[5] != 0;
+	const bool cardWriteProtect = bytes[6] != 0;
+	juce::MemoryBlock rams(bytes + kHeaderSize, size_t(D110CoreType::kRamSize));
+	juce::MemoryBlock memcs(bytes + kHeaderSize + D110CoreType::kRamSize, size_t(D110CoreType::kCardSize));
+
+	// The core only reads NVRAM off disk at power-on, so a snapshot loaded while the
+	// instrument is already running needs a power cycle to actually take - done here, rather
+	// than left for the user, so "load snapshot" is felt immediately.
+	const bool wasOn = core.isRunning();
+	if (wasOn) setPoweredOn(false);
+	writeNvramFiles(rams, memcs);
+	core.setCardInserted(cardInserted);
+	core.setCardWriteProtect(cardWriteProtect);
+	if (wasOn) setPoweredOn(true);
+
+	lastImportMessage = "Loaded memory snapshot: " + file.getFileName();
+}
+
+namespace {
+// One region of the documented map, built as one or more DT1 messages (buildDt1Message caps
+// a single message's data at kMaxSysexBytes - 12 bytes, which is smaller than a 246-byte Tone
+// Temporary record or a 256-byte Tone record, so a region longer than that is split across
+// several messages - the same thing kMirrorRegions/D110_RHYTHM already do for Rhythm Setup,
+// and just as harmless here: each DT1 carries its own address, so the firmware does not care
+// how many messages a region arrived as).
+// `sysexBaseAddress` is the region's fixed base (e.g. kSysexToneTemp) and never changes per
+// record - exactly as sendToneTempParam/sendPatchMemoryParam/etc. already call buildDt1Message
+// elsewhere in this file. The record's position is folded into `sysexOffsetBase` instead, which
+// buildDt1Message adds in the SEVEN-BIT packed address space (see its own comment): the base
+// address's hex digits are NOT plain-integer-addable, since a byte offset crossing 0x80 has to
+// carry into the next seven-bit digit rather than the next hex nibble.
+void appendDt1Region(juce::MemoryBlock &out, juce::uint32 sysexBaseAddress, int sysexOffsetBase,
+                     const juce::uint8 *ram, int ramOffset, int length) {
+	constexpr int kChunk = 200;
+	juce::uint8 msg[D110CoreType::kMaxSysexBytes];
+	for (int sent = 0; sent < length; sent += kChunk) {
+		const int n = std::min(kChunk, length - sent);
+		const int written = D110CoreType::buildDt1Message(sysexBaseAddress, sysexOffsetBase + sent,
+		                                                   ram + ramOffset + sent, n, msg);
+		if (written > 0) out.append(msg, size_t(written));
+	}
+}
+} // namespace
+
+void D110AudioProcessor::exportSysexBank(const juce::File &file) {
+	juce::MemoryBlock ramsBlock;
+	if (core.isRunning()) {
+		ramsBlock.setSize(D110CoreType::kRamSize);
+		if (!core.getRam(static_cast<juce::uint8 *>(ramsBlock.getData()))) ramsBlock.reset();
+	}
+	if (ramsBlock.getSize() == 0) ramsBlock = readNvramFile("rams");
+	if (ramsBlock.getSize() != size_t(D110CoreType::kRamSize)) {
+		lastImportMessage = "Nothing to export yet - switch the instrument on at least once first.";
+		return;
+	}
+	const auto *ram = static_cast<const juce::uint8 *>(ramsBlock.getData());
+
+	juce::MemoryBlock out;
+
+	for (int i = 0; i < D110CoreType::kNumPatches; ++i)
+		appendDt1Region(out, D110CoreType::kSysexPatches, i * D110CoreType::kPatchRecord,
+		                ram, D110CoreType::kRamPatches + i * D110CoreType::kPatchRecord,
+		                D110CoreType::kPatchRecord);
+
+	appendDt1Region(out, D110CoreType::kSysexTimbreTemp, 0, ram, D110CoreType::kRamTimbreTemp,
+	                D110CoreType::kNumParts * D110CoreType::kTimbreTempRecord);
+
+	appendDt1Region(out, D110CoreType::kSysexRhythmTemp, 0, ram, D110CoreType::kRamRhythmTemp,
+	                D110CoreType::kNumRhythmKeys * D110CoreType::kRhythmRecord);
+
+	// Rhythm has no Tone Temporary record of its own, so only the 8 voice parts.
+	for (int i = 0; i < 8; ++i)
+		appendDt1Region(out, D110CoreType::kSysexToneTemp, i * D110CoreType::kToneRecord,
+		                ram, D110CoreType::kRamToneTemp + i * D110CoreType::kToneRecord,
+		                D110CoreType::kToneRecord);
+
+	for (int i = 0; i < D110CoreType::kNumTimbres; ++i)
+		appendDt1Region(out, D110CoreType::kSysexTimbres, i * D110CoreType::kTimbreRecord,
+		                ram, D110CoreType::kRamTimbres + i * D110CoreType::kTimbreRecord,
+		                D110CoreType::kTimbreRecord);
+
+	// Only the 23 documented System Area bytes - the rest of the RAM up to Tone Memory is
+	// undocumented firmware working state, not patch/tone data (see kMirrorRegions' own
+	// comment on the same boundary).
+	appendDt1Region(out, D110CoreType::kSysexSystem, 0, ram, D110CoreType::kRamSystem, 23);
+
+	for (int i = 0; i < D110CoreType::kNumTones; ++i)
+		appendDt1Region(out, D110CoreType::kSysexTones, i * D110CoreType::kToneMemRecord,
+		                ram, D110CoreType::kRamTones + i * D110CoreType::kToneMemRecord,
+		                D110CoreType::kToneMemRecord);
+
+	if (!file.replaceWithData(out.getData(), out.getSize())) {
+		lastImportMessage = "Could not write SysEx bank: " + file.getFullPathName();
+		return;
+	}
+
+	lastImportMessage = "Saved SysEx bank: " + file.getFileName();
 }
 
 void D110AudioProcessor::selectNextPart() {

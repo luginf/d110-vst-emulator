@@ -1178,6 +1178,22 @@ target_link_libraries(d110_native_plugin_smoke PRIVATE
     D110PanelData MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
 
+# Same snapshot idea as d110_editor_shot (see that target's comment), but against the
+# native core so it builds without D110_BUILD_MAME_BACKEND - useful for eyeballing LCD
+# rendering changes (panel scale, dot antialiasing) without a full MAME configure.
+add_executable(d110_native_editor_shot editor_shot.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp)
+target_include_directories(d110_native_editor_shot PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_editor_shot PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_native_editor_shot PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
 if(D110_BUILD_MAME_BACKEND)
 
 # One-shot MAME-backed helper: produces a properly factory-reset nvram folder for

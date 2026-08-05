@@ -142,6 +142,13 @@ public:
 	// Mirrors pressing "Master Volume" on real hardware to return the LCD to its default view.
 	void resetDisplayToMainMode();
 
+	// The on-screen test keyboard's one path in: exactly the collector a real MIDI IN port
+	// feeds (osMidiCollector, see handleIncomingMidiMessage(MidiInput*, ...) and
+	// processBlock()), so a clicked key reaches the firmware, the panel and the sound engine
+	// by the identical route a real keyboard would - nothing here talks to the synth directly.
+	// Safe to call from the message thread; the collector is its own lock.
+	void injectTestNote(int channel, int note, float velocity, bool on);
+
 	// The plugin opens powered OFF, and clicking POWER boots the real Roland firmware live,
 	// in real time, exactly as the hardware does - the D110Core machine is started here and
 	// the front panel then shows its own LCD coming up. Switching off stops the machine.
@@ -195,6 +202,30 @@ public:
 	// message thread: the messages are picked up and actually sent from processBlock on the audio thread.
 	void importSysexBank(const juce::File &file);
 	juce::String getLastImportMessage() const { return lastImportMessage; }
+
+	// A snapshot of the firmware's whole memory - every patch, timbre, system setting and the
+	// memory card - as one file, separate from a DAW project and separate from a real Roland
+	// SysEx bank (that's importSysexBank() above, which plays a file down the emulated MIDI
+	// cable exactly as a librarian would). This instead saves and restores the plugin's own
+	// exact memory image byte for byte, the same image a DAW project already carries in its own
+	// state (see getStateInformation/setStateInformation) - just as a standalone file the user
+	// can keep and reload independent of any project.
+	void exportMemorySnapshot(const juce::File &file);
+	// If the instrument is currently switched on, this powers it off (flushing and replacing
+	// its memory), then powers it back on with the snapshot's memory loaded - so the change is
+	// felt immediately rather than only on the next manual power cycle.
+	void importMemorySnapshot(const juce::File &file);
+
+	// The same memory, but as a real Roland "Data set 1" SysEx bank instead of this plugin's
+	// own snapshot format - built directly from the current RAM image rather than captured by
+	// recording a live transfer, so it's instant regardless of how big the bank is. Every
+	// documented area of the map is covered (Patches, Timbre Temporary, Rhythm Setup, Tone
+	// Temporary, Timbre Memory, System, Tone Memory - docs/sysex_address_map.md); the
+	// undocumented span between System and Tone Memory is firmware working state, not
+	// patch/tone data, and is deliberately left out, exactly as the live engine mirror already
+	// leaves it out. The result plays back into the instrument through the existing "IMPORT
+	// SysEx / MIDI BANK" path, exactly as it would from real hardware or a librarian.
+	void exportSysexBank(const juce::File &file);
 
 	// Patch browsing, matching the real D-110's PART + VALUE/NUMBER workflow: PART selects which
 	// of the 8 Parts you're browsing, VALUE/NUMBER steps that Part's Patch/Program up or down.

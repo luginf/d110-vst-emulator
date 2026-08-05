@@ -153,6 +153,17 @@ D110Panel::D110Panel(D110AudioProcessor &p)
 
 D110Panel::~D110Panel() { stopTimer(); }
 
+void D110Panel::setDisplayScale(float scale)
+{
+	if (std::abs(scale - lcdDisplayScale) < 0.01f)
+		return;
+	lcdDisplayScale = scale;
+	if (lcdInitialised) {
+		rebuildLcdImage();
+		repaint();
+	}
+}
+
 juce::Image D110Panel::cutOut(juce::Rectangle<float> area) const
 {
 	return panelImage.getClippedImage(
@@ -175,13 +186,25 @@ juce::Colour D110Panel::recessColourOf(juce::Rectangle<float> capFace) const
 	return juce::Colour(juce::uint8(r / n), juce::uint8(g / n), juce::uint8(b / n));
 }
 
-// Renders the whole display - glass and ink dots - into an offscreen image at
-// kLcdSuper times the panel's own resolution. Rebuilt only when the contents
-// actually change, which is also the only time the panel repaints for the LCD's
-// sake, so this costs nothing per frame.
+// Renders the whole display - glass and ink dots - into an offscreen image, then
+// paintLcd() draws that down to the artwork's own kLcdW x kLcdH, and the panel as a
+// whole is scaled again by the editor's own Component transform (see setDisplayScale()).
+// That second scale is why this can't just supersample by a fixed kLcdSuper: at the
+// window's default and smaller sizes the reference artwork itself is being shrunk well
+// below its own pixel size, so a source fixed at kLcdSuper-times-the-ARTWORK's own
+// resolution makes the compound resize ratio balloon (8x oversample / a 0.4x window
+// scale is a ~19:1 downscale) - and JUCE's image resampler, even at high quality, is a
+// small-kernel filter that drops thin single-dot strokes at ratios that steep rather
+// than area-averaging them. Sizing the source off the CURRENT display scale instead
+// keeps that final resize ratio roughly constant regardless of window size, which is
+// what actually fixes the strokes breaking up at small sizes.
 void D110Panel::rebuildLcdImage()
 {
-	const int w = int(kLcdW) * kLcdSuper, h = int(kLcdH) * kLcdSuper;
+	// How many offscreen pixels per artwork pixel: enough oversampling for the dot
+	// antialiasing to look clean, without exploding the buffer at large window sizes.
+	const float super = juce::jlimit(2.0f, float(kLcdSuper), 4.0f * lcdDisplayScale);
+	const int w = juce::jmax(1, juce::roundToInt(kLcdW * super));
+	const int h = juce::jmax(1, juce::roundToInt(kLcdH * super));
 	if (!lcdImage.isValid() || lcdImage.getWidth() != w || lcdImage.getHeight() != h)
 		lcdImage = juce::Image(juce::Image::RGB, w, h, false);
 
@@ -200,15 +223,15 @@ void D110Panel::rebuildLcdImage()
 	// Panel-space -> offscreen-pixel. Deliberately NOT rounded to whole pixels: the
 	// character cell is 14.4 panel px across 6 dot columns, so snapping makes dot
 	// widths alternate between two values and the glyph strokes come out visibly
-	// ragged. Antialiasing at kLcdSuper and downscaling from there keeps every dot
+	// ragged. Antialiasing at `super` and downscaling from there keeps every dot
 	// the same size.
-	auto px = [](float panelX) { return (panelX - kLcdX) * kLcdSuper; };
-	auto py = [](float panelY) { return (panelY - kLcdY) * kLcdSuper; };
-	// In offscreen pixels, so they scale with kLcdSuper - and they are deliberately a much
-	// smaller FRACTION of a dot than they used to be. At the old ratio every stroke broke
-	// into separate squares and the display read as dying; on the reference photograph the
-	// dots of a stroke visibly run together, which is what these values reproduce.
-	constexpr float kDotGapX = 2.0f, kDotGapY = 2.2f;
+	auto px = [super](float panelX) { return (panelX - kLcdX) * super; };
+	auto py = [super](float panelY) { return (panelY - kLcdY) * super; };
+	// Tuned at the original fixed kLcdSuper=8 as a FRACTION of a dot - the smallest gap
+	// that keeps the dots of one stroke visibly running together instead of breaking into
+	// separate squares. `super` now varies with the window, so the gap has to scale with
+	// it to stay that same fraction rather than eating a growing share of a shrunk dot.
+	const float kDotGapX = 2.0f * (super / float(kLcdSuper)), kDotGapY = 2.2f * (super / float(kLcdSuper));
 
 	g.setColour(kInk);
 	for (int line = 0; line < kLines; ++line)
@@ -224,7 +247,7 @@ void D110Panel::rebuildLcdImage()
 						continue;
 					const float x0 = px(kCharX0 + col * kCellW + dx * kDotW);
 					const float y0 = py(kLine0Y + line * kLineStep + dy * kDotH);
-					g.fillRect(x0, y0, kDotW * kLcdSuper - kDotGapX, kDotH * kLcdSuper - kDotGapY);
+					g.fillRect(x0, y0, kDotW * super - kDotGapX, kDotH * super - kDotGapY);
 				}
 		}
 }
@@ -936,20 +959,26 @@ void D110EditorPane::layout() {
 // одна на партию. Это тот самый блок, который переносится в звуковой движок, поэтому здесь
 // правится всё, что слышно, - и всё, что показывает страница PART SET на приборе.
 void D110EditorPane::layoutParts(juce::Rectangle<float> area) {
+	// MIDI CH's field is a marker, not a Timbre Temporary offset: the channel isn't part of
+	// that record at all, it's the System Area's per-part channel array (RAM 0x2D94+13..21,
+	// SysEx 0x100000+13..21 - see kMirrorRegions' own comment on that layout), so its cell is
+	// built as Area::System below instead of following the others into Area::TimbreTemp.
+	constexpr int kMidiChMarker = -2;
 	struct Col { const char *head; int field; int hi; float frac; };
 	static const Col kCols[] = {
-		{ "PART",       -1,   0, 0.000f },
-		{ "TONE GROUP",  0,   3, 0.045f },
-		{ "TONE",        1,  63, 0.150f },
-		{ "LEVEL",       8, 100, 0.330f },
-		{ "PAN",         9,  14, 0.395f },
-		{ "KEY SHIFT",   2,  48, 0.455f },
-		{ "FINE TUNE",   3, 100, 0.545f },
-		{ "BENDER",      4,  24, 0.635f },
-		{ "ASSIGN",      5,   3, 0.705f },
-		{ "OUTPUT",      6,   7, 0.785f },
-		{ "KEY LOW",    10, 127, 0.860f },
-		{ "KEY HIGH",   11, 127, 0.930f },
+		{ "PART",           -1,   0, 0.000f },
+		{ "TONE GROUP",      0,   3, 0.045f },
+		{ "TONE",            1,  63, 0.120f },
+		{ "MIDI CH", kMidiChMarker, 16, 0.230f },
+		{ "LEVEL",           8, 100, 0.330f },
+		{ "PAN",             9,  14, 0.395f },
+		{ "KEY SHIFT",       2,  48, 0.455f },
+		{ "FINE TUNE",       3, 100, 0.545f },
+		{ "BENDER",          4,  24, 0.635f },
+		{ "ASSIGN",          5,   3, 0.705f },
+		{ "OUTPUT",          6,   7, 0.785f },
+		{ "KEY LOW",        10, 127, 0.860f },
+		{ "KEY HIGH",       11, 127, 0.930f },
 	};
 	constexpr int kNumCols = int(sizeof(kCols) / sizeof(kCols[0]));
 	const float w = area.getWidth();
@@ -974,6 +1003,13 @@ void D110EditorPane::layoutParts(juce::Rectangle<float> area) {
 			// RHYTHM, и группа с номером в этой записи ни на что не влияют. Предлагать их
 			// значило бы предлагать крутить то, чего не слышно.
 			if (p == 8 && (kCols[i].field == 0 || kCols[i].field == 1)) continue;
+			if (kCols[i].field == kMidiChMarker) {
+				// The array holds one channel per part IN ORDER, rhythm included last -
+				// exactly the layout tone_probe/bridge_probe measured (see kMirrorRegions'
+				// "System (reserve + channels)" comment: offsets 13..21, part 1..8 then rhythm.
+				cells.push_back({ colAt(i, row), Area::System, 13 + p, 0, 0, kCols[i].hi });
+				continue;
+			}
 			cells.push_back({ colAt(i, row), Area::TimbreTemp, p, kCols[i].field, 0,
 			                  kCols[i].hi });
 		}
@@ -1437,6 +1473,27 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 		labels.push_back({ row.reduced(12.0f, 0.0f),
 		                   "the file goes to the instrument whole, exactly as a librarian "
 		                   "would pour it into MIDI IN", false });
+	}
+	{
+		auto row = area.removeFromTop(28.0f);
+		buttons.push_back({ row.removeFromLeft(190.0f), "EXPORT SysEx BANK...", 7 });
+		labels.push_back({ row.reduced(12.0f, 0.0f),
+		                   "built straight from memory, instantly, rather than captured off a "
+		                   "live transfer - a real Roland dump, playable back in above or into "
+		                   "actual hardware over MIDI", false });
+	}
+	area.removeFromTop(18.0f);
+
+	labels.push_back({ area.removeFromTop(15.0f), "MEMORY SNAPSHOT", true });
+	{
+		auto row = area.removeFromTop(28.0f);
+		buttons.push_back({ row.removeFromLeft(150.0f), "SAVE SNAPSHOT...", 5 });
+		row.removeFromLeft(10.0f);
+		buttons.push_back({ row.removeFromLeft(150.0f), "LOAD SNAPSHOT...", 6 });
+		labels.push_back({ row.reduced(12.0f, 0.0f),
+		                   "every patch, timbre, system setting and the memory card, in one "
+		                   "file - loading one powers the instrument off and back on with that "
+		                   "memory in place", false });
 	}
 	area.removeFromTop(18.0f);
 
@@ -2010,6 +2067,48 @@ void D110EditorPane::buttonPressed(int id) {
 		}
 		return;
 	}
+	if (id == 7) {
+		auto *chooser = new juce::FileChooser("Export SysEx bank as", juce::File(), "*.syx");
+		chooser->launchAsync(juce::FileBrowserComponent::saveMode
+		                         | juce::FileBrowserComponent::canSelectFiles
+		                         | juce::FileBrowserComponent::warnAboutOverwriting,
+		                     [this, chooser](const juce::FileChooser &fc) {
+			                     auto file = fc.getResult();
+			                     if (file != juce::File()) {
+				                     if (!file.hasFileExtension("syx")) file = file.withFileExtension("syx");
+				                     processor.exportSysexBank(file);
+			                     }
+			                     delete chooser;
+		                     });
+		return;
+	}
+	if (id == 5) {
+		auto *chooser = new juce::FileChooser("Save memory snapshot as", juce::File(), "*.d110snap");
+		chooser->launchAsync(juce::FileBrowserComponent::saveMode
+		                         | juce::FileBrowserComponent::canSelectFiles
+		                         | juce::FileBrowserComponent::warnAboutOverwriting,
+		                     [this, chooser](const juce::FileChooser &fc) {
+			                     auto file = fc.getResult();
+			                     if (file != juce::File()) {
+				                     if (!file.hasFileExtension("d110snap"))
+					                     file = file.withFileExtension("d110snap");
+				                     processor.exportMemorySnapshot(file);
+			                     }
+			                     delete chooser;
+		                     });
+		return;
+	}
+	if (id == 6) {
+		auto *chooser = new juce::FileChooser("Load memory snapshot", juce::File(), "*.d110snap");
+		chooser->launchAsync(juce::FileBrowserComponent::openMode
+		                         | juce::FileBrowserComponent::canSelectFiles,
+		                     [this, chooser](const juce::FileChooser &fc) {
+			                     const auto file = fc.getResult();
+			                     if (file != juce::File()) processor.importMemorySnapshot(file);
+			                     delete chooser;
+		                     });
+		return;
+	}
 	if (id == 20) { processor.storeToneFromPart(part, toneSlot); return; }
 	if (id == 21) { processor.auditionTone(part, toneSlot); return; }
 	if (id >= 100 && id < 200) {
@@ -2419,12 +2518,253 @@ void D110MemoryCard::timerCallback() {
 }
 
 // ---------------------------------------------------------------------------
+// Test keyboard
+
+namespace {
+constexpr int kWhiteKeysPerOctave = 7;
+constexpr int kWhiteSemitones[kWhiteKeysPerOctave] = { 0, 2, 4, 5, 7, 9, 11 };
+// True for the white key immediately to the LEFT of a black key (C, D, F, G, A).
+constexpr bool kHasBlackToRight[kWhiteKeysPerOctave] = { true, true, false, true, true, true, false };
+} // namespace
+
+// The classic two-row tracker layout (FastTracker2, Impulse Tracker, OpenMPT, Renoise: all
+// the same table since the 90s). Lower row starts at the keyboard's current base octave,
+// upper row one octave above that - the two overlap by an octave, same as every tracker.
+// AZERTY's characters are what a French keyboard's PHYSICAL key at that same position
+// actually sends: unshifted digits on AZERTY are punctuation (&é"'(-è_çà), not digits, so
+// the accidentals' upper row differs there, and three letters move (A/Q, W/Z, M/;).
+const std::vector<D110Keyboard::TrackerKey> &D110Keyboard::trackerKeys() {
+	static const std::vector<TrackerKey> keys = {
+		// lower row: Z S X D C V G B H N J M , L . ; /  (base octave, semitones 0..16)
+		{ 0, 'z', 'w' }, { 1, 's', 's' }, { 2, 'x', 'x' }, { 3, 'd', 'd' },
+		{ 4, 'c', 'c' }, { 5, 'v', 'v' }, { 6, 'g', 'g' }, { 7, 'b', 'b' },
+		{ 8, 'h', 'h' }, { 9, 'n', 'n' }, { 10, 'j', 'j' }, { 11, 'm', ',' },
+		{ 12, ',', ';' }, { 13, 'l', 'l' }, { 14, '.', ':' }, { 15, ';', 'm' }, { 16, '/', '!' },
+		// upper row: Q 2 W 3 E R 5 T 6 Y 7 U I 9 O 0 P  (one octave up, semitones 12..28)
+		{ 12, 'q', 'a' }, { 13, '2', (juce::juce_wchar)0x00E9 /* é */ }, { 14, 'w', 'z' },
+		{ 15, '3', '"' }, { 16, 'e', 'e' }, { 17, 'r', 'r' }, { 18, '5', '(' },
+		{ 19, 't', 't' }, { 20, '6', '-' }, { 21, 'y', 'y' },
+		{ 22, '7', (juce::juce_wchar)0x00E8 /* è */ }, { 23, 'u', 'u' }, { 24, 'i', 'i' },
+		{ 25, '9', (juce::juce_wchar)0x00E7 /* ç */ }, { 26, 'o', 'o' },
+		{ 27, '0', (juce::juce_wchar)0x00E0 /* à */ }, { 28, 'p', 'p' },
+	};
+	return keys;
+}
+
+D110Keyboard::D110Keyboard(D110AudioProcessor &p) : processor(p) {
+	pcKeyDown.assign(trackerKeys().size(), false);
+	setWantsKeyboardFocus(true);
+	rebuildKeys();
+}
+
+D110Keyboard::~D110Keyboard() { setHeldNote(-1); releaseAllPcNotes(); }
+
+void D110Keyboard::sendNote(int note, float velocity, bool on) {
+	if (omni) {
+		for (int ch = 1; ch <= 16; ++ch) processor.injectTestNote(ch, note, velocity, on);
+	} else {
+		processor.injectTestNote(midiChannel, note, velocity, on);
+	}
+}
+
+void D110Keyboard::releaseAllPcNotes() {
+	for (size_t i = 0; i < pcKeyDown.size(); ++i) {
+		if (!pcKeyDown[i]) continue;
+		pcKeyDown[i] = false;
+		sendNote(kLowestNote + octaveShift * 12 + trackerKeys()[i].semitoneFromBase, 0.0f, false);
+	}
+}
+
+void D110Keyboard::showContextMenu() {
+	juce::PopupMenu channelMenu;
+	for (int ch = 1; ch <= 16; ++ch)
+		channelMenu.addItem(1000 + ch, "Channel " + juce::String(ch), true, !omni && midiChannel == ch);
+
+	juce::PopupMenu layoutMenu;
+	layoutMenu.addItem(2001, "QWERTY", true, pcLayout == PcLayout::qwerty);
+	layoutMenu.addItem(2002, "AZERTY", true, pcLayout == PcLayout::azerty);
+
+	juce::PopupMenu m;
+	m.addSubMenu("MIDI Channel", channelMenu, !omni);
+	m.addItem(3000, "Omni (all 16 channels at once)", true, omni);
+	m.addSeparator();
+	m.addItem(4000, "PC keyboard input (tracker-style)", true, pcKeyboardEnabled);
+	m.addSubMenu("PC keyboard layout", layoutMenu, pcKeyboardEnabled);
+
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this](int result) {
+		if (result >= 1001 && result <= 1016) { midiChannel = result - 1000; return; }
+		if (result == 3000) { omni = !omni; return; }
+		if (result == 4000) {
+			pcKeyboardEnabled = !pcKeyboardEnabled;
+			if (pcKeyboardEnabled) grabKeyboardFocus();
+			else releaseAllPcNotes();
+			return;
+		}
+		if (result == 2001) { pcLayout = PcLayout::qwerty; return; }
+		if (result == 2002) { pcLayout = PcLayout::azerty; return; }
+	});
+}
+
+bool D110Keyboard::keyStateChanged(bool /*isKeyDown*/) {
+	if (!pcKeyboardEnabled) return false;
+	const auto &keys = trackerKeys();
+	bool used = false;
+	for (size_t i = 0; i < keys.size(); ++i) {
+		const juce::juce_wchar c = pcLayout == PcLayout::qwerty ? keys[i].qwerty : keys[i].azerty;
+		const bool down = juce::KeyPress::isKeyCurrentlyDown((int)c);
+		if (down == pcKeyDown[i]) continue;
+		pcKeyDown[i] = down;
+		sendNote(kLowestNote + octaveShift * 12 + keys[i].semitoneFromBase, 0.85f, down);
+		used = true;
+	}
+	return used;
+}
+
+void D110Keyboard::focusLost(juce::Component::FocusChangeType) { releaseAllPcNotes(); }
+
+void D110Keyboard::changeOctave(int delta) {
+	const int shifted = juce::jlimit(-2, 3, octaveShift + delta);
+	if (shifted == octaveShift) return;
+	if (heldNote >= 0) setHeldNote(-1);
+	releaseAllPcNotes(); // held notes are note NUMBERS already sent - shifting octave first
+	                     // would leave them stuck on, since the physical key never "changed"
+	octaveShift = shifted;
+	rebuildKeys();
+	repaint();
+}
+
+// Geometry only - no drawing, no note math beyond the note NUMBERS each key represents.
+// Called on resize and on octave change, both of which invalidate every rectangle.
+void D110Keyboard::rebuildKeys() {
+	whiteKeys.clear();
+	blackKeys.clear();
+
+	auto area = getLocalBounds().toFloat();
+	// A thin caption strip above everything, full width, so "OCT n" never has to sit on top
+	// of a black key to be legible.
+	captionBounds = area.removeFromTop(juce::jmin(16.0f, area.getHeight() * 0.16f));
+	const float buttonW = juce::jmin(36.0f, area.getWidth() * 0.06f);
+	octaveDownBounds = area.removeFromLeft(buttonW);
+	octaveUpBounds = area.removeFromRight(buttonW);
+	keysBounds = area;
+
+	if (keysBounds.getWidth() < 1.0f || keysBounds.getHeight() < 1.0f) return;
+
+	constexpr int kNumWhite = kOctaves * kWhiteKeysPerOctave + 1; // trailing C
+	const float whiteW = keysBounds.getWidth() / float(kNumWhite);
+	const float blackW = whiteW * 0.62f;
+	const float blackH = keysBounds.getHeight() * 0.6f;
+
+	for (int i = 0; i < kNumWhite; ++i) {
+		const int octaveIndex = i / kWhiteKeysPerOctave;
+		const int local = i % kWhiteKeysPerOctave;
+		const int note = kLowestNote + (octaveShift + octaveIndex) * 12 + kWhiteSemitones[local];
+		const float x = keysBounds.getX() + i * whiteW;
+		whiteKeys.push_back({ { x, keysBounds.getY(), whiteW, keysBounds.getHeight() }, note, false });
+
+		// i < kNumWhite - 1 excludes the trailing C: it's the terminal key of the range, with
+		// no white key after it to sit between - without this guard its "black key to the
+		// right" landed outside keysBounds altogether, on top of the OCT+ button.
+		if (i < kNumWhite - 1 && kHasBlackToRight[local]) {
+			const float bx = x + whiteW - blackW * 0.5f;
+			blackKeys.push_back({ { bx, keysBounds.getY(), blackW, blackH }, note + 1, true });
+		}
+	}
+}
+
+int D110Keyboard::keyAt(juce::Point<float> p) const {
+	for (const auto &k : blackKeys)
+		if (k.bounds.contains(p)) return k.note;
+	for (const auto &k : whiteKeys)
+		if (k.bounds.contains(p)) return k.note;
+	return -1;
+}
+
+void D110Keyboard::setHeldNote(int note) {
+	if (note == heldNote) return;
+	if (heldNote >= 0) sendNote(heldNote, 0.0f, false);
+	heldNote = note;
+	if (heldNote >= 0) sendNote(heldNote, 0.85f, true);
+	repaint();
+}
+
+void D110Keyboard::paint(juce::Graphics &g) {
+	g.fillAll(juce::Colour(0xff141416));
+
+	auto paintButton = [&](juce::Rectangle<float> b, const char *label) {
+		g.setColour(juce::Colour(0xff26262c));
+		g.fillRect(b.reduced(3.0f));
+		g.setColour(juce::Colour(0xff8a8a94));
+		g.setFont(juce::FontOptions(juce::jlimit(12.0f, 22.0f, b.getWidth() * 0.5f)));
+		g.drawText(label, b, juce::Justification::centred);
+	};
+	// Single glyphs, not "OCT-"/"OCT+": the button is often not much wider than one
+	// character once the drawer is squeezed down to the constrainer's minimum width.
+	paintButton(octaveDownBounds, "-");
+	paintButton(octaveUpBounds, "+");
+
+	for (const auto &k : whiteKeys) {
+		g.setColour(k.note == heldNote ? juce::Colour(0xff6ab81f) : juce::Colour(0xffe8e8ec));
+		g.fillRect(k.bounds.reduced(1.0f, 0.0f));
+		g.setColour(juce::Colour(0xff0a0a0c));
+		g.drawRect(k.bounds, 1.0f);
+	}
+	for (const auto &k : blackKeys) {
+		g.setColour(k.note == heldNote ? juce::Colour(0xff3f7a10) : juce::Colour(0xff1a1a1e));
+		g.fillRect(k.bounds);
+	}
+
+	// Always shown, not just when shifted: it's the only hint of what -/+ actually do.
+	g.setColour(juce::Colour(0xff6a6a74));
+	g.setFont(juce::FontOptions(11.0f));
+	g.drawText("OCT " + (octaveShift > 0 ? juce::String("+") + juce::String(octaveShift)
+	                                     : juce::String(octaveShift)),
+	           captionBounds, juce::Justification::centred);
+}
+
+void D110Keyboard::resized() { rebuildKeys(); }
+
+void D110Keyboard::mouseDown(const juce::MouseEvent &e) {
+	// Grabbed on every click, not only when PC input is on: it costs nothing while off, and
+	// it means turning PC input on from the menu (itself a click on this component) leaves
+	// typing ready to go immediately, with no extra click needed to focus the strip.
+	grabKeyboardFocus();
+
+	if (e.mods.isPopupMenu()) { showContextMenu(); return; }
+	if (octaveDownBounds.contains(e.position)) { changeOctave(-1); return; }
+	if (octaveUpBounds.contains(e.position)) { changeOctave(1); return; }
+	const int note = keyAt(e.position);
+	if (note < 0) return;
+	draggingKey = true;
+	setHeldNote(note);
+}
+
+void D110Keyboard::mouseDrag(const juce::MouseEvent &e) {
+	if (!draggingKey) return;
+	const int note = keyAt(e.position);
+	setHeldNote(note); // -1 when the mouse drags off every key, which releases cleanly
+}
+
+void D110Keyboard::mouseUp(const juce::MouseEvent &) {
+	if (!draggingKey) return;
+	draggingKey = false;
+	setHeldNote(-1);
+}
+
+void D110Keyboard::mouseExit(const juce::MouseEvent &) {
+	if (!draggingKey) return;
+	draggingKey = false;
+	setHeldNote(-1);
+}
+
+// ---------------------------------------------------------------------------
 
 D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
-	: juce::AudioProcessorEditor(&p), panel(p), editorPane(p), card(p)
+	: juce::AudioProcessorEditor(&p), panel(p), editorPane(p), card(p), keyboard(p)
 {
 	addAndMakeVisible(panel);
 	addAndMakeVisible(editorPane);
+	addAndMakeVisible(keyboard);
 	// Карта добавляется последней и потому лежит поверх обоих - и прибора, и ящика.
 	addAndMakeVisible(card);
 
@@ -2443,7 +2783,8 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 }
 
 float D110AudioProcessorEditor::totalRefHeight() const {
-	return float(D110Panel::kRefH) + kHandleRefH + expansion * kPaneRefH;
+	return float(D110Panel::kRefH) + kHandleRefH + expansion * kPaneRefH
+	     + kKeyboardHandleRefH + keyboardExpansion * D110Keyboard::kRefH;
 }
 
 void D110AudioProcessorEditor::applySize() {
@@ -2459,73 +2800,110 @@ juce::Rectangle<float> D110AudioProcessorEditor::handleBand() const {
 	return { 0.0f, float(D110Panel::kRefH) * s, float(getWidth()), kHandleRefH * s };
 }
 
+// Its own handle band, stacked below wherever the editor's own drawer currently ends - so
+// it follows that drawer up and down as it opens and closes, exactly as the drawer's own
+// band follows the panel.
+juce::Rectangle<float> D110AudioProcessorEditor::keyboardHandleBand() const {
+	const float s = float(getWidth()) / float(D110Panel::kRefW);
+	const float top = (float(D110Panel::kRefH) + kHandleRefH + expansion * kPaneRefH) * s;
+	return { 0.0f, top, float(getWidth()), kKeyboardHandleRefH * s };
+}
+
 void D110AudioProcessorEditor::timerCallback() {
 	// Ход ящика. Сглажен к цели, поэтому он приходит на место, а не останавливается вкопанно,
 	// и защёлкивается, когда разница мала, - иначе окно меняло бы размер вечно. 0.13 за кадр
 	// при 60 кадрах в секунду - это около 360 мс: медленно настолько, чтобы прочитаться
 	// выдвижением, и быстро настолько, чтобы не мешать.
+	bool changed = false;
 	if (std::abs(expansionTarget - expansion) > 0.0015f) {
 		expansion += (expansionTarget - expansion) * 0.13f;
-		applySize();
+		changed = true;
 	} else if (expansion != expansionTarget) {
 		expansion = expansionTarget;
-		applySize();
+		changed = true;
 	}
+	if (std::abs(keyboardExpansionTarget - keyboardExpansion) > 0.0015f) {
+		keyboardExpansion += (keyboardExpansionTarget - keyboardExpansion) * 0.13f;
+		changed = true;
+	} else if (keyboardExpansion != keyboardExpansionTarget) {
+		keyboardExpansion = keyboardExpansionTarget;
+		changed = true;
+	}
+	if (changed) applySize();
 }
 
-void D110AudioProcessorEditor::paint(juce::Graphics &g)
-{
-	g.fillAll(juce::Colours::black);
-
-	// Ручка. Уголок смотрит вниз, когда ящик закрыт, и вверх, когда открыт.
-	const auto band = handleBand();
+namespace {
+// Shared by both drawer handles - the editor's own and the test keyboard's. The chevron
+// points away from the drawer's current resting edge: down when collapsed (there's more to
+// reveal below), up when open.
+void paintDrawerHandle(juce::Graphics &g, juce::Rectangle<float> band, bool open, bool hover,
+                       const char *labelWhenClosed) {
 	g.setColour(juce::Colour(0xff141416));
 	g.fillRect(band);
-	g.setColour(juce::Colour(handleHover ? 0xff3a3a42 : 0xff26262c));
+	g.setColour(juce::Colour(hover ? 0xff3a3a42 : 0xff26262c));
 	g.fillRect(band.reduced(0.0f, band.getHeight() * 0.28f));
 
 	const float cx = band.getCentreX();
 	const float cy = band.getCentreY();
 	const float a = juce::jmax(3.0f, band.getHeight() * 0.22f);
-	const float dir = (expansion > 0.5f) ? -1.0f : 1.0f;
+	const float dir = open ? -1.0f : 1.0f;
 	juce::Path chevron;
 	chevron.startNewSubPath(cx - a * 1.6f, cy - a * 0.5f * dir);
 	chevron.lineTo(cx, cy + a * 0.5f * dir);
 	chevron.lineTo(cx + a * 1.6f, cy - a * 0.5f * dir);
-	g.setColour(juce::Colour(handleHover ? 0xffd0d0d8 : 0xff8a8a94));
+	g.setColour(juce::Colour(hover ? 0xffd0d0d8 : 0xff8a8a94));
 	g.strokePath(chevron, juce::PathStrokeType(juce::jmax(1.5f, a * 0.35f)));
 
-	// Подпись рядом с уголком, но только пока ящик закрыт: открытый говорит сам за себя.
-	if (expansion < 0.02f) {
+	// Label next to the chevron, but only while closed: open already speaks for itself.
+	if (!open) {
 		g.setFont(juce::FontOptions(juce::jlimit(9.0f, 13.0f, band.getHeight() * 0.55f)));
 		g.setColour(juce::Colour(0xff6a6a74));
-		g.drawText("EDITOR", band.withTrimmedLeft(14.0f), juce::Justification::centredLeft);
+		g.drawText(labelWhenClosed, band.withTrimmedLeft(14.0f), juce::Justification::centredLeft);
 	}
+}
+} // namespace
+
+void D110AudioProcessorEditor::paint(juce::Graphics &g)
+{
+	g.fillAll(juce::Colours::black);
+	paintDrawerHandle(g, handleBand(), expansion > 0.5f, handleHover, "EDITOR");
+	paintDrawerHandle(g, keyboardHandleBand(), keyboardExpansion > 0.5f, keyboardHandleHover, "KEYBOARD");
 }
 
 void D110AudioProcessorEditor::mouseDown(const juce::MouseEvent &e)
 {
-	if (!handleBand().contains(e.position)) return;
-	expansionTarget = (expansionTarget > 0.5f) ? 0.0f : 1.0f;
-	// Ящик закрывают - карте негде лежать, и она возвращается в гнездо. Оставить её висеть
-	// за нижним краем окна значило бы потерять её из виду, не сказав об этом; а «не даём
-	// закрыть ящик, пока карта снаружи» - это запрет там, где хватает движения.
-	if (expansionTarget < 0.5f && card.isOut()) card.insert();
+	if (handleBand().contains(e.position)) {
+		expansionTarget = (expansionTarget > 0.5f) ? 0.0f : 1.0f;
+		// Ящик закрывают - карте негде лежать, и она возвращается в гнездо. Оставить её висеть
+		// за нижним краем окна значило бы потерять её из виду, не сказав об этом; а «не даём
+		// закрыть ящик, пока карта снаружи» - это запрет там, где хватает движения.
+		if (expansionTarget < 0.5f && card.isOut()) card.insert();
+		return;
+	}
+	if (keyboardHandleBand().contains(e.position)) {
+		keyboardExpansionTarget = (keyboardExpansionTarget > 0.5f) ? 0.0f : 1.0f;
+		return;
+	}
 }
 
 void D110AudioProcessorEditor::mouseMove(const juce::MouseEvent &e)
 {
 	const bool over = handleBand().contains(e.position);
-	if (over == handleHover) return;
-	handleHover = over;
-	setMouseCursor(over ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
+	const bool overKeyboard = keyboardHandleBand().contains(e.position);
+	bool changed = false;
+	if (over != handleHover) { handleHover = over; changed = true; }
+	if (overKeyboard != keyboardHandleHover) { keyboardHandleHover = overKeyboard; changed = true; }
+	if (!changed) return;
+	setMouseCursor((over || overKeyboard) ? juce::MouseCursor::PointingHandCursor
+	                                      : juce::MouseCursor::NormalCursor);
 	repaint();
 }
 
 void D110AudioProcessorEditor::mouseExit(const juce::MouseEvent &)
 {
-	if (!handleHover) return;
+	if (!handleHover && !keyboardHandleHover) return;
 	handleHover = false;
+	keyboardHandleHover = false;
 	repaint();
 }
 
@@ -2534,11 +2912,20 @@ void D110AudioProcessorEditor::resized()
 	const float s = float(getWidth()) / float(D110Panel::kRefW);
 	panel.setBounds(0, 0, D110Panel::kRefW, D110Panel::kRefH);
 	panel.setTransform(juce::AffineTransform::scale(s));
+	panel.setDisplayScale(s);
 
-	// Ящик занимает всё, что ниже прибора и полосы-ручки. Он рисуется целиком и обрезается
-	// собственными границами - это и создаёт впечатление, что он выезжает из-под прибора.
-	const int top = int((float(D110Panel::kRefH) + kHandleRefH) * s + 0.5f);
-	editorPane.setBounds(0, top, getWidth(), juce::jmax(0, getHeight() - top));
+	// Ящик занимает всё, что ниже прибора и полосы-ручки его ручки, и ровно до начала
+	// собственной полосы-ручки клавиатуры. Он рисуется целиком и обрезается собственными
+	// границами - это и создаёт впечатление, что он выезжает из-под прибора.
+	const int paneTop = int((float(D110Panel::kRefH) + kHandleRefH) * s + 0.5f);
+	const int paneH = int(expansion * kPaneRefH * s + 0.5f);
+	editorPane.setBounds(0, paneTop, getWidth(), juce::jmax(0, paneH));
+
+	// Клавиатура - тот же приём, второй раз подряд: своя полоса-ручка сразу под ящиком
+	// (открытым или нет), сама - под ней, обрезанная собственными границами.
+	const int kbTop = paneTop + paneH + int(kKeyboardHandleRefH * s + 0.5f);
+	const int kbH = int(keyboardExpansion * D110Keyboard::kRefH * s + 0.5f);
+	keyboard.setBounds(0, kbTop, getWidth(), juce::jmax(0, kbH));
 
 	// Карта живёт в тех же опорных точках, что и панель, поэтому ей нужен только масштаб и
 	// то, докуда сейчас доходит окно: по ним она сама поставит себе границы.
