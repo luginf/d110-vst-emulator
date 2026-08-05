@@ -2,6 +2,12 @@ name: Build Windows
 
 # CI/infra branch only - never wired to main or linux-port. Manual re-runs via
 # workflow_dispatch once this is stable; do not change this to a bare `push:` trigger.
+#
+# D110EmulatorNative only: the MAME-backed D110Emulator is opt-in
+# (-DD110_BUILD_MAME_BACKEND=ON, see plugin/CMakeLists.txt) and kept out of CI on purpose -
+# building MAME itself was the entire source of pain here (a real MAME source bug needing a
+# patch, then the runner's VS version drifting out from under a hardcoded generator). The
+# native core needs none of that: no MAME dependency at all.
 on:
   push:
     branches: [ci/windows-macos-builds]
@@ -13,86 +19,43 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  MAME_DIR: ${{ github.workspace }}\mame-build
-
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 30
     steps:
       - name: Checkout d110-vst-emulator
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
 
       - name: Set up MSVC dev environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Install make (MSYS2, matches upstream's own build recipe)
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          install: make
-          path-type: inherit
-
-      - name: Cache built MAME tree
-        id: cache-mame
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.MAME_DIR }}
-          key: mame0288-windows-${{ hashFiles('patches/mame_mcs96_stale_irq_level.patch', 'patches/mame_flopimg_missing_string_view_include.patch') }}-v2
-
-      - name: Clone MAME 0.288
-        if: steps.cache-mame.outputs.cache-hit != 'true'
-        run: git clone --branch mame0288 --depth 1 https://github.com/mamedev/mame.git "${{ env.MAME_DIR }}"
-        shell: bash
-
-      - name: Apply the required MCS-96 stale-IRQ-level patch
-        if: steps.cache-mame.outputs.cache-hit != 'true'
-        run: git apply "${{ github.workspace }}/patches/mame_mcs96_stale_irq_level.patch"
-        working-directory: ${{ env.MAME_DIR }}
-        shell: bash
-
-      - name: Apply the required flopimg.h missing #include<string_view> patch
-        # Real MAME source bug, not a build-flag issue - confirmed by printing the generated
-        # formats.vcxproj in an earlier CI run: it already requested LanguageStandard
-        # stdcpp20 in every configuration, yet still failed to compile std::string_view.
-        # flopimg.h uses it without ever including <string_view> - see patches/README.md.
-        if: steps.cache-mame.outputs.cache-hit != 'true'
-        run: git apply "${{ github.workspace }}/patches/mame_flopimg_missing_string_view_include.patch"
-        working-directory: ${{ env.MAME_DIR }}
-        shell: bash
-
-      - name: Build MAME's d110 subtarget (SUBTARGET=d110)
-        if: steps.cache-mame.outputs.cache-hit != 'true'
-        working-directory: ${{ env.MAME_DIR }}
-        shell: cmd
-        run: |
-          make vs2022 MSBUILD=1 PTR64=1 MINGW64=C:/msys64/mingw64 MINGW32=C:/msys64/mingw32 NOWERROR=1 PYTHON_EXECUTABLE=python SUBTARGET=d110 SOURCES=src/mame/roland/roland_d10.cpp USE_BGFX=0
-
       - name: Cache JUCE FetchContent checkout
         uses: actions/cache@v4
         with:
           path: plugin/build/_deps/juce-src
-          key: juce-8.0.15-windows-v1
+          key: juce-8.0.15-windows-native-v1
 
       - name: Configure plugin
+        # Ninja Multi-Config instead of a hardcoded "Visual Studio 17 2022" generator: the
+        # runner's installed VS version drifts (confirmed by CI - a run failed here with
+        # "could not find any instance of Visual Studio" once the image moved to VS 18), and
+        # Ninja just uses whatever cl.exe/link.exe msvc-dev-cmd already put on PATH above,
+        # so it isn't tied to a specific VS version string at all. Multi-Config (not plain
+        # Ninja) keeps `--config Release` below working the same as it would with the VS
+        # generator.
         working-directory: plugin
         shell: cmd
         run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DMAME_DIR="${{ env.MAME_DIR }}"
+          cmake -S . -B build -G "Ninja Multi-Config"
 
-      - name: Build D110Emulator (MAME-backed, VST3 + Standalone)
+      - name: Build D110EmulatorNative (VST3 + Standalone)
         working-directory: plugin
         shell: cmd
         run: |
-          cmake --build build --config Release --target D110Emulator_VST3 D110Emulator_Standalone
+          cmake --build build --config Release --target D110EmulatorNative_VST3 D110EmulatorNative_Standalone
 
       - name: Locate build outputs
         shell: bash
@@ -102,26 +65,16 @@ jobs:
           echo "--- Standalone exes ---"
           find plugin/build -iname "*.exe" -path "*Standalone*"
 
-      - name: Upload VST3 plugins
+      - name: Upload VST3 plugin
         uses: actions/upload-artifact@v4
         with:
-          name: d110-windows-vst3
-          path: |
-            plugin/build/**/*.vst3
+          name: d110-native-windows-vst3
+          path: plugin/build/**/*.vst3
           if-no-files-found: error
 
-      - name: Upload Standalone executables
+      - name: Upload Standalone executable
         uses: actions/upload-artifact@v4
         with:
-          name: d110-windows-standalone
-          path: |
-            plugin/build/**/Standalone/*.exe
+          name: d110-native-windows-standalone
+          path: plugin/build/**/Standalone/*.exe
           if-no-files-found: error
-
-      - name: Upload MAME build log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: mame-build-log-windows
-          path: ${{ env.MAME_DIR }}/build_logs/**
-          if-no-files-found: ignore

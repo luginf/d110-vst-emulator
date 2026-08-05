@@ -31,7 +31,16 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
-include("${CMAKE_CURRENT_SOURCE_DIR}/mame.cmake")
+# OFF by default: D110EmulatorNative (the MAME-free native core, see below) is the primary
+# supported build now that this fork keeps the original MAME-backed engine as a dormant
+# fallback rather than the default. Turn this ON (and point mame.cmake's MAME_DIR at a built
+# MAME 0.288+patch tree) to also build the original D110Emulator plugin and its MAME-only
+# test probes.
+option(D110_BUILD_MAME_BACKEND "Build the MAME-backed D110Emulator plugin and probes" OFF)
+
+if(D110_BUILD_MAME_BACKEND)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/mame.cmake")
+endif()
 
 include(FetchContent)
 FetchContent_Declare(
@@ -71,6 +80,8 @@ set(D110_FORMATS VST3 Standalone)
 if(APPLE)
     list(APPEND D110_FORMATS AU)
 endif()
+
+if(D110_BUILD_MAME_BACKEND)
 
 juce_add_plugin(D110Emulator
     # Без этого JUCE ставит собственную версию по умолчанию, и хост показывает её вместо
@@ -171,6 +182,8 @@ target_link_libraries(D110Emulator PUBLIC
     juce::juce_recommended_warning_flags
 )
 
+endif() # D110_BUILD_MAME_BACKEND
+
 # ---------------------------------------------------------------------------
 # D110EmulatorNative: the SAME PluginProcessor/PluginEditor, compiled with D110_NATIVE_CORE
 # so D110CoreType resolves to D110CoreNative instead of the MAME-backed D110Core - see the
@@ -231,6 +244,8 @@ target_link_libraries(D110EmulatorNative PUBLIC
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags
 )
+
+if(D110_BUILD_MAME_BACKEND)
 
 # ---------------------------------------------------------------------------
 # Offline audio check: instantiates the real processor, powers it on, plays a note
@@ -1049,6 +1064,8 @@ target_link_libraries(d110_rhythm_pan_audio PRIVATE
     juce::juce_audio_utils juce::juce_audio_processors)
 target_link_options(d110_rhythm_pan_audio PRIVATE ${MAME_LINK_OPTIONS})
 
+endif() # D110_BUILD_MAME_BACKEND
+
 # ---------------------------------------------------------------------------
 # Native D-110 CPU core port (see the "Native D-110 CPU core port" plan) - the D-110's own
 # i8x9x/MCS-96 CPU, hand-ported out of MAME's device/scheduler framework into a standalone
@@ -1161,6 +1178,8 @@ target_link_libraries(d110_native_plugin_smoke PRIVATE
     D110PanelData MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
 
+if(D110_BUILD_MAME_BACKEND)
+
 # One-shot MAME-backed helper: produces a properly factory-reset nvram folder for
 # native_note_probe.cpp to load (see that file's header comment).
 add_executable(d110_mame_factory_reset_tool mame_factory_reset_tool.cpp Source/D110Core.cpp "${MAME_DRIVLIST}")
@@ -1177,3 +1196,5 @@ target_include_directories(d110_mame_note_probe PRIVATE ${MAME_INCLUDES} "${CMAK
 target_compile_definitions(d110_mame_note_probe PRIVATE ${MAME_DEFS})
 target_link_libraries(d110_mame_note_probe PRIVATE ${MAME_LIBS} ${MAME_SYS_LIBS})
 target_link_options(d110_mame_note_probe PRIVATE ${MAME_LINK_OPTIONS})
+
+endif() # D110_BUILD_MAME_BACKEND

@@ -1,10 +1,15 @@
-name: Build macOS (best-effort)
+name: Build macOS
 
-# UNPROVEN: nobody has built this project's MAME dependency on macOS before this workflow.
-# See plugin/mame.cmake's Darwin branch for what's verified vs. guessed so far.
-#
 # CI/infra branch only - never wired to main or linux-port. Manual re-runs via
 # workflow_dispatch once this is stable; do not change this to a bare `push:` trigger.
+#
+# D110EmulatorNative only (VST3 + Standalone + AU): the MAME-backed D110Emulator is opt-in
+# (-DD110_BUILD_MAME_BACKEND=ON, see plugin/CMakeLists.txt) and kept out of CI on purpose -
+# building MAME itself was the entire source of pain here (SDL3 OSD quirks, a duplicate-symbol
+# fight with ld64). The native core needs none of that: no MAME dependency at all, and no
+# code-signing/notarization either - unsigned builds will be Gatekeeper-blocked by default on
+# anyone's own Mac unless they right-click -> Open, or the project gets an Apple Developer
+# account for notarization later.
 on:
   push:
     branches: [ci/windows-macos-builds]
@@ -16,77 +21,29 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  MAME_DIR: ${{ github.workspace }}/mame-build
-
 jobs:
   build:
     runs-on: macos-latest
-    timeout-minutes: 150
+    timeout-minutes: 30
     steps:
       - name: Checkout d110-vst-emulator
         uses: actions/checkout@v4
-
-      - name: Report runner architecture (arm64 vs x64 changes MAME's output path)
-        run: |
-          uname -m
-          sw_vers
-
-      - name: Install SDL3 (MAME 0.288's actual macOS OSD dependency, confirmed by CI - not SDL2)
-        run: brew install sdl3 sdl3_ttf
-
-      - name: Cache built MAME tree
-        id: cache-mame
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.MAME_DIR }}
-          key: mame0288-macos-${{ hashFiles('patches/mame_mcs96_stale_irq_level.patch') }}-v1
-
-      - name: Clone MAME 0.288
-        if: steps.cache-mame.outputs.cache-hit != 'true'
-        run: git clone --branch mame0288 --depth 1 https://github.com/mamedev/mame.git "${{ env.MAME_DIR }}"
-
-      - name: Apply the required MCS-96 stale-IRQ-level patch
-        if: steps.cache-mame.outputs.cache-hit != 'true'
-        run: git apply "${{ github.workspace }}/patches/mame_mcs96_stale_irq_level.patch"
-        working-directory: ${{ env.MAME_DIR }}
-
-      - name: Build MAME's d110 subtarget (SUBTARGET=d110)
-        if: steps.cache-mame.outputs.cache-hit != 'true'
-        working-directory: ${{ env.MAME_DIR }}
-        run: |
-          make SUBTARGET=d110 SOURCES=src/mame/roland/roland_d10.cpp -j"$(sysctl -n hw.ncpu)"
-
-      - name: Show what the MAME build actually produced
-        # Ground truth for plugin/mame.cmake's Darwin branch - never assume a path or lib name.
-        run: |
-          echo "--- top-level build/ dirs ---"
-          find "${{ env.MAME_DIR }}/build" -maxdepth 3 -type d 2>/dev/null || echo "no build dir at all"
-          echo "--- every .a produced ---"
-          find "${{ env.MAME_DIR }}/build" -iname "*.a" 2>/dev/null
-          echo "--- every executable produced (Mach-O, not .a) ---"
-          for f in $(find "${{ env.MAME_DIR }}/build" -type f -perm -u+x ! -iname "*.a" 2>/dev/null); do
-            if file "$f" | grep -q "Mach-O"; then
-              echo "=== $f ==="
-              otool -L "$f" || true
-            fi
-          done
 
       - name: Cache JUCE FetchContent checkout
         uses: actions/cache@v4
         with:
           path: plugin/build/_deps/juce-src
-          key: juce-8.0.15-macos-v1
+          key: juce-8.0.15-macos-native-v1
 
       - name: Configure plugin
         working-directory: plugin
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DMAME_DIR="${{ env.MAME_DIR }}"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
-      - name: "Build D110Emulator (MAME-backed: VST3 + Standalone + AU)"
+      - name: "Build D110EmulatorNative (VST3 + Standalone + AU)"
         working-directory: plugin
         run: |
-          cmake --build build --config Release --target D110Emulator_VST3 D110Emulator_Standalone D110Emulator_AU -j"$(sysctl -n hw.ncpu)"
+          cmake --build build --config Release --target D110EmulatorNative_VST3 D110EmulatorNative_Standalone D110EmulatorNative_AU -j"$(sysctl -n hw.ncpu)"
 
       - name: Locate build outputs
         if: always()
@@ -102,7 +59,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: d110-macos-vst3
+          name: d110-native-macos-vst3
           path: plugin/build/**/*.vst3
           if-no-files-found: warn
 
@@ -110,7 +67,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: d110-macos-au
+          name: d110-native-macos-au
           path: plugin/build/**/*.component
           if-no-files-found: warn
 
@@ -118,16 +75,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: d110-macos-standalone
+          name: d110-native-macos-standalone
           path: plugin/build/**/Standalone/*.app
           if-no-files-found: warn
-
-      - name: Upload CMake/MAME logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-build-logs
-          path: |
-            plugin/build/CMakeFiles/CMakeError.log
-            plugin/build/CMakeFiles/CMakeOutput.log
-          if-no-files-found: ignore
