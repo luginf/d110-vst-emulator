@@ -70,7 +70,10 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     # as a guess, not a verified fact.
     set(MAME_DIR "$ENV{HOME}/src/D110/mame-build/mame" CACHE PATH
         "Path to a mame0288 checkout with SUBTARGET=d110 already built for macOS (see above)")
-    set(_mame_libdir "${MAME_DIR}/build/mac_clang/bin/x64/Release")
+    # Confirmed by an actual macos-latest run (build-macos.yml), NOT a guess: the output
+    # dir is osx_clang (not mac_clang), and MAME 0.288's macOS OSD is SDL3-based - GENie
+    # generates build/projects/sdl3/mamed110, and the archives below are named *_sdl3.
+    set(_mame_libdir "${MAME_DIR}/build/osx_clang/bin/x64/Release")
     set(_mame_sublib "${_mame_libdir}/mame_d110")
 
     # Same --start-group/--end-group reasoning as the Linux branch: MAME's own libs
@@ -80,8 +83,8 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
       "${_mame_sublib}/liboptional.a"
       "${_mame_sublib}/libformats.a"   "${_mame_sublib}/libdasm.a"
       "${_mame_libdir}/libfrontend.a"  "${_mame_libdir}/libemu.a"
-      "${_mame_libdir}/libosd_sdl.a" "${_mame_libdir}/libocore_sdl.a"
-      "${_mame_libdir}/libqtdbg_sdl.a" "${_mame_libdir}/libutils.a"
+      "${_mame_libdir}/libosd_sdl3.a" "${_mame_libdir}/libocore_sdl3.a"
+      "${_mame_libdir}/libqtdbg_sdl3.a" "${_mame_libdir}/libutils.a"
       "${_mame_libdir}/libexpat.a" "${_mame_libdir}/libzlib.a"
       "${_mame_libdir}/libportmidi.a" "${_mame_libdir}/libflac.a" "${_mame_libdir}/lib7z.a"
       "${_mame_libdir}/libsoftfloat3.a" "${_mame_libdir}/libutf8proc.a"
@@ -112,14 +115,18 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     find_library(METAL_LIB Metal REQUIRED)
     find_library(CARBON_LIB Carbon REQUIRED)
     find_library(FOUNDATION_LIB Foundation REQUIRED)
-    find_package(SDL2 REQUIRED)
-    find_package(SDL2_ttf REQUIRED)
+    # Confirmed by CI: MAME 0.288's macOS OSD links against SDL3, not SDL2 - the archives
+    # above are literally named *_sdl3. Homebrew's sdl2 formula is sdl2-compat, which pulls
+    # in sdl3 as a dependency, but that is a coincidence of the CI image, not something to
+    # rely on - install sdl3 (and sdl3_ttf, if MAME turns out to need it - unconfirmed,
+    # carried over from the Linux branch's SDL2_ttf and not yet proven required here) directly.
+    find_package(SDL3 REQUIRED)
 
     set(MAME_SYS_LIBS
       ${COREAUDIO_LIB} ${COREMIDI_LIB} ${COREVIDEO_LIB} ${AUDIOTOOLBOX_LIB}
       ${AUDIOUNIT_LIB} ${IOKIT_LIB} ${COCOA_LIB} ${QUARTZCORE_LIB} ${METAL_LIB}
       ${CARBON_LIB} ${FOUNDATION_LIB}
-      SDL2::SDL2 SDL2_ttf::SDL2_ttf)
+      SDL3::SDL3)
 
     set(MAME_INCLUDES
       "${MAME_DIR}/src" "${MAME_DIR}/src/osd" "${MAME_DIR}/src/emu"

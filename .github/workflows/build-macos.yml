@@ -26,8 +26,8 @@ jobs:
           uname -m
           sw_vers
 
-      - name: Install SDL2 / SDL2_ttf
-        run: brew install sdl2 sdl2_ttf
+      - name: Install SDL3 (MAME 0.288's actual macOS OSD dependency, confirmed by CI - not SDL2)
+        run: brew install sdl3 sdl3_ttf
 
       - name: Cache built MAME tree
         id: cache-mame
@@ -52,12 +52,19 @@ jobs:
           make SUBTARGET=d110 SOURCES=src/mame/roland/roland_d10.cpp -j"$(sysctl -n hw.ncpu)"
 
       - name: Show what the MAME build actually produced
-        # Ground truth for plugin/mame.cmake's Darwin branch - do not assume build/mac_clang/bin/x64.
+        # Ground truth for plugin/mame.cmake's Darwin branch - never assume a path or lib name.
         run: |
           echo "--- top-level build/ dirs ---"
           find "${{ env.MAME_DIR }}/build" -maxdepth 3 -type d 2>/dev/null || echo "no build dir at all"
           echo "--- every .a produced ---"
           find "${{ env.MAME_DIR }}/build" -iname "*.a" 2>/dev/null
+          echo "--- every executable produced (Mach-O, not .a) ---"
+          for f in $(find "${{ env.MAME_DIR }}/build" -type f -perm -u+x ! -iname "*.a" 2>/dev/null); do
+            if file "$f" | grep -q "Mach-O"; then
+              echo "=== $f ==="
+              otool -L "$f" || true
+            fi
+          done
 
       - name: Cache JUCE FetchContent checkout
         uses: actions/cache@v4
