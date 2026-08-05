@@ -29,3 +29,7 @@ nvram/
 
 # Build logs from scripts/*.bat
 build_logs/
+
+release-artifacts/
+*.deb
+*.exe
