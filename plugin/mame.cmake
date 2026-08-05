@@ -83,15 +83,56 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     # (confirmed by CI: the clash reproduces identically whether or not anything is
     # force_load-ed, so it isn't a force_load side effect to route around - it is a plain
     # normal-link duplicate, since both D110Core.cpp.o and mame.o get pulled in regardless).
-    # Rather than ask the linker to tolerate two definitions, remove mame.o from a COPY of
-    # libfrontend.a before it ever reaches the linker, so there is only ever one definition
-    # to find. ranlib re-indexes the copy afterwards - a stale archive symbol table after
-    # `ar d` can make the linker fail to find what's left.
+    #
+    # First attempt removed mame.o from libfrontend.a entirely (ar d) - confirmed by CI to
+    # be too blunt: mame.o also defines mame_machine_manager, which clifront.o (elsewhere in
+    # the same archive) genuinely needs, so that traded one link error for another
+    # ("mame_machine_manager::execute() referenced from clifront.o" - undefined). The actual
+    # collision is only the emulator_info:: functions, not the whole translation unit.
+    #
+    # This instead relinks mame.o with just its emulator_info:: symbols made local (hidden
+    # from the rest of the link) via ld -r -unexported_symbols_list, leaving
+    # mame_machine_manager and everything else in the object exported exactly as before, and
+    # puts that trimmed object back in the archive copy in mame.o's place. The symbol list is
+    # read off mame.o itself via nm + c++filt rather than hand-typing the 9 mangled names
+    # that happened to collide in one CI run, so it stays correct if MAME's own
+    # emulator_info:: interface ever grows or shrinks.
     set(_frontend_stripped "${CMAKE_BINARY_DIR}/libfrontend_stripped.a")
-    execute_process(COMMAND ${CMAKE_COMMAND} -E copy
-      "${_mame_libdir}/libfrontend.a" "${_frontend_stripped}")
-    execute_process(COMMAND ar d "${_frontend_stripped}" mame.o)
-    execute_process(COMMAND ranlib "${_frontend_stripped}")
+    set(_strip_workdir "${CMAKE_BINARY_DIR}/_frontend_strip")
+    file(MAKE_DIRECTORY "${_strip_workdir}")
+    set(_strip_script "${_strip_workdir}/strip_emulator_info.sh")
+    file(WRITE "${_strip_script}" "#!/bin/sh
+set -e
+cd \"${_strip_workdir}\"
+rm -f mame.o mame_trimmed.o unexport.list
+cp \"${_mame_libdir}/libfrontend.a\" \"${_frontend_stripped}\"
+ar x \"${_frontend_stripped}\" mame.o
+: > unexport.list
+nm mame.o | while read -r addr type name; do
+  case \"$type\" in
+    T|W)
+      demangled=$(printf '%s\\n' \"$name\" | c++filt)
+      case \"$demangled\" in
+        emulator_info::*) printf '%s\\n' \"$name\" >> unexport.list ;;
+      esac
+      ;;
+  esac
+done
+if [ ! -s unexport.list ]; then
+  echo 'strip_emulator_info.sh: found no emulator_info:: symbols in mame.o - refusing to' >&2
+  echo 'produce a no-op trimmed object, since that would silently leave the original' >&2
+  echo 'duplicate-symbol clash in place.' >&2
+  exit 1
+fi
+ld -r -o mame_trimmed.o mame.o -unexported_symbols_list unexport.list
+ar d \"${_frontend_stripped}\" mame.o
+ar r \"${_frontend_stripped}\" mame_trimmed.o
+ranlib \"${_frontend_stripped}\"
+")
+    execute_process(COMMAND sh "${_strip_script}" RESULT_VARIABLE _strip_result)
+    if(NOT _strip_result EQUAL 0)
+      message(FATAL_ERROR "strip_emulator_info.sh failed (see ${_strip_script}) - see mame.cmake's Darwin branch")
+    endif()
 
     # Same --start-group/--end-group reasoning as the Linux branch: MAME's own libs
     # cross-reference each other and a single left-to-right pass can't order them all.

@@ -1,20 +1,42 @@
 # Патчи к MAME
 
 Плагин собирается против **неизменённого** дерева MAME - это его свойство, и оно остаётся
-верным для одного из патчей ниже, но не для другого: `mame_mcs96_stale_irq_level.patch`
-**обязателен**, см. его собственный раздел. `mame_roland_d10_dropped_writes.patch`
-по-прежнему опционален - ничего из него не нужно для работы плагина. Здесь лежат правки,
-найденные по ходу работы над D-110 и относящиеся к самой MAME, а не к плагину. Хранятся они
-тут по простой причине: дерево MAME общее у нескольких проектов, не вендорится сюда и держит
-чужие незакоммиченные изменения, так что оставленная в нём правка легко теряется.
+верным для одного из патчей ниже, но не для остальных: `mame_mcs96_stale_irq_level.patch`
+**обязателен**, см. его собственный раздел. `mame_flopimg_missing_string_view_include.patch`
+тоже **обязателен**, но только при сборке под Windows на MSVC - см. его раздел.
+`mame_roland_d10_dropped_writes.patch` по-прежнему опционален - ничего из него не нужно для
+работы плагина. Здесь лежат правки, найденные по ходу работы над D-110 и относящиеся к самой
+MAME, а не к плагину. Хранятся они тут по простой причине: дерево MAME общее у нескольких
+проектов, не вендорится сюда и держит чужие незакоммиченные изменения, так что оставленная в
+нём правка легко теряется.
 
 Применять к дереву MAME 0.288:
 
 ```
 cd <mame-tree>
 git apply <path>/mame_mcs96_stale_irq_level.patch
+git apply <path>/mame_flopimg_missing_string_view_include.patch
 git apply <path>/mame_roland_d10_dropped_writes.patch
 ```
+
+## `mame_flopimg_missing_string_view_include.patch` — REQUIRED on Windows/MSVC
+
+`src/lib/formats/flopimg.h` uses `std::string_view` (`extension_matches`, declared and
+defined against it) but never includes `<string_view>` - only `<memory>`, `<vector>`,
+`<cassert>`, `<cstddef>`, `<cstdint>`. It still compiles on toolchains where some other
+standard header happens to transitively drag `<string_view>` in, which is exactly what
+masked this for years: found building MAME's `formats` project (this fork's
+`.github/workflows/build-windows.yml`) against a GitHub Actions `windows-latest` runner's
+MSVC/STL, which apparently doesn't. The symptom is `error C2039: 'string_view': is not a
+member of 'std'` at `flopimg.h`'s own declaration, immediately ruling out anything to do
+with `/std:` flags or `LanguageStandard` project settings (the generated `formats.vcxproj`
+already requested `stdcpp20` in every configuration - confirmed by printing it in CI before
+concluding this was a real header bug, not a build-flag one). One-line fix: add the missing
+`#include <string_view>`.
+
+Not confirmed necessary on Linux/GCC or macOS/Clang - both apparently transitively pull in
+`<string_view>` some other way - so it's flagged Windows-only above rather than folded into
+the always-required patch, but applying it everywhere is harmless.
 
 ## `mame_mcs96_stale_irq_level.patch` — REQUIRED
 
