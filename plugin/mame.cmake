@@ -115,6 +115,10 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     find_library(METAL_LIB Metal REQUIRED)
     find_library(CARBON_LIB Carbon REQUIRED)
     find_library(FOUNDATION_LIB Foundation REQUIRED)
+    # Confirmed by CI: renderer_ogl in libosd_sdl3.a calls the legacy fixed-function GL API
+    # directly (glBegin/glEnd and friends) - MAME's SDL OSD still has an OpenGL renderer
+    # option on macOS alongside Metal, and it's apparently what got built here.
+    find_library(OPENGL_LIB OpenGL REQUIRED)
     # Confirmed by CI: MAME 0.288's macOS OSD links against SDL3, not SDL2 - the archives
     # above are literally named *_sdl3. Homebrew's sdl2 formula is sdl2-compat, which pulls
     # in sdl3 as a dependency, but that is a coincidence of the CI image, not something to
@@ -125,7 +129,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(MAME_SYS_LIBS
       ${COREAUDIO_LIB} ${COREMIDI_LIB} ${COREVIDEO_LIB} ${AUDIOTOOLBOX_LIB}
       ${AUDIOUNIT_LIB} ${IOKIT_LIB} ${COCOA_LIB} ${QUARTZCORE_LIB} ${METAL_LIB}
-      ${CARBON_LIB} ${FOUNDATION_LIB}
+      ${CARBON_LIB} ${FOUNDATION_LIB} ${OPENGL_LIB}
       SDL3::SDL3)
 
     set(MAME_INCLUDES

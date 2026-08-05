@@ -7,6 +7,12 @@ on:
     branches: [ci/windows-macos-builds]
   workflow_dispatch:
 
+# A later push while a run from an earlier one is still going superseded it anyway -
+# don't burn double runner time on both.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   MAME_DIR: ${{ github.workspace }}\mame-build
 
@@ -57,7 +63,15 @@ jobs:
         if: steps.cache-mame.outputs.cache-hit != 'true'
         working-directory: ${{ env.MAME_DIR }}
         shell: cmd
+        # CL is read by cl.exe itself, before any project's own command-line flags, so a
+        # project that already sets its own /std explicitly still wins over this. First CI
+        # run without it failed formats.vcxproj alone with "'string_view' is not a member of
+        # 'std'" - that one MSBuild-generated project apparently doesn't get a C++17+ dialect
+        # flag on this runner's toolset, even though the rest of the tree (and our own
+        # plugin, built against C++20 later) needs one. Forcing it here is a workaround for
+        # whatever genie/MSBuild-version mismatch causes that, not a MAME source change.
         run: |
+          set CL=/std:c++20
           make vs2022 MSBUILD=1 PTR64=1 MINGW64=C:/msys64/mingw64 MINGW32=C:/msys64/mingw32 NOWERROR=1 PYTHON_EXECUTABLE=python SUBTARGET=d110 SOURCES=src/mame/roland/roland_d10.cpp USE_BGFX=0
 
       - name: Cache JUCE FetchContent checkout

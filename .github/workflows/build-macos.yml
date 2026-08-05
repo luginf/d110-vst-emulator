@@ -10,6 +10,12 @@ on:
     branches: [ci/windows-macos-builds]
   workflow_dispatch:
 
+# A later push while a run from an earlier one is still going superseded it anyway -
+# don't burn double runner time on both.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   MAME_DIR: ${{ github.workspace }}/mame-build
 
