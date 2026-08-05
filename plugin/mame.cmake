@@ -76,13 +76,30 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(_mame_libdir "${MAME_DIR}/build/osx_clang/bin/x64/Release")
     set(_mame_sublib "${_mame_libdir}/mame_d110")
 
+    # D110Core.cpp intentionally defines its own emulator_info:: overrides, colliding by
+    # design with libfrontend.a's mame.o (see CMakeLists.txt's comment on the same
+    # collision). Windows/Linux tolerate the resulting duplicate-symbol clash with
+    # /FORCE:MULTIPLE and --allow-multiple-definition; ld64 has no working equivalent
+    # (confirmed by CI: the clash reproduces identically whether or not anything is
+    # force_load-ed, so it isn't a force_load side effect to route around - it is a plain
+    # normal-link duplicate, since both D110Core.cpp.o and mame.o get pulled in regardless).
+    # Rather than ask the linker to tolerate two definitions, remove mame.o from a COPY of
+    # libfrontend.a before it ever reaches the linker, so there is only ever one definition
+    # to find. ranlib re-indexes the copy afterwards - a stale archive symbol table after
+    # `ar d` can make the linker fail to find what's left.
+    set(_frontend_stripped "${CMAKE_BINARY_DIR}/libfrontend_stripped.a")
+    execute_process(COMMAND ${CMAKE_COMMAND} -E copy
+      "${_mame_libdir}/libfrontend.a" "${_frontend_stripped}")
+    execute_process(COMMAND ar d "${_frontend_stripped}" mame.o)
+    execute_process(COMMAND ranlib "${_frontend_stripped}")
+
     # Same --start-group/--end-group reasoning as the Linux branch: MAME's own libs
     # cross-reference each other and a single left-to-right pass can't order them all.
     set(MAME_LIBS
       -Wl,-force_load,"${_mame_sublib}/libmame_d110.a"
       "${_mame_sublib}/liboptional.a"
       "${_mame_sublib}/libformats.a"   "${_mame_sublib}/libdasm.a"
-      "${_mame_libdir}/libfrontend.a"  "${_mame_libdir}/libemu.a"
+      "${_frontend_stripped}"  "${_mame_libdir}/libemu.a"
       "${_mame_libdir}/libosd_sdl3.a" "${_mame_libdir}/libocore_sdl3.a"
       "${_mame_libdir}/libqtdbg_sdl3.a" "${_mame_libdir}/libutils.a"
       "${_mame_libdir}/libexpat.a" "${_mame_libdir}/libzlib.a"
