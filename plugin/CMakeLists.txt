@@ -91,11 +91,26 @@ juce_add_plugin(D110Emulator
     PLUGIN_NAME "D-110 Emulator"
 )
 
+# On Apple, MAME_DRIVLIST is built as its own tiny static lib instead of going straight into
+# D110Emulator's sources, so the foreach() below can -force_load JUST that (see its comment
+# for why: force-loading the whole D110Emulator archive pulled in D110Core.cpp.o's
+# emulator_info:: overrides a second time, which are already reached normally, and ld64 has
+# no --allow-multiple-definition to paper over the resulting duplicate-symbol error the way
+# the Windows/Linux branches do).
+if(APPLE)
+    add_library(D110DriverList STATIC "${MAME_DRIVLIST}")
+    target_include_directories(D110DriverList PRIVATE ${MAME_INCLUDES})
+    target_compile_definitions(D110DriverList PRIVATE ${MAME_DEFS})
+    set(D110_DRIVLIST_SOURCE)
+else()
+    set(D110_DRIVLIST_SOURCE "${MAME_DRIVLIST}")
+endif()
+
 target_sources(D110Emulator PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
     Source/D110Core.cpp
-    "${MAME_DRIVLIST}"
+    ${D110_DRIVLIST_SOURCE}
 )
 
 target_include_directories(D110Emulator PRIVATE ${MAME_INCLUDES})
@@ -116,6 +131,10 @@ target_link_libraries(D110Emulator PRIVATE
     juce::juce_audio_processors
 )
 
+if(APPLE)
+    target_link_libraries(D110Emulator PRIVATE D110DriverList)
+endif()
+
 # MAME's own emulator_info definitions collide with ours by design, and its libs are
 # built with a different debug-info setting than JUCE's.
 foreach(_fmt VST3 Standalone AU)
@@ -127,9 +146,14 @@ foreach(_fmt VST3 Standalone AU)
             # the MAME libs reference it later), ld64's answer instead of GNU ld's
             # --whole-archive/--no-whole-archive: force_load takes one archive, not a region,
             # so it needs its own flag per invocation rather than a pair of markers.
-            # UNVERIFIED - see the comment at the top of mame.cmake.
+            # Confirmed by CI: force_load-ing the WHOLE D110Emulator archive (first attempt)
+            # duplicate-symbol'd D110Core.cpp.o's emulator_info:: overrides against
+            # libfrontend.a's mame.o, because D110Core.cpp.o is already reached normally and
+            # force_load pulled it in a second time. D110DriverList is a single-object archive
+            # (see above) holding only the generated driver_list table, so forcing it can't
+            # cause that - it has nothing else in it to duplicate.
             target_link_options(D110Emulator_${_fmt} PRIVATE
-                -Wl,-force_load,$<TARGET_FILE:D110Emulator>)
+                -Wl,-force_load,$<TARGET_FILE:D110DriverList>)
         elseif(NOT MSVC)
             # GNU ld only extracts a .a member when something already needs it at that point
             # in the link. libD-110_Emulator_SharedCode.a (which the MAME_DRIVLIST object -
