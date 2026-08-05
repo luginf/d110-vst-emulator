@@ -1,5 +1,11 @@
 # D-110 VST Emulator
 
+> **Note (2026-08-05):** the original upstream repository this project is forked from
+> ([PatriotBY/d110-vst-emulator](https://github.com/PatriotBY/d110-vst-emulator)) is currently
+> unavailable - removed or made private by its author. This fork's `main` branch is up to date
+> with the last commit we pulled from it before that happened, and all Linux-port work continues
+> here. If the upstream project reappears, we intend to reconcile with it as before.
+
 A VST3 plugin that emulates the Roland D-110 multi-timbral sound module.
 
 **It runs the D-110's real Roland firmware.** The menus, the display, the patch and timbre
@@ -157,21 +163,53 @@ instrument's battery RAM, and travels with your project the same way. See
 
 ## Requirements
 
-You need your own **MAME `d110` ROM set** - copyrighted Roland firmware, **not included** here.
-Put the files loose into:
+You need your own **D-110 ROM dumps** - copyrighted Roland firmware, **not included** here.
+Put the files loose (not zipped - see below) into:
 
 - Windows: `C:\Program Files\Common Files\VST3\D-110 Data\`
 - macOS: `~/Library/Audio/Plug-Ins/VST3/D-110 Data/`
 - Linux: `~/.vst3/D-110_Data/`
 
-That one set serves both halves: the control board takes the firmware, the presets and the
-character generator from it, and the sound engine's Control and PCM images are assembled from
-the same chip dumps in memory. Files are recognised by **content, not by name**.
+One set of chip dumps serves both the control board and the sound engine, but the two halves
+find their files differently, which matters for what you actually need to put in the folder:
 
-Already-combined `mt32emu`-style Control and PCM images are accepted too, as is the romset
-still in its `.zip`. Whatever you have, drop it in.
+- **The control board (both backends) needs three files present under their exact chip
+  names** - it opens them by that literal filename, not by content:
+  - `d-110.v1.10.ic19.bin` (32,768 bytes) - the control firmware
+  - `r15179873-lh5310-97.ic12.bin` (131,072 bytes) - the presets ROM
+  - `msm6222b-01.bin` (4,096 bytes) - the LCD's character generator ROM
+- **The sound engine** (Control/PCM/BOSS reverb images) recognises files by **content, not
+  name** - already-combined `mt32emu`-style Control and PCM images work, and so do the loose
+  chip dumps above plus:
+  - `r15179880.ic8.bin` and `r15179878.ic7.bin` (524,288 bytes each) - PCM wave ROMs, joined
+    IC8+IC7
+  - `r15179879.ic6.bin` (32,768 bytes) - the BOSS reverb chip's program ROM, optional (only
+    the reverb emulation needs it)
 
-Right-click the panel to see what was recognised.
+A `.zip` still in its original romset packaging is only recognised by the sound engine's
+content scan, **not** by the control board's fixed-filename lookup above - extract it if you
+want to use `D110EmulatorNative` (or `D110Emulator` built without MAME's own separate romset
+search). Whatever you have, drop it in loose and let the plugin sort out what it recognises.
+
+Right-click the panel to see what was recognised. A `mame_nvram` file that shows up in this
+same folder afterwards is not a ROM you need to supply - it is the instrument's own battery
+RAM, created and updated automatically as you use the plugin (see below).
+
+MD5 checksums, to confirm a dump is the right one before dropping it in (the two rows with two
+filenames are the same content under two different naming conventions - either name works,
+since files are matched by content, not name, everywhere except the three loose chip dumps
+listed above):
+
+| MD5 | File(s) |
+|---|---|
+| `d8aa6bb3628a35b6fe1cd205c2ab8f62` | `d-110.v1.10.ic19.bin` |
+| `faa1960f26a73eed65175762c0527cd6` | `r15179873-lh5310-97.ic12.bin` |
+| `c7596739df7e599be1a189a42c05a8b3` | `msm6222b-01.bin` |
+| `ba6fa6a8f9892dacd6009f52225ac2a2` | `r15179878.ic7.bin` |
+| `61ad8efa5e78c19be691b2b2e2ddda4b` | `r15179880.ic8.bin` |
+| `253105885d590332a802157a0e609e59` | `r15179879.ic6.bin` (BOSS reverb, optional) |
+| `169a6657650c3c5d861c67689dcf73cc` | `ctrl_d110_v1.10.bin` / `D-110_Control.bin` (pre-assembled Control image) |
+| `f5e9349493b13d0d13313afc10803a98` | `pcm_d110.bin` / `D-110_PCM.bin` (pre-assembled PCM image) |
 
 > **Note:** by factory default **nothing plays on MIDI channel 1**. Part 1 listens on channel
 > **2**, part 2 on 3, and so on to part 8 on channel 9, with rhythm on 10. That is how the
@@ -208,9 +246,11 @@ that has to keep working.
 
 - `munt/` - the sound engine (`mt32emu`), vendored from the fork above with a couple of local
   fixes (see `munt/mt32emu/src/Display.cpp` for the LCD buffer/part-count corrections made for D-110).
-- `plugin/Source/D110Core.*` - the control board: runs MAME's `d110` machine on its own thread
-  with a headless OSD, and exposes the display, the sixteen buttons and the firmware's parameter
-  memory. Needs no patched MAME.
+- `plugin/Source/native/` - the default backend: the D-110's own CPU reimplemented from scratch,
+  zero MAME dependency (`D110EmulatorNative`).
+- `plugin/Source/D110Core.*` - the original, MAME-backed control board: runs MAME's `d110`
+  machine on its own thread with a headless OSD, and exposes the display, the sixteen buttons
+  and the firmware's parameter memory. Opt-in (`D110_BUILD_MAME_BACKEND`), not built by default.
 - `plugin/Source/PluginProcessor.*`, `PluginEditor.*` - the JUCE plugin and the photo-composite panel.
 - `plugin/mame.cmake` - the MAME library/include/define lists and how the subset was built.
 - `docs/` - the measured panel geometry and the SysEx address map, both derived by profiling
@@ -247,6 +287,30 @@ Requires CMake and a C++ compiler (Visual Studio Build Tools on Windows; GCC and
 dependencies on Linux - `libsdl2-dev libsdl2-ttf-dev libfontconfig1-dev libpulse-dev` cover it on
 Debian/Ubuntu). JUCE is fetched automatically by CMake on first configure.
 
+There are two interchangeable CPU backends - see [`plugin/Source/native/`](plugin/Source/native)
+vs. `plugin/Source/D110Core.*` - built as two separate plugins that can sit side by side in a
+DAW's plugin list. **`D110EmulatorNative` is the default build and needs nothing beyond CMake
+and a compiler**: the D-110's own i8x9x/MCS-96 CPU, hand-ported out of MAME's device/scheduler
+framework into a standalone interpreter with zero MAME dependency, stepped inline on the audio
+thread. The original `D110Emulator` runs the same firmware inside an embedded
+[MAME](https://github.com/mamedev/mame) instance instead; it is kept in the tree as a dormant,
+opt-in fallback (`-DD110_BUILD_MAME_BACKEND=ON`) rather than deleted, since it is the
+longer-proven of the two.
+
+Default build (native core only, no MAME):
+
+```
+cd plugin
+cmake -B build -S .
+cmake --build build --config Release
+```
+
+The built `.vst3` is copied automatically to the platform's shared VST3 folder
+(`C:\Program Files\Common Files\VST3` on Windows, `~/Library/Audio/Plug-Ins/VST3` on macOS,
+`~/.vst3` on Linux).
+
+### Optional: also building the MAME-backed `D110Emulator`
+
 **MAME is not vendored here and must be built first**, because its libraries are what run the
 firmware. From a [MAME 0.288](https://github.com/mamedev/mame/releases/tag/mame0288) tree,
 apply the one required patch below - it fixes a real crash, an out-of-bounds array access
@@ -272,18 +336,16 @@ make SUBTARGET=d110 SOURCES=src/mame/roland/roland_d10.cpp -j$(nproc)
 See [`patches/README.md`](patches/README.md) for what the patch fixes and why it's required.
 
 Then point `MAME_DIR` in [`plugin/mame.cmake`](plugin/mame.cmake) at that tree (or pass
-`-DMAME_DIR=...` on the CMake command line) and build:
+`-DMAME_DIR=...` on the CMake command line), and turn the backend on:
 
 ```
 cd plugin
-cmake -B build -S .
+cmake -B build -S . -DD110_BUILD_MAME_BACKEND=ON -DMAME_DIR=<mame-tree>
 cmake --build build --config Release
 ```
 
 On Windows, everything is built with the static runtime (`/MT`) to match MAME's release
-libraries. The built `.vst3` is copied automatically to the platform's shared VST3 folder
-(`C:\Program Files\Common Files\VST3` on Windows, `~/Library/Audio/Plug-Ins/VST3` on macOS,
-`~/.vst3` on Linux).
+libraries.
 
 ## Legal Notice
 
