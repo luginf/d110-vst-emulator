@@ -334,6 +334,26 @@ public:
 	void refreshFromInstrument();
 	void selectTab(int index);
 
+	// Utility tab's WINDOW SIZE control (a percentage of the reference width, e.g. 100) - set
+	// by the owning D110AudioProcessorEditor, which is the one that actually knows how to
+	// resize itself. A plain callback rather than this pane reaching upward through some
+	// back-reference, matching how panel.onCardSlotClicked/card.onEjectNeedsDrawer are already
+	// wired in D110AudioProcessorEditor's own constructor.
+	//
+	// Exists instead of a maximise button: on the owner's own window manager, several attempts
+	// at correcting what a native maximise actually does on the wire each traded one
+	// window-manager-specific bug for another that couldn't be reproduced or verified from
+	// here. A percentage resize is exactly the same setSize() call a manual drag-resize
+	// already makes reliably, just computed from a chosen number instead of a mouse
+	// position - no window-manager or monitor-geometry involvement at all.
+	std::function<void(int percent)> onRequestZoom;
+
+	// Utility tab's THEME toggle flips a process-wide d110ui::Theme (see UiTheme.h) that
+	// every custom-drawn drawer's paint() reads on its own - this callback exists only to
+	// tell the owner to repaint them all immediately rather than waiting for whichever one
+	// happens to redraw next.
+	std::function<void()> onThemeChanged;
+
 private:
 	void timerCallback() override;
 	// Держит недавно посланные, ещё не подтверждённые правки поверх свежепрочитанной ram -
@@ -402,6 +422,9 @@ private:
 	                       const ToneParam *params, int count);
 	void paintMonitor(juce::Graphics &, juce::Rectangle<float> area);
 	void buttonPressed(int id);
+	// Utility tab's "LA REFERENCE" link - shows docs/D20infos.png (embedded via
+	// D110PanelData/BinaryData) in its own pop-up window.
+	void showLaReferencePopup();
 
 	int cellAt(juce::Point<float>) const;
 	size_t addressOf(const Cell &) const;
@@ -424,6 +447,10 @@ private:
 	int part = 0;
 	std::array<juce::Rectangle<float>, 8> partBounds{};
 	juce::Rectangle<float> toneNameBounds;
+	// Utility tab's WINDOW SIZE button - stored separately from the generic `buttons` list
+	// (which only dispatches left-clicks) because right-click on it also needs handling, in
+	// mouseDown()'s popup-menu branch.
+	juce::Rectangle<float> zoomBounds;
 	int tonePartial = 0;
 	std::array<juce::Rectangle<float>, 4> tonePartialBounds{};
 
@@ -434,6 +461,18 @@ private:
 	int toneScroll = 0;
 	int patchSlot = 0;    // патч, чьи партии показаны внизу вкладки PATCHES
 	int toneSlot = 0;     // выбранная ячейка памяти тонов
+
+	// UTILITY's own scroll - unlike the other tabs (which page a fixed-size row list), this
+	// one stacks sections of unequal, growing height, so it scrolls in raw pixels rather than
+	// row units. utilityContentHeight is measured as a side effect of layoutUtility() itself
+	// (the space its sections actually consumed, regardless of scroll position); the two
+	// rectangles are the track/thumb hit regions layoutUtility() leaves behind for
+	// mouseDown/mouseDrag, empty when everything already fits without scrolling.
+	float utilityScrollOffset = 0.0f;
+	float utilityContentHeight = 0.0f;
+	juce::Rectangle<float> utilityScrollTrack, utilityScrollThumb;
+	bool draggingUtilityScroll = false;
+	float utilityScrollDragStartY = 0.0f, utilityScrollDragStartOffset = 0.0f;
 
 	juce::Rectangle<float> tableArea;
 	juce::Rectangle<float> contentArea;   // для вкладок, которые рисуются целиком
@@ -492,6 +531,8 @@ public:
 	void paint(juce::Graphics &) override;
 	void resized() override;
 	void mouseDown(const juce::MouseEvent &) override;
+	void mouseDrag(const juce::MouseEvent &) override;
+	void mouseUp(const juce::MouseEvent &) override;
 	void mouseMove(const juce::MouseEvent &) override;
 	void mouseExit(const juce::MouseEvent &) override;
 
@@ -509,10 +550,19 @@ public:
 
 	// Высота полосы-ручки в опорных точках панели.
 	static constexpr float kHandleRefH = 34.0f;
-	// Высота ящика в тех же опорных точках. Взята так, чтобы при обычной ширине окна
-	// (1500 точек, масштаб 0.71) ящик выходил около 640 точек - в нём помещается таблица на
-	// девять партий и подробная страница партиала, ради которых он и нужен.
-	static constexpr float kPaneRefH = 900.0f;
+	// Default/initial height of the drawer, in the same reference units - what a new project
+	// (or one saved before this was adjustable) opens with. Used to be chosen so the UTILITY
+	// tab fit entirely without a scrollbar - but its list of sections only grows, and resizing
+	// the WHOLE drawer's (and so the whole window's) height for every new section isn't the
+	// right trade-off. UTILITY now has its own scrollbar instead (layoutUtility()'s
+	// utilityScrollOffset), so this only needs to stay comfortable for the nine-part table
+	// (the most demanding of the other tabs) - about 530 points at the usual window width
+	// (1500 points, scale 0.71). The actual live height is editorPaneRefH below, which starts
+	// at this default but can be dragged - see the KEYBOARD handle band's dual role in
+	// mouseDown/mouseDrag.
+	static constexpr float kPaneRefH = 750.0f;
+	static constexpr float kMinPaneRefH = 260.0f;
+	static constexpr float kMaxPaneRefH = 1600.0f;
 	// Handle band above the test keyboard - slimmer than the editor's own, in keeping with
 	// the keyboard being the minimal add-on rather than the main drawer.
 	static constexpr float kKeyboardHandleRefH = 26.0f;
@@ -525,6 +575,10 @@ private:
 	juce::Rectangle<float> handleBand() const;
 	juce::Rectangle<float> keyboardHandleBand() const;
 	juce::Rectangle<float> sequencerHandleBand() const;
+
+	// Needed directly (not just by the child components below, which each keep their own
+	// reference) for setEditorPaneRefH() - see mouseUp()'s use of it.
+	D110AudioProcessor &processor;
 
 	D110Panel panel;
 	D110EditorPane editorPane;
@@ -541,6 +595,19 @@ private:
 	float expansion = 0.0f;        // сглаженное 0..1
 	float expansionTarget = 0.0f;  // то, что задал щелчок по ручке
 	bool handleHover = false;
+
+	// The editor pane's own live height (see kPaneRefH's comment) - adjustable by dragging
+	// the KEYBOARD handle band, which is the boundary directly below it. Persisted through
+	// D110AudioProcessor::get/setEditorPaneRefH the same way the WINDOW SIZE/THEME choices
+	// are, so a resized drawer stays resized across sessions.
+	float editorPaneRefH = kPaneRefH;
+	// Set on mouseDown over the KEYBOARD handle band, before it's known whether this turns
+	// into a resize-drag or stays a plain click; resolved in mouseUp (toggle) or mouseDrag
+	// (resize, once the pointer has moved past a small threshold - see mouseDrag()).
+	bool keyboardHandlePressed = false;
+	bool resizingEditorPane = false;
+	float resizeDragStartY = 0.0f;
+	float resizeDragStartRefH = 0.0f;
 
 	float keyboardExpansion = 1.0f;       // eased 0..1, open by default
 	float keyboardExpansionTarget = 1.0f;

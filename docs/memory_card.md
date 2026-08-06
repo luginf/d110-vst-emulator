@@ -1,165 +1,172 @@
-# Карта памяти M-256D: как прошивка узнаёт её, и что для этого пришлось восстановить
+# The M-256D memory card: how the firmware recognizes it, and what had to be reconstructed to find out
 
-Драйвер `roland_d10.cpp` в MAME отдаёт карте 32 КБ по адресам `0xC0000-0xC7FFF` банкового
-пространства и снабжает их комментарием «Shall become a proper memcard device someday» -
-то есть никакого гнезда, никакой карты и никакого её отсутствия там нет. Значит первым делом
-надо было выяснить, **чем вообще для этой машины отличается вставленная карта от пустого
-гнезда**, - и ответ оказался не таким, какого ждёшь.
+The `roland_d10.cpp` driver in MAME hands the card 32 KB at addresses `0xC0000-0xC7FFF` of
+the banked address space, tagged with the comment "Shall become a proper memcard device
+someday" - meaning there is no slot, no card, and no representation of its absence there at
+all. So the first thing to figure out was **what, for this machine, actually distinguishes
+an inserted card from an empty slot** - and the answer turned out not to be what you'd expect.
 
-## Отдельной линии «карта на месте» не существует
+## There is no dedicated "card present" line
 
-Разъём CN8 (схема главной платы, стр. 7 сервисных заметок) несёт 34 контакта: питание,
-`A0-A14` (пятнадцать адресных линий - ровно 32 КБ), `D0-D7`, `OE`, `CE`, `WE`, `MR`, землю и
-две особые линии - **`VBB`** (вывод 33) и **`CST`** (вывод 34). Обе идут на вентильную
-матрицу IC21 (µPD65005G-062), которая и есть контроллер карты:
+Connector CN8 (main board schematic, service notes p. 7) carries 34 pins: power, `A0-A14`
+(fifteen address lines - exactly 32 KB), `D0-D7`, `OE`, `CE`, `WE`, `MR`, ground, and two
+special lines - **`VBB`** (pin 33) and **`CST`** (pin 34). Both go to gate array IC21
+(µPD65005G-062), which is the card controller:
 
-- `CST` -> вход **`SENS`** матрицы (вывод 61), подтянут к питанию через R11 100K;
-- `VBB` -> компаратор 22a (делитель R17 22K / R18 27K) -> вход **`BATT`** матрицы (вывод 60).
+- `CST` -> array input **`SENS`** (pin 61), pulled up to power through R11 100K;
+- `VBB` -> comparator 22a (divider R17 22K / R18 27K) -> array input **`BATT`** (pin 60).
 
-`SENS` - это движок защиты от записи на самой карте, `BATT` - состояние её батарейки.
-**Линии «карта вставлена» среди них нет.**
+`SENS` is the write-protect mechanism on the card itself, `BATT` is its battery status.
+**There is no "card inserted" line among them.**
 
-## Прошивка узнаёт карту тем, что пишет в неё
+## The firmware detects the card by writing to it
 
-Подпрограмма опознания, ПЗУ `0x770A`:
+The recognition routine, ROM `0x770A`:
 
 ```
-770A  lcall 7d35             банк 0x30 - первые 16 КБ карты в окне 0x8000-0xBFFF
-770D  ld   78, #7804         двенадцатибайтная подпись в ПЗУ
-7711  ld   76, #8000         начало карты
-7715  ldb  75, #0c           двенадцать байт
-7718  ldb  70, [76]          байт карты
-771B  cmpb 70, [78]          сверить с подписью; не сошлось - на 7746
+770A  lcall 7d35             bank 0x30 - first 16 KB of the card into window 0x8000-0xBFFF
+770D  ld   78, #7804         twelve-byte signature in ROM
+7711  ld   76, #8000         start of the card
+7715  ldb  75, #0c           twelve bytes
+7718  ldb  70, [76]          byte from the card
+771B  cmpb 70, [78]          compare against signature; mismatch -> 7746
 7724  djnz 75, 7718
-7727  scall 7785             пары X / ~X по смещениям 0x0C и 0x0E
-772E  ldb  70, 800c          тип карты: 'D' - код 0, 'N' - код 'O'
+7727  scall 7785             X / ~X pairs at offsets 0x0C and 0x0E
+772E  ldb  70, 800c          card type: 'D' - code 0, 'N' - code 'O'
 
-7746  ldb  75, 70            не сошлась подпись:
-7749  negb 75                  дополнение прочитанного байта
-774B  stb  75, [76]            ЗАПИСАТЬ его в карту
-774E  cmpb 70, [76]            прочитать то же место обратно
-7751  jne  7759                изменилось - запись прошла, карта ЕСТЬ (код 'C')
-7753  cmpb 70, #ff             не изменилось. А исходный байт был 0xFF?
-7756  jne  7759                нет - всё равно считать картой
-7758  ret                      0xFF и не пишется - КАРТЫ НЕТ, код 0xFF
+7746  ldb  75, 70            signature mismatch:
+7749  negb 75                  complement of the byte read
+774B  stb  75, [76]            WRITE it to the card
+774E  cmpb 70, [76]            read the same location back
+7751  jne  7759                changed - the write succeeded, a card IS present (code 'C')
+7753  cmpb 70, #ff             unchanged. Was the original byte 0xFF?
+7756  jne  7759                no - still treat it as a card
+7758  ret                      0xFF and not writable - NO CARD, code 0xFF
 ```
 
-Разбор кода по `0x76E2` превращает эти коды в сообщения: `0xFF` - «Card Not Ready», а
-`'C'`/`'D'`/`'I'` - «Illegal Card».
+Message decoding at `0x76E2` turns these codes into text: `0xFF` becomes "Card Not Ready",
+and `'C'`/`'D'`/`'I'` become "Illegal Card".
 
-**Пустое гнездо для прошивки - это шина, которая читается как `0xFF` и не принимает
-запись.** Подпись в ПЗУ `0x7804` - `"Roland D-10 "`, дальше `'D'`/`0xBB` и `'X'`/`0xA7`
-(пары значения и его дополнения).
+**To the firmware, an empty slot is a bus that reads as `0xFF` and does not accept writes.**
+The signature in ROM at `0x7804` is `"Roland D-10 "`, followed by `'D'`/`0xBB` and `'X'`/`0xA7`
+(value/complement pairs).
 
-## Порт состояния в последнем адресе окна
+## A status port at the last address of the window
 
-Защиту от записи прошивка читает ровно один раз на всё ПЗУ, по `0x7778`: ставит банк `0x31`
-и читает `0xBFFF`, то есть **смещение `0x7FFF` от начала карты**. Ноль в бите 0 даёт «Memory
-Card Write Protected». Проверка батарейки - там же: `0x584C` читает тот же байт и при
-`бит1 = 1, бит2 = 0` показывает «Check Card's Battery».
+The firmware checks write protection exactly once per boot, at `0x7778`: it sets bank `0x31`
+and reads `0xBFFF`, i.e. **offset `0x7FFF` from the start of the card**. A zero in bit 0
+produces "Memory Card Write Protected". The battery check is at the same location: `0x584C`
+reads that same byte and, when `bit1 = 1, bit2 = 0`, shows "Check Card's Battery".
 
-Этот байт - **не память карты, а порт состояния матрицы IC21**, и вот почему:
+This byte is **not card memory but the status port of the IC21 array**, and here's why:
 
-- `SENS` и `BATT` - входы матрицы, и прочитать их процессору больше неоткуда: у карты, кроме
-  шины, других линий нет;
-- измерено поведением - форматирование заливает всю карту и записывает `0x00` в том числе
-  туда. Пока этот адрес был памятью, **только что отформатированная карта немедленно
-  оказывалась защищённой от записи**, и запись на неё была невозможна. Как только он стал
-  портом, форматирование и запись пошли подряд без единого сообщения об ошибке.
+- `SENS` and `BATT` are array inputs, and there is nowhere else for the processor to read them
+  from: the card has no lines other than the bus;
+- measured behavior confirms it - formatting fills the entire card, including writing `0x00`
+  to that address. As long as that address was ordinary memory, **a freshly formatted card
+  immediately came out write-protected**, and writing to it became impossible. Once it became
+  a port, formatting and writing proceeded back-to-back with no error message at all.
 
-## Что из этого сделано в плагине
+## What was implemented in the plugin from this
 
-Ничего из этого не потребовало патчить MAME.
+None of this required patching MAME.
 
-- Извлечение: содержимое карты уносится в буфер ядра, разделяемая память `memcs` заливается
-  `0xFF`, **и на неё ставится перехват чтения**, возвращающий `0xFF` независимо от того, что
-  туда записали. Одной заливки мало, и это измерено: залитая память запись принимает, чтение
-  возвращает записанное, и прошивка говорит «Illegal Card», то есть видит карту.
-- Последний адрес окна отдаётся тем же перехватом как порт состояния: бит 0 - положение
-  движка защиты от записи (`D110Core::setCardWriteProtect`), остальные биты - единицы, как их
-  отдала бы подтянутая неподключённая линия.
-- Содержимое карты живёт в собственном файле MAME `mame_nvram/d110/memcs` и кладётся в
-  состояние проекта отдельно от батарейного ОЗУ прибора.
-- Щелчок по щели на панели двигает карту: контакты размыкаются, как только она тронулась из
-  гнезда, и замыкаются, когда она села до конца.
-- Положение гнезда и движка защиты от записи кладутся в состояние проекта вместе с самим
-  содержимым карты, так что проект, сохранённый с вынутой картой, с ней и открывается.
+- Extraction: the card's contents are moved into the core's buffer, the shared memory `memcs`
+  is filled with `0xFF`, **and a read intercept is installed on it**, returning `0xFF`
+  regardless of what was written there. A single fill is not enough, and this was verified by
+  measurement: filled memory still accepts writes, reads return what was written, and the
+  firmware says "Illegal Card" - i.e. it sees a card.
+- The last address of the window is served by the same intercept, acting as a status port:
+  bit 0 is the position of the write-protect switch (`D110Core::setCardWriteProtect`), the
+  remaining bits are all ones, as a pulled-up, unconnected line would return them.
+- The card's contents live in their own file, `nvram/d110/memcs` (renamed from `mame_nvram/`
+  2026-08-06, with a one-time migration - see `D110AudioProcessor::getNvramRoot()`), and are
+  stored in the project state separately from the unit's battery-backed RAM.
+- Clicking the slot on the panel moves the card: the contacts disconnect as soon as it starts
+  moving out of the slot, and reconnect once it has seated fully.
+- The slot position and the write-protect switch position are stored in the project state
+  along with the card's contents themselves, so a project saved with the card removed reopens
+  with it removed.
 
-## Как это выглядит
+## What it looks like
 
-Вставленная карта **видна в проёме торцом**: восемнадцать точек её края, это около четырёх
-миллиметров в масштабе панели (4.4 точки на миллиметр) - толщина корпуса карты у хвата.
-Проём выше, тридцать точек, и оставшаяся над картой темнота читается как глубина щели, из
-которой карта и выезжает. Пустое гнездо от занятого отличается сразу, без подписей.
+An inserted card **is visible edge-on in the slot opening**: eighteen dots of its edge, which
+at the panel's scale (4.4 dots per millimeter) is about four millimeters - the thickness of
+the card body at the grip end. The opening is taller, thirty dots, and the darkness remaining
+above the card reads as the depth of the slot the card emerges from. An empty slot is
+immediately distinguishable from an occupied one, with no labels needed.
 
-Тень в проёме нарисована градиентом ПОВЕРХ карты, а не заложена в её картинку: карта сквозь
-проём проезжает, и затемняться должно место, а не карта.
+The shadow in the opening is drawn as a gradient ON TOP of the card, not baked into the
+card's own image: the card travels through the opening, so it is the location that should
+darken, not the card.
 
-Ход занимает около девяти десятых секунды. Скорость зависит от того, насколько карта далека
-от ОБОИХ упоров, поэтому она трогается мягко, разгоняется к середине и мягко подходит к
-упору. Прежний закон считал только оставшееся расстояние: карта срывалась с места на полной
-скорости и первую треть пути была неразличима, а замедлялась там, где смотреть уже не на что.
+The travel takes about nine tenths of a second. Speed depends on how far the card is from
+EITHER stop, so it starts gently, accelerates through the middle, and eases into the stop
+gently. The previous motion law only accounted for the remaining distance: the card would
+shoot off at full speed and be indistinguishable for the first third of its travel, then slow
+down where there was nothing left to see.
 
-Судить об этом по константам нельзя, поэтому есть `plugin/panel_render.cpp`
-(`d110_panel_render`): он снимает НАСТОЯЩУЮ панель плагина в PNG - ту самую `D110Panel`,
-которую видит пользователь, - раскадровкой через каждые 100 мс, отдельно на извлечение и на
-вставку. Карту он двигает не переменной, а щелчком по щели, поэтому проверяется весь путь от
-попадания мышью до кадра. Последний кадр сравнивается с самым первым: вернувшаяся карта
-обязана встать ровно туда, откуда уехала.
+This isn't something you can judge from the constants, so there is `plugin/panel_render.cpp`
+(`d110_panel_render`): it captures the ACTUAL plugin panel to PNG - the very `D110Panel` the
+user sees - as a filmstrip every 100 ms, separately for extraction and insertion. It moves the
+card not via a variable but by clicking the slot, so the entire path from the mouse hit to the
+rendered frame is exercised. The last frame is compared against the very first: the card, once
+returned, must land exactly where it started from.
 
-## Чем это проверено
+## How this was verified
 
-`plugin/card_probe.cpp`, цель `d110_card`. Четыре режима, и каждый рассчитан так, чтобы у
-результата был контроль, умеющий показать отказ.
+`plugin/card_probe.cpp`, target `d110_card`. Four modes, each designed so that the result has
+a check capable of showing a failure.
 
-**`cards` - четыре карты, отличающиеся ровно одним свойством каждая:**
+**`cards` - four cards, each differing in exactly one property:**
 
-| подставлено | ответ прошивки |
+| input | firmware response |
 | --- | --- |
-| пустое гнездо (чтение `0xFF`, запись не проходит) | `Card Not Ready` |
-| карта из нулей | `Illegal Card` -> `Card Formatting OK?` |
-| отформатированная | ошибки нет, `No Space` (пустая, но своя) |
-| она же, движок защиты записи | `Memory Card Write Protected` |
+| empty slot (reads `0xFF`, write does not go through) | `Card Not Ready` |
+| card full of zeros | `Illegal Card` -> `Card Formatting OK?` |
+| formatted | no error, `No Space` (empty, but recognized as its own) |
+| same, with write-protect switch engaged | `Memory Card Write Protected` |
 
-Четыре разных ответа на четыре карты - это и есть доказательство: одно только «Card Not
-Ready» на пустом гнезде значило бы то же самое, что меню, которое просто не работает.
+Four different responses to four different cards is the proof itself: a single "Card Not
+Ready" on an empty slot alone would mean the same thing as a menu that simply doesn't work.
 
-**`roundtrip` - весь круг владельца**: чистая карта -> «Illegal Card» -> «Card Formatting
-OK?» -> `Complete` (подпись на карте становится `Roland D-10 `, тип `44/BB 58/A7`) -> `Save
-to Card` -> `Complete`, 22581 байта данных на карте.
+**`roundtrip` - the full owner's cycle**: blank card -> "Illegal Card" -> "Card Formatting
+OK?" -> `Complete` (the signature on the card becomes `Roland D-10 `, type `44/BB 58/A7`) ->
+`Save to Card` -> `Complete`, 22581 bytes of data on the card.
 
-**`loadverify` - вправду ли чтение ВОЗВРАЩАЕТ память.** «Complete» на экране говорит только
-то, что операция дошла до конца. Поэтому: запись на карту -> заводской сброс -> чтение с
-карты, и сравниваются три снимка батарейного ОЗУ.
+**`loadverify` - whether reading really RETURNS the memory.** "Complete" on the screen only
+says that the operation ran to completion. So: write to the card -> factory reset -> read from
+the card, and three snapshots of the battery-backed RAM are compared.
 
 ```
-после сброса против записанного:  всего 8069, в памяти патчей 7040
-после чтения против записанного:  всего   19, в памяти патчей    0
-после чтения против правки:       всего 8082, в памяти патчей 7040
+after reset vs. written:   total 8069, in patch memory 7040
+after read vs. written:    total   19, in patch memory    0
+after read vs. edit:       total 8082, in patch memory 7040
 ```
 
-Девятнадцать разошедшихся байт - это рабочие области прошивки (`0x36xx`, `0x39xx`), которые
-меняются между любыми двумя снимками сами по себе. **В памяти патчей не разошлось ни одного
-байта**: чтение с карты вернуло ровно то, что было записано, причём через перезапуск машины,
-который делает заводской сброс.
+The nineteen differing bytes are firmware working areas (`0x36xx`, `0x39xx`), which change
+between any two snapshots on their own. **Not a single byte differed in patch memory**:
+reading from the card returned exactly what had been written, and that includes going through
+a machine restart, which is what performs the factory reset.
 
-Стимул подобран не сразу: правка в Patch Edit не годится, потому что ложится во временную
-копию - снимок показал ноль изменений в памяти патчей. Заводской сброс перестраивает
-хранимую память из ПЗУ пресетов, и это видно по 7040 байтам.
+The stimulus wasn't obvious at first: an edit made in Patch Edit doesn't work, because it
+lands in a temporary copy - the snapshot showed zero changes in patch memory. A factory reset
+rebuilds stored memory from the preset ROM, and that's visible as the 7040 bytes.
 
-**`persist` - карта как носитель.** Метка в карту, выключение, включение: подпись и метка на
-месте. Извлечь, выключить, включить: гнездо по-прежнему пустое, `Save to Card` отвечает
-«Card Not Ready», а содержимое карты цело и возвращается вместе с ней.
+**`persist` - the card as a storage medium.** Write a tag to the card, power off, power on:
+the signature and the tag are still there. Eject, power off, power on: the slot is still
+empty, `Save to Card` responds with "Card Not Ready", and the card's contents remain intact
+and come back with it.
 
-## Раскладка меню, найденная перебором кнопок
+## Menu layout, found by exhaustively pressing buttons
 
-Ни одна из этих кнопок не угадана - все найдены режимом `explore`, который жмёт названные
-кнопки и печатает экран после каждой.
+None of these buttons were guessed - all were found by the `explore` mode, which presses the
+named buttons and prints the screen after each one.
 
-- `WRITE/COPY` с основного экрана открывает `Save to Card`;
-- `GROUP△` листает функции: `Save to Card` -> `Load from Card` -> `Dump One Way` ->
-  `Dump Hand Shake`; `BANK▲` - данные: `Sound` / `RhythmSetup`;
-- `ENTER` спрашивает `Sure?`, а **выполняет `WRITE/COPY`**;
-- форматирование подтверждается наоборот - `ENTER`;
-- чтение с карты пишет во внутреннюю память, поэтому при `Mem Protect = ON` прошивка сперва
-  предлагает `MemProtected / Turn off once ?`.
+- `WRITE/COPY` from the main screen opens `Save to Card`;
+- `GROUP△` cycles through functions: `Save to Card` -> `Load from Card` -> `Dump One Way` ->
+  `Dump Hand Shake`; `BANK▲` cycles through data types: `Sound` / `RhythmSetup`;
+- `ENTER` asks `Sure?`, and **it's `WRITE/COPY` that executes**;
+- formatting is confirmed the other way around - with `ENTER`;
+- reading from the card writes into internal memory, so with `Mem Protect = ON` the firmware
+  first prompts `MemProtected / Turn off once ?`.

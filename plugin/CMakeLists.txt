@@ -63,7 +63,8 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../munt/mt32emu" "${CMAKE_CURRENT_
 # The front panel IS the reference photograph - see docs/panel_reference_notes.md.
 juce_add_binary_data(D110PanelData
     SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../docs/panel_reference.png"
-            "${CMAKE_CURRENT_SOURCE_DIR}/../docs/memory_card_m256d.png")
+            "${CMAKE_CURRENT_SOURCE_DIR}/../docs/memory_card_m256d.png"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../docs/D20infos.png")
 
 # On Windows, plugins conventionally live in the shared Program Files VST3 folder.
 # Elsewhere, JUCE's own default (~/Library/Audio/Plug-Ins/VST3 on macOS, ~/.vst3 on Linux)
@@ -122,6 +123,7 @@ target_sources(D110Emulator PRIVATE
     Source/PluginEditor.cpp
     Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp
     ${D110_DRIVLIST_SOURCE}
 )
@@ -225,6 +227,7 @@ target_sources(D110EmulatorNative PRIVATE
     Source/native/D110CoreNative.cpp
     Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp
 )
 
@@ -259,6 +262,7 @@ if(D110_BUILD_MAME_BACKEND)
 add_executable(d110_audio_test audio_test.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_audio_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_audio_test PRIVATE ${MAME_DEFS}
@@ -287,6 +291,7 @@ target_link_options(d110_bridge_probe PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_tone_probe tone_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_tone_probe PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_tone_probe PRIVATE ${MAME_DEFS}
@@ -302,6 +307,7 @@ target_link_options(d110_tone_probe PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_coldstart_test coldstart_test.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_coldstart_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_coldstart_test PRIVATE ${MAME_DEFS}
@@ -317,6 +323,7 @@ target_link_options(d110_coldstart_test PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_state_test state_test.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_state_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_state_test PRIVATE ${MAME_DEFS}
@@ -332,6 +339,7 @@ target_link_options(d110_state_test PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_la32_probe la32_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_probe PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_la32_probe PRIVATE ${MAME_DEFS}
@@ -347,6 +355,7 @@ target_link_options(d110_la32_probe PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_la32_lifecycle la32_lifecycle_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_lifecycle PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_la32_lifecycle PRIVATE ${MAME_DEFS}
@@ -363,6 +372,7 @@ target_link_options(d110_la32_lifecycle PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_la32_ctx la32_ctx_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_ctx PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_la32_ctx PRIVATE ${MAME_DEFS}
@@ -378,6 +388,7 @@ target_link_options(d110_la32_ctx PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_la32_realistic la32_realistic_test.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_realistic PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_la32_realistic PRIVATE ${MAME_DEFS}
@@ -395,6 +406,7 @@ target_link_options(d110_la32_realistic PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_demo_song_repro demo_song_repro.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_demo_song_repro PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_demo_song_repro PRIVATE ${MAME_DEFS}
@@ -411,6 +423,7 @@ target_link_options(d110_demo_song_repro PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_pan_verify pan_verify.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_pan_verify PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_pan_verify PRIVATE ${MAME_DEFS}
@@ -427,6 +440,7 @@ target_link_options(d110_pan_verify PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_note_source note_source_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_note_source PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_note_source PRIVATE ${MAME_DEFS}
@@ -442,6 +456,7 @@ target_link_options(d110_note_source PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_demo_wav demo_wav_render.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_demo_wav PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_demo_wav PRIVATE ${MAME_DEFS}
@@ -458,6 +473,7 @@ target_link_options(d110_demo_wav PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_part_audio part_audio_test.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_part_audio PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_part_audio PRIVATE ${MAME_DEFS}
@@ -473,6 +489,7 @@ target_link_options(d110_part_audio PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_solo_level solo_level_test.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_solo_level PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_solo_level PRIVATE ${MAME_DEFS}
@@ -489,6 +506,7 @@ target_link_options(d110_solo_level PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_part_state part_state_compare.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_part_state PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_part_state PRIVATE ${MAME_DEFS}
@@ -505,6 +523,7 @@ target_link_options(d110_part_state PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_tone_clobber tone_clobber_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_tone_clobber PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_tone_clobber PRIVATE ${MAME_DEFS}
@@ -520,6 +539,7 @@ target_link_options(d110_tone_clobber PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_rhythm_map rhythm_map_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_rhythm_map PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_rhythm_map PRIVATE ${MAME_DEFS}
@@ -535,6 +555,7 @@ target_link_options(d110_rhythm_map PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_reverb_path reverb_path_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_reverb_path PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_reverb_path PRIVATE ${MAME_DEFS}
@@ -550,6 +571,7 @@ target_link_options(d110_reverb_path PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_la32_regmap la32_regmap_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_regmap PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_la32_regmap PRIVATE ${MAME_DEFS}
@@ -566,6 +588,7 @@ target_link_options(d110_la32_regmap PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_factory_bank factory_bank_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_factory_bank PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_factory_bank PRIVATE ${MAME_DEFS}
@@ -583,6 +606,7 @@ target_link_options(d110_factory_bank PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_editor_write editor_write_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_editor_write PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_editor_write PRIVATE ${MAME_DEFS}
@@ -598,6 +622,7 @@ target_link_options(d110_editor_write PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_editor_shot editor_shot.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_editor_shot PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_editor_shot PRIVATE ${MAME_DEFS}
@@ -617,6 +642,7 @@ target_link_options(d110_editor_shot PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_editor_test editor_test.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_editor_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_editor_test PRIVATE ${MAME_DEFS}
@@ -633,6 +659,7 @@ target_link_options(d110_editor_test PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_reverb_reg reverb_reg_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_reverb_reg PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_reverb_reg PRIVATE ${MAME_DEFS}
@@ -650,6 +677,7 @@ target_link_options(d110_reverb_reg PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_tone_edit_survives tone_edit_survives_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_tone_edit_survives PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_tone_edit_survives PRIVATE ${MAME_DEFS}
@@ -666,6 +694,7 @@ target_link_options(d110_tone_edit_survives PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_la32_render la32_render.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_render PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/../munt/mt32emu/src"
@@ -683,6 +712,7 @@ target_link_options(d110_la32_render PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_la32_stream la32_stream_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_stream PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_la32_stream PRIVATE ${MAME_DEFS}
@@ -697,6 +727,7 @@ target_link_options(d110_la32_stream PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_panel_render panel_render.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_panel_render PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 # Ход карты двигает собственный таймер панели, поэтому стенду нужен настоящий цикл
@@ -714,6 +745,7 @@ target_link_options(d110_panel_render PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_card card_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_card PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_card PRIVATE ${MAME_DEFS}
@@ -729,6 +761,7 @@ target_link_options(d110_card PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_so_trace so_trace_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_so_trace PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_so_trace PRIVATE ${MAME_DEFS}
@@ -752,6 +785,7 @@ target_link_libraries(d110_lcd_check PRIVATE juce::juce_gui_basics juce::juce_gr
 add_executable(d110_sysex_test sysex_test.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_sysex_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_sysex_test PRIVATE ${MAME_DEFS}
@@ -776,6 +810,7 @@ target_link_options(d110_disasm PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_hang_probe hang_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_hang_probe PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_hang_probe PRIVATE ${MAME_DEFS}
@@ -791,6 +826,7 @@ target_link_options(d110_hang_probe PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_longrun_test longrun_test.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_longrun_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_longrun_test PRIVATE ${MAME_DEFS}
@@ -824,6 +860,7 @@ target_link_options(d110_core_test PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_polyphony polyphony_test.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_polyphony PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_polyphony PRIVATE ${MAME_DEFS}
@@ -839,6 +876,7 @@ target_link_options(d110_polyphony PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_multi_part_polyphony multi_part_polyphony_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_multi_part_polyphony PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_multi_part_polyphony PRIVATE ${MAME_DEFS}
@@ -854,6 +892,7 @@ target_link_options(d110_multi_part_polyphony PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_partial_count_cpu partial_count_cpu_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_partial_count_cpu PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_partial_count_cpu PRIVATE ${MAME_DEFS}
@@ -870,6 +909,7 @@ target_link_options(d110_partial_count_cpu PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_mame_stuck_note_repro mame_stuck_note_repro.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_mame_stuck_note_repro PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_mame_stuck_note_repro PRIVATE ${MAME_DEFS}
@@ -886,6 +926,7 @@ target_link_options(d110_mame_stuck_note_repro PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_slot_life slot_life_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_slot_life PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_slot_life PRIVATE ${MAME_DEFS}
@@ -903,6 +944,7 @@ target_link_options(d110_slot_life PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_nvram_recovery nvram_recovery.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_nvram_recovery PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_nvram_recovery PRIVATE ${MAME_DEFS}
@@ -920,6 +962,7 @@ target_link_options(d110_nvram_recovery PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_panel_factory_init panel_factory_init_test.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_panel_factory_init PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_panel_factory_init PRIVATE ${MAME_DEFS}
@@ -936,6 +979,7 @@ target_link_options(d110_panel_factory_init PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_midi_congestion midi_congestion_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_midi_congestion PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_midi_congestion PRIVATE ${MAME_DEFS}
@@ -952,6 +996,7 @@ target_link_options(d110_midi_congestion PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_bank_import bank_import.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_bank_import PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_bank_import PRIVATE ${MAME_DEFS}
@@ -968,6 +1013,7 @@ target_link_options(d110_bank_import PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_stuck_notes stuck_notes_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_stuck_notes PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_stuck_notes PRIVATE ${MAME_DEFS}
@@ -983,6 +1029,7 @@ target_link_options(d110_stuck_notes PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_mame_ramp_edge_stress mame_ramp_edge_stress_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_mame_ramp_edge_stress PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_mame_ramp_edge_stress PRIVATE ${MAME_DEFS}
@@ -999,6 +1046,7 @@ target_link_options(d110_mame_ramp_edge_stress PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_rhythm_key rhythm_key_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_rhythm_key PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_rhythm_key PRIVATE ${MAME_DEFS}
@@ -1015,6 +1063,7 @@ target_link_options(d110_rhythm_key PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_pan_resync pan_resync_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_pan_resync PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_pan_resync PRIVATE ${MAME_DEFS}
@@ -1040,6 +1089,7 @@ target_link_options(d110_virgin_boot PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_rhythm_ctx rhythm_ctx_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_rhythm_ctx PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_rhythm_ctx PRIVATE ${MAME_DEFS}
@@ -1057,6 +1107,7 @@ target_link_options(d110_rhythm_ctx PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_demo_patch demo_patch_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_demo_patch PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_demo_patch PRIVATE ${MAME_DEFS}
@@ -1073,6 +1124,7 @@ target_link_options(d110_demo_patch PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_note_latency note_latency_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_note_latency PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_note_latency PRIVATE ${MAME_DEFS}
@@ -1089,6 +1141,7 @@ target_link_options(d110_note_latency PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_boss_reverb boss_reverb_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_boss_reverb PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_boss_reverb PRIVATE ${MAME_DEFS}
@@ -1104,6 +1157,7 @@ target_link_options(d110_boss_reverb PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_boss_reverb_iso boss_reverb_isolated_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_boss_reverb_iso PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_boss_reverb_iso PRIVATE ${MAME_DEFS}
@@ -1120,6 +1174,7 @@ target_link_options(d110_boss_reverb_iso PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_multi_output multi_output_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_multi_output PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_multi_output PRIVATE ${MAME_DEFS}
@@ -1136,6 +1191,7 @@ target_link_options(d110_multi_output PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_rhythm_hint_bleed rhythm_hint_bleed_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_rhythm_hint_bleed PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_rhythm_hint_bleed PRIVATE ${MAME_DEFS}
@@ -1153,6 +1209,7 @@ target_link_options(d110_rhythm_hint_bleed PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_pan_verify_diag pan_verify_diag_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_pan_verify_diag PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_pan_verify_diag PRIVATE ${MAME_DEFS}
@@ -1168,6 +1225,7 @@ target_link_options(d110_pan_verify_diag PRIVATE ${MAME_LINK_OPTIONS})
 add_executable(d110_rhythm_pan_audio rhythm_pan_audio_probe.cpp
     Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_rhythm_pan_audio PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_rhythm_pan_audio PRIVATE ${MAME_DEFS}
@@ -1284,6 +1342,7 @@ add_executable(d110_native_plugin_smoke native_plugin_smoke_test.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_plugin_smoke PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_plugin_smoke PRIVATE
@@ -1294,10 +1353,48 @@ target_link_libraries(d110_native_plugin_smoke PRIVATE
     D110PanelData MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
 
+# Same shape as d110_native_plugin_smoke - checks whether a TimbreTemp group/number write via
+# sendTimbreTempParam genuinely sticks on the real firmware RAM; see the probe's own header
+# comment.
+add_executable(d110_native_timbre_group_number native_timbre_group_number_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp)
+target_include_directories(d110_native_timbre_group_number PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_timbre_group_number PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_native_timbre_group_number PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
+# Same shape as d110_native_plugin_smoke - reproduces Alan's single-part "notes stop getting
+# through, Super Mode toggle or a patch change unsticks it" report; see the probe's own
+# header comment.
+add_executable(d110_native_single_part_stuck native_single_part_stuck_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp)
+target_include_directories(d110_native_single_part_stuck PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_single_part_stuck PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_native_single_part_stuck PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
 # Same shape as d110_native_plugin_smoke, but for the sequencer's getStateInformation/
 # setStateInformation round trip - see that file's header comment.
 add_executable(d110_sequencer_state_probe sequencer_state_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/UiTheme.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp Source/sequencer/D110SequencerPanel.cpp)
@@ -1318,6 +1415,7 @@ add_executable(d110_native_editor_shot editor_shot.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_editor_shot PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_editor_shot PRIVATE

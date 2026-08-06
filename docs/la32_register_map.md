@@ -1,242 +1,262 @@
-# Регистры LA32, снятые с того, что пишет в них прошивка
+# LA32 registers, recovered from what the firmware writes into them
 
-Первый заход, 2026-08-01. Инструмент: `plugin/la32_regmap_probe.cpp`, цель
+First pass, 2026-08-01. Tool: `plugin/la32_regmap_probe.cpp`, target
 `d110_la32_regmap`.
 
-Карты регистров MB87136APF нет нигде: микросхему не эмулирует ни MAME, ни кто-либо ещё.
-Сервисные заметки дают только выводы (`service_notes_findings.md`): девять адресных линий
-`A0-A8`, то есть **512 регистров**, восьмибитная шина данных, вход `WR`, выход прерывания.
-Окно `0x0C00`-`0x0DFF`, найденное раньше по неотображённым обращениям, имеет ровно такой
-размер - значит это и есть весь управляющий интерфейс синтеза, целиком.
+There is no register map for the MB87136APF anywhere: the chip isn't emulated by MAME or
+by anyone else. The service notes give only conclusions (`service_notes_findings.md`):
+nine address lines `A0-A8`, i.e. **512 registers**, an eight-bit data bus, a `WR` input,
+an interrupt output. The `0x0C00`-`0x0DFF` window, found earlier from unmapped accesses,
+is exactly that size - meaning this is the entire synthesis control interface, in full.
 
-Прочитать регистр нельзя - он только на запись. Поэтому значение выясняется тем, что его
-заставляют измениться: берутся три раздражителя, отличающиеся ровно одним свойством.
+A register cannot be read - it is write-only. So its value is worked out by forcing it to
+change: three stimuli are used, differing in exactly one property.
 
-| | нота | громкость |
+| | note | velocity |
 | --- | --- | --- |
 | A | 60 | 100 |
-| B | 72 (октавой выше) | 100 |
+| B | 72 (an octave higher) | 100 |
 | C | 60 | 40 |
 
-Ячейка, различающаяся между A и B, но не между A и C, несёт высоту; наоборот - громкость.
+A cell that differs between A and B but not between A and C carries pitch; the other way
+round, it carries velocity.
 
-## Контроль
+## Control
 
-Окно той же длины **без ноты: ноль записей**. Всё, что попадает в таблицу, вызвано нотой, а
-не фоновой работой прошивки. Ни один прогон захват не переполнил.
+A window of the same length **with no note: zero writes**. Everything that lands in the
+table is caused by the note, not by background firmware activity. No run overflowed the
+capture.
 
-## Строение: пять банков, по четыре байта на голос
+## Structure: five banks, four bytes per voice
 
-| Банк | что о нём известно |
+| Bank | what is known about it |
 | --- | --- |
-| `0x0C00` | четыре байта на голос; один из них меняется от прогона к прогону |
-| `0x0C40` | три байта на голос, у одного тембра неизменны |
-| `0x0C80` | четыре байта; **+3 несёт громкость** |
-| `0x0CC0` | не разовая настройка, а **непрерывный поток** обновлений, пока нота звучит |
-| `0x0D00` | четыре байта, у одного тембра неизменны |
+| `0x0C00` | four bytes per voice; one of them changes from run to run |
+| `0x0C40` | three bytes per voice, constant for a given timbre |
+| `0x0C80` | four bytes; **+3 carries velocity** |
+| `0x0CC0` | not a one-shot setting but a **continuous stream** of updates for as long as the note sounds |
+| `0x0D00` | four bytes, constant for a given timbre |
 
-Ноты получают **последовательные слоты по 4 байта**: первая заняла смещения 0-3 в каждом
-банке, вторая 4-7, третья 8-11.
+Notes get **sequential 4-byte slots**: the first note took offsets 0-3 in each bank, the
+second 4-7, the third 8-11.
 
-**Это и есть главная ловушка этого измерения, и первая редакция зонда в неё попала.**
-Сравнивать прогоны по АБСОЛЮТНОМУ адресу нельзя: у каждой ноты свой слот, поэтому любая
-ячейка выглядит «изменившейся» просто оттого, что в другом прогоне её не трогали. Так зонд
-уверенно объявил половину окна «высотой», а половину «громкостью» - и всё это было
-артефактом. Адреса приводятся к смещению внутри слота, и только потом сравниваются.
+**This is the main trap in this measurement, and the first version of the probe fell
+right into it.** Runs cannot be compared by ABSOLUTE address: each note gets its own
+slot, so any cell looks "changed" simply because it wasn't touched in the other run.
+This is how the probe confidently declared half the window "pitch" and half "velocity" -
+and all of it was an artifact. Addresses are normalized to an offset within the slot, and
+only then compared.
 
-## Второй заход: слот берётся у прошивки, добавлен четвёртый раздражитель
+## Second pass: the slot is read from the firmware, a fourth stimulus is added
 
-Слот больше не угадывается. Прошивка ведёт таблицу состояний (rams `0x2DC0 + 2n`,
-`D110Core::kSlotStateTable`): свободный слот держит `0x80`. Снимок этой таблицы, снятый пока
-нота ещё звучит, прямо называет выделенные ей слоты. Получилось:
+The slot is no longer guessed. The firmware maintains a state table (RAM `0x2DC0 + 2n`,
+`D110Core::kSlotStateTable`): a free slot holds `0x80`. A snapshot of this table, taken
+while the note is still sounding, directly names the slots allocated to it. Result:
 
-| прогон | слоты |
+| run | slots |
 | --- | --- |
-| A нота 60, сила 100 | 0, 1 |
-| B нота 72, сила 100 | 2, 3 |
-| C нота 60, сила 40 | 4, 5 |
-| D нота 60, сила 100, другой тембр | 6, 7 |
+| A note 60, velocity 100 | 0, 1 |
+| B note 72, velocity 100 | 2, 3 |
+| C note 60, velocity 40 | 4, 5 |
+| D note 60, velocity 100, different timbre | 6, 7 |
 
-**Это подтверждает строение: два байта на слот, два слота на ноту.** Банк идёт через `0x40` =
-64 байта, слотов у микросхемы 32, значит на слот приходится два байта; нота занимает четыре,
-потому что берёт два партиала. Сходится с прежним измерением, где на одну ноту ровно два
-слота переходили из `0x80` в `0x40`.
+**This confirms the structure: two bytes per slot, two slots per note.** A bank spans
+`0x40` = 64 bytes, the chip has 32 slots, so each slot gets two bytes; a note takes four
+bytes because it uses two partials. This matches the earlier measurement, where exactly
+two slots per note transitioned from `0x80` to `0x40`.
 
-Четвёртый раздражитель - **другой тембр** при той же ноте и силе (с панели: Timbre → Edit →
-страница «Tone =» → Number+; тембр партии стал 1/31 вместо 0/17). Он и оказался решающим:
-без него тринадцать ячеек выглядели «ничего не значащими».
+The fourth stimulus is **a different timbre** at the same note and velocity (from the
+panel: Timbre → Edit → the "Tone =" page → Number+; the part's timbre became 1/31
+instead of 0/17). It turned out to be decisive: without it, thirteen cells looked
+"meaningless".
 
-### Результат, потерь захвата ноль
+### Result, zero capture losses
 
-| банк | партиал | байт | A | B высота | C сила | D тембр | что двигает |
+| bank | partial | byte | A | B pitch | C velocity | D timbre | what it moves |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `0x0C00` | 0 | 0 | `FF C4` | `FF C4` | `FF C4` | `FF D2` | только тембр |
-| `0x0C00` | 0 | 1 | `F1` | `E5` | `D4` | `95` | всё |
-| `0x0C00` | 1 | 0 | `FF D0` | `FF D0` | `FF D0` | `39 9C` | только тембр |
-| `0x0C00` | 1 | 1 | `00` | `00` | `00` | `00` | ничего |
-| `0x0C40` | 0 | 1 | `BA` | `BA` | `BA` | `90` | только тембр |
-| `0x0C40` | 1 | 0 | `B0` | `B0` | `B0` | `D1` | только тембр |
-| `0x0C40` | 1 | 1 | `76` | `76` | `76` | `8E` | только тембр |
-| `0x0C80` | 1 | 0 | `FF CF` | `FF CF` | `FF CF` | `FF BE` | только тембр |
-| `0x0C80` | 1 | 1 | `7E` | `7E` | **`6E`** | `7A` | **сила и тембр** |
-| `0x0CC0` | оба | оба | поток | поток | поток | поток | всё |
-| `0x0D00` | 0 | 1 | `18` | `18` | `18` | `28` | только тембр |
-| `0x0D00` | 1 | 0 | `12` | `12` | `12` | `52` | только тембр |
-| `0x0D00` | 1 | 1 | `D9` | `D9` | `D9` | `6E` | только тембр |
+| `0x0C00` | 0 | 0 | `FF C4` | `FF C4` | `FF C4` | `FF D2` | timbre only |
+| `0x0C00` | 0 | 1 | `F1` | `E5` | `D4` | `95` | everything |
+| `0x0C00` | 1 | 0 | `FF D0` | `FF D0` | `FF D0` | `39 9C` | timbre only |
+| `0x0C00` | 1 | 1 | `00` | `00` | `00` | `00` | nothing |
+| `0x0C40` | 0 | 1 | `BA` | `BA` | `BA` | `90` | timbre only |
+| `0x0C40` | 1 | 0 | `B0` | `B0` | `B0` | `D1` | timbre only |
+| `0x0C40` | 1 | 1 | `76` | `76` | `76` | `8E` | timbre only |
+| `0x0C80` | 1 | 0 | `FF CF` | `FF CF` | `FF CF` | `FF BE` | timbre only |
+| `0x0C80` | 1 | 1 | `7E` | `7E` | **`6E`** | `7A` | **velocity and timbre** |
+| `0x0CC0` | both | both | stream | stream | stream | stream | everything |
+| `0x0D00` | 0 | 1 | `18` | `18` | `18` | `28` | timbre only |
+| `0x0D00` | 1 | 0 | `12` | `12` | `12` | `52` | timbre only |
+| `0x0D00` | 1 | 1 | `D9` | `D9` | `D9` | `6E` | timbre only |
 
-Сводка: девять регистров двигает **только тембр**, один - **сила и тембр**, пять - всё
-сразу (это поток `0x0CC0`), четыре не двигает ничто.
+Summary: nine registers are moved by **timbre only**, one by **velocity and timbre**,
+five by everything at once (this is the `0x0CC0` stream), four are moved by nothing.
 
-### Две находки, которые стоят отдельно
+### Two findings that stand apart
 
-**`0x0C80`, партиал 1, байт 1 - уровень.** Единственный регистр, разделивший силу нажатия:
-`7E` при силе 100 у ОБЕИХ нот, `6E` при силе 40 у той же ноты. Высота его не трогает вовсе.
+**`0x0C80`, partial 1, byte 1 - level.** The only register that separated out velocity:
+`7E` at velocity 100 for BOTH notes, `6E` at velocity 40 for the same note. Pitch doesn't
+touch it at all.
 
-**`0x0C00`, партиал 0, байт 1 - следование за клавишей, ровно единица на полутон.** `F1` при
-ноте 60 и `E5` при ноте 72: разница **12 при 12 полутонах**, причём в сторону уменьшения.
-Но силой он тоже двигается (`D4` при 40), значит это не высота как таковая, а параметр с
-клавиатурным следованием - у LA-синтеза так ведёт себя частота среза фильтра. Утверждать,
-какой именно это параметр, оснований пока нет; установлен сам коэффициент.
+**`0x0C00`, partial 0, byte 1 - keyboard tracking, exactly one unit per semitone.** `F1`
+at note 60 and `E5` at note 72: a difference of **12 across 12 semitones**, decreasing.
+But it also moves with velocity (`D4` at 40), so this isn't pitch as such but a parameter
+with keyboard tracking - in LA synthesis that's how filter cutoff frequency behaves.
+There is no basis yet to claim exactly which parameter this is; only the coefficient
+itself has been established.
 
-**Ведущее `FF` - это не значение.** Во многих ячейках первая запись `FF`, а осмысленное
-число идёт вторым; в порядке записей на ноту видно то же самое. Похоже на сброс регистра
-перед загрузкой, и читать `FF` как данные нельзя.
+**A leading `FF` is not a value.** In many cells the first write is `FF`, with the
+meaningful number coming second; the same pattern shows up in the write order per note.
+It looks like a register reset before loading, and `FF` should not be read as data.
 
-## Что установлено первым заходом
+## What the first pass established
 
-**`0x0C80` +3 - громкость.** `7E` при громкости 100 у обеих нот, `6E` при громкости 40 у той
-же ноты 60. Это единственный регистр, который разделил раздражители чисто.
+**`0x0C80` +3 - velocity.** `7E` at velocity 100 for both notes, `6E` at velocity 40 for
+the same note 60. This is the only register that cleanly separated the stimuli.
 
-**Банк `0x0CC0` - поток, а не настройка.** Пишется из ПЗУ `0x2C0D` раз за разом, пока нота
-держится; на двухсекундном окне он один переполнял кольцо захвата тысячами записей. Похоже
-на обслуживание огибающей.
+**Bank `0x0CC0` is a stream, not a setting.** It's written from ROM `0x2C0D` over and
+over while the note is held; on a two-second window it alone overflowed the capture ring
+with thousands of writes. Looks like envelope servicing.
 
-**Поток `0x0CC0` продолжает обслуживать УЖЕ ОТПУЩЕННЫЙ голос.** В прогоне B записи идут и в
-слот новой ноты, и в слот предыдущей, которая ещё гаснет. Поэтому для этого банка приведение
-«слот = наименьшее использованное смещение» не работает, и его строки в таблице читать
-нельзя - в отличие от остальных четырёх банков, где трогается только новый голос.
+**The `0x0CC0` stream keeps servicing a voice that has ALREADY been released.** In run B,
+writes go both to the new note's slot and to the slot of the previous note, which is
+still decaying. So for this bank the "slot = lowest used offset" normalization doesn't
+work, and its rows in the table cannot be read - unlike the other four banks, where only
+the new voice is touched.
 
-## Чего установить НЕ удалось
+## What could NOT be established
 
-**Регистра высоты не нашлось.** Ни одна ячейка не дала «меняется между A и B, но не между A
-и C». Ячейка `0x0C00` +1 меняется во всех трёх прогонах (`F1`, `E5`, `D4`), то есть не
-отделяет высоту от громкости, а больше кандидатов нет.
+**No pitch register was found.** No cell gave "changes between A and B, but not between
+A and C". Cell `0x0C00` +1 changes across all three runs (`F1`, `E5`, `D4`), i.e. it
+doesn't separate pitch from velocity, and there are no other candidates.
 
-Отрицательный результат честный, но не окончательный: высота вполне может лежать в потоке
-`0x0CC0`, разбор которого сорвался по причине выше, или записываться как многобайтовое
-значение, которое взгляд «по одному адресу» разрезает. Утверждать, что её тут нет, оснований
-нет.
+The negative result is honest but not final: pitch could well live in the `0x0CC0`
+stream, whose analysis broke down for the reason above, or it could be written as a
+multi-byte value that a "single address at a time" view cuts apart. There is no basis to
+claim it isn't here.
 
-## Третий заход: ВЫСОТА НАЙДЕНА - это шестнадцатибитное число в банке `0x0CC0`
+## Third pass: PITCH FOUND - it's a sixteen-bit number in bank `0x0CC0`
 
-Прошлый вердикт «банк `0x0CC0` зависит от всего» был артефактом сравнения: потоки
-сравнивались целиком, вместе с хвостами разной длины, и векторы не совпадали, даже когда их
-НАЧАЛА совпадали поэлементно. А начала совпадают - у ноты 60 при силе 100 и при силе 40
-первые значения одинаковы, а у ноты 72 отличаются ровно на 17.
+The previous verdict that "bank `0x0CC0` depends on everything" was a comparison
+artifact: streams were compared whole, tails of different lengths included, and the
+vectors didn't match even when their BEGINNINGS matched element by element. And the
+beginnings do match - for note 60 at velocity 100 and at velocity 40 the first values are
+identical, while for note 72 they differ by exactly 17.
 
-Множество значений на такой вопрос не отвечает; отвечает ЗАКОН. Хроматика, первое осмысленное
-значение каждого регистра (ведущее `FF` пропускается):
+A set of values doesn't answer this question; a LAW does. Chromatic run, the first
+meaningful value of each register (leading `FF` skipped):
 
-| нота | `0CC0.п.1` (старший) | `0CC0.п.0` (младший) | как число | шаг |
+| note | `0CC0.p.1` (high byte) | `0CC0.p.0` (low byte) | as a number | step |
 | --- | --- | --- | --- | --- |
-| 60 | `81` | `0D` | `0x810D` | — |
+| 60 | `81` | `0D` | `0x810D` | - |
 | 61 | `82` | `63` | `0x8263` | **+342** |
 | 62 | `83` | `BA` | `0x83BA` | **+343** |
 | 63 | `85` | `11` | `0x8511` | **+343** |
 
-**Два байта слота в этом банке - это одно шестнадцатибитное значение**, старший `.1`,
-младший `.0`: младший переполняется (`0D → 63 → BA → 11`) ровно тогда, когда старший
-прибавляет единицу. Шаг **342-343 на полутон**, то есть около **4112 на октаву**.
+**The two slot bytes in this bank are a single sixteen-bit value**, high byte `.1`, low
+byte `.0`: the low byte overflows (`0D → 63 → BA → 11`) exactly when the high byte
+increments by one. Step **342-343 per semitone**, i.e. about **4112 per octave**.
 
-Сходится с независимым измерением второго захода, где через октаву старший байт дал `+16`, а
-младший `+17`: `16 × 256 + 17 = 4113`. Два разных опыта, два разных тембра, один и тот же
-масштаб.
+This matches the independent measurement from the second pass, where across an octave
+the high byte gave `+16` and the low byte `+17`: `16 × 256 + 17 = 4113`. Two different
+experiments, two different timbres, the same scale.
 
-Оба партиала несут своё такое число (`0CC0.0.*` и `0CC0.1.*`), и оба движутся одинаково -
-`81/91` у одного и другого различаются постоянным смещением, то есть партиалы расстроены
-друг относительно друга на фиксированную величину, как и полагается в LA-синтезе.
+Both partials carry their own such number (`0CC0.0.*` and `0CC0.1.*`), and both move the
+same way - `81/91` for one versus the other differ by a constant offset, meaning the
+partials are detuned relative to each other by a fixed amount, as is expected in LA
+synthesis.
 
-### Предел метода, на который он и наткнулся
+### The limit the method ran into
 
-Слот опознаётся по переходу `0x80` (свободен) в занятое состояние. **Но таблица `edc0` при
-освобождении голоса в `0x80` не возвращается** - это уже было измерено раньше
-(`la32_interface.md`: цикл сброса по ПЗУ `0x29BB` её не трогает, и отыгравшие голоса остаются
-на `0x20`). Значит признак работает только для слотов, которые ещё НИ РАЗУ не использовались,
-а их всего 32.
+The slot is identified by the transition from `0x80` (free) to an occupied state. **But
+the `edc0` table does not return to `0x80` when a voice is released** - this was already
+measured earlier (`la32_interface.md`: the reset pass at ROM `0x29BB` doesn't touch it,
+and voices that have finished playing stay at `0x20`). So the marker only works for
+slots that have NEVER been used yet, and there are only 32 of those.
 
-Поэтому в хроматике определились ноты 60-63, а дальше слоты кончились: четырёхпартиальный
-тембр съедает по четыре на ноту, и четыре основных раздражителя заняли 16 из 32 ещё до неё.
-Пауза в полторы секунды между нотами не помогает и помочь не может - дело не во времени.
+That's why the chromatic run only resolved notes 60-63, and after that the slots ran
+out: a four-partial timbre eats four per note, and the four main stimuli had already
+used up 16 of the 32 before it. A pause of one and a half seconds between notes doesn't
+help and can't help - it isn't a matter of time.
 
-**Починено полностью, и способ оказался проще намеченного.** Хроматика снимается ПЕРВОЙ, до
-всех прочих опытов - и этого достаточно. Дело было не в способе опознания слота, а в том,
-что слоты кончались: прошивка выдаёт сначала ни разу не использованные, их 32, а четыре
-раздражителя съедали шестнадцать ещё до хроматики. Ни пауза между нотами, ни фильтр по
-адресу подпрограммы не помогали, потому что причина была не в них - **порядок опытов и был
-причиной**.
+**Fixed completely, and the fix turned out simpler than planned.** The chromatic run is
+taken FIRST, before all other experiments - and that's enough. The problem wasn't the
+slot-identification method but that slots were running out: the firmware hands out
+never-used slots first, there are 32 of them, and four stimuli ate sixteen before the
+chromatic run even started. Neither a pause between notes nor filtering by subroutine
+address helped, because that wasn't the cause - **the order of the experiments was the
+cause**.
 
-Восемь чистых нот вместо четырёх, слоты 0-3, 4-7, ... 28-31 подряд, и высотный ряд полон:
+Eight clean notes instead of four, slots 0-3, 4-7, ... 28-31 in sequence, and the pitch
+series is complete:
 
-| нота | значение | шаг | нота | значение | шаг |
+| note | value | step | note | value | step |
 | --- | --- | --- | --- | --- | --- |
-| 60 | `0x810D` | — | 64 | `0x8667` | +342 |
+| 60 | `0x810D` | - | 64 | `0x8667` | +342 |
 | 61 | `0x8263` | +342 | 65 | `0x87BF` | +344 |
 | 62 | `0x83BA` | +343 | 66 | `0x8915` | +342 |
 | 63 | `0x8511` | +343 | 67 | `0x8A6B` | +342 |
 
-Семь шагов подряд, всего 2398 на семь полутонов: **342,57 на полутон, то есть ≈4111 на
-октаву**. Разброс отдельных шагов ±1 - это округление постоянной величины, а не разные шаги.
+Seven steps in a row, 2398 total across seven semitones: **342.57 per semitone, i.e.
+≈4111 per octave**. The ±1 spread in individual steps is rounding of a constant
+quantity, not different step sizes.
 
-Заметим честно: 4111 близко к 4096 (`0x1000`), которое напрашивалось бы как «двенадцать бит
-на октаву», но **не равно ему** - расхождение 15 единиц, то есть около 6 центов, слишком
-велико для округления байтов. Что означает именно 4111, не установлено.
+Let's be honest about this: 4111 is close to 4096 (`0x1000`), which would suggest
+itself as "twelve bits per octave", but **is not equal to it** - a discrepancy of 15
+units, i.e. about 6 cents, too large to be byte rounding. What exactly 4111 means has
+not been established.
 
-### Остаток, который так и не поддался
+### The remainder that never gave in
 
-С девятой ноты столбцы снова заполняются нулями - слоты кончились и пошли в переиспользование.
-Проверено, что это НЕ решается ни паузой (дело не во времени), ни фильтром по адресу
-подпрограммы: записи идут из тех же адресов выдачи, что и настоящие, просто нулями. Похоже,
-переиспользование слота начинается с его обнуления той же подпрограммой. Для восьми нот это
-не мешает, для полной октавы понадобится либо тембр из двух партиалов (тогда хватит на
-шестнадцать нот), либо разбор того, чем выдача отличается от обнуления внутри одной
-подпрограммы.
+From the ninth note on, the columns fill with zeros again - the slots ran out and reuse
+began. Verified that this is NOT solved by a pause (it isn't a matter of time) or by
+filtering on subroutine address: the writes come from the same note-on addresses as the
+real ones, just with zeros. It looks like slot reuse begins with the same subroutine
+zeroing it out. For eight notes this doesn't get in the way; a full octave will need
+either a two-partial timbre (enough for sixteen notes) or working out how note-on
+differs from zeroing within a single subroutine.
 
-### История способа, чтобы её не проходили заново Слот теперь берётся ИЗ САМИХ ЗАПИСЕЙ, по
-банку `0x0C00`: он пишется при выдаче голоса, в отличие от банка огибающих, который
-параллельно доигрывает прежние ноты. Таблица состояний оставлена сверкой, и **оба способа
-совпали на всех четырёх раздражителях** - слоты 0-3, 4-7, 8-11, 12-15.
+### History of the method, so as not to redo it Slot identification is now taken FROM
+THE WRITES THEMSELVES, in bank `0x0C00`: it's written when the voice is issued, unlike
+the envelope bank, which concurrently continues playing out previous notes. The state
+table was kept as a cross-check, and **both methods agreed on all four stimuli** - slots
+0-3, 4-7, 8-11, 12-15.
 
-Но дальше четвёртой ноты хроматики это всё равно не тянет, уже по другой причине: когда
-неиспользованные слоты кончаются, прошивка начинает их переиспользовать, и в банк `0x0C00`
-попадают не только выдачи, но и **гашения** прежних голосов. Признак «слот затронут в
-`0x0C00`» их не различает, и с ноты 64 таблица заполняется нулями от чужих гашений - что в
-ряду разностей и видно как обрыв.
+But past the fourth chromatic note this still doesn't hold up, for a different reason:
+once unused slots run out, the firmware starts reusing them, and bank `0x0C00` receives
+not only note-on writes but also **note-off** writes for previous voices. The "slot
+touched in `0x0C00`" marker doesn't distinguish between them, and from note 64 onward the
+table fills with zeros from other voices' note-offs - which shows up in the difference
+series as a break.
 
-**Что различит:** адрес подпрограммы, сделавшей запись. Он в захвате есть (`SoWrite::pc`),
-выдача идёт из `0x3615`-`0x3657` (разобрано в `la32_interface.md`), гашение - из другого
-места. Фильтр по этому адресу и отделит одно от другого.
+**What will distinguish them:** the address of the subroutine that made the write. It's
+present in the capture (`SoWrite::pc`); note-on comes from `0x3615`-`0x3657` (analyzed in
+`la32_interface.md`), note-off from elsewhere. Filtering by this address will separate
+one from the other.
 
-## Точечные правки тембра: регистры разделились по партиалам
+## Targeted timbre edits: registers split apart by partial
 
-Раздражитель «другой тембр» слишком груб - он двигает девять регистров разом и не говорит,
-который за что. Режим `d110_la32_regmap tone` меняет тембр НЕ целиком, а по одному параметру
-внутри него, и сравнивает с замером, снятым той же нотой прямо перед правкой.
+The "different timbre" stimulus is too crude - it moves nine registers at once and
+doesn't say which one is responsible for what. The `d110_la32_regmap tone` mode changes
+NOT the whole timbre but a single parameter within it, and compares against a
+measurement taken with the same note right before the edit.
 
-**Один опыт за запуск, и это вынужденно.** Слотов 32, прошивка выдаёт сначала ни разу не
-использованные, и два опыта в один прогон не помещаются - совмещать пробовали трижды, каждый
-раз портя измерение. Режим выбирается аргументом.
+**One experiment per run, and this is forced.** There are 32 slots, the firmware hands
+out never-used ones first, and two experiments don't fit in one run - combining them was
+tried three times, spoiling the measurement each time. The mode is chosen via an
+argument.
 
-| страница правки | что сдвинулось в тембре (ОЗУ `0x21E4`+) | какие регистры сдвинулись |
+| edit page | what shifted in the timbre (RAM `0x21E4`+) | which registers shifted |
 | --- | --- | --- |
-| 0 (вход) | байт +0 - **имя** | **ни один** |
-| 1 | байт +10 | ровно **один партиал**, во всех пяти банках сразу |
-| 2 | байт +11 | ровно **другой партиал**, тоже во всех пяти |
+| 0 (entry) | byte +0 - **name** | **none** |
+| 1 | byte +10 | exactly **one partial**, across all five banks at once |
+| 2 | byte +11 | exactly **the other partial**, also across all five |
 
-Номер затронутого партиала от прогона к прогону разный (в одном это были 0 и 2, в другом 1 и
-2) - он зависит от того, какое значение структуры получилось, а не от страницы. Постоянно
-другое: **правка задевает регистры ровно одного партиала и никаких больше**.
+The number of the affected partial differs from run to run (in one it was 0 and 2, in
+another 1 and 2) - it depends on whatever structure value ended up set, not on the page.
+What stays constant: **the edit touches the registers of exactly one partial and no
+others**.
 
-Как это выглядит по значениям (страница 1, байт +10 с 10 на 12):
+What this looks like in values (page 1, byte +10 from 10 to 12):
 
 ```
 0C00.1.0 : 2C D3   ->  FF B5        0C80.1.0 : FF B5  ->  00
@@ -245,126 +265,134 @@
 0CC0.1.0 : FF 0D 27 31 ... -> FF 00 1A 24 ...
 ```
 
-Значения не просто меняются - они **переезжают между банками**: то, что лежало в `0C80`,
-оказывается в `0C00`, а `0C80` обнуляется.
+The values don't just change - they **move between banks**: what used to sit in `0C80`
+ends up in `0C00`, and `0C80` is zeroed.
 
-**Страница 0 - встроенный контроль, и он прошёл.** Правка имени звук не меняет, и ни один
-регистр от неё не сдвинулся. Если бы сдвинулся, все остальные строки таблицы были бы шумом.
+**Page 0 is a built-in control, and it passed.** Editing the name doesn't change the
+sound, and no register shifted because of it. If one had, all the other rows of the
+table would be noise.
 
-Байты +10 и +11 - первые после десятизначного имени, то есть **структуры пар партиалов 1&2 и
-3&4**. Каждая двигает регистры только своей пары, причём радикально: значения переезжают
-между банками (`0C00` получает то, что было в `0C80`, и наоборот). Похоже, структура
-переключает не параметр внутри партиала, а само назначение банков для него - что для
-LA-синтеза естественно: структура и определяет, чем партиал является, генератором или
-фильтром.
+Bytes +10 and +11 are the first bytes after the ten-character name, i.e. **the structure
+of partial pairs 1&2 and 3&4**. Each moves the registers of only its own pair, and
+radically so: values move between banks (`0C00` gets what used to be in `0C80`, and vice
+versa). It looks like structure switches not a parameter within the partial but the very
+bank assignment for it - which is natural for LA synthesis: structure is exactly what
+determines what a partial is, a generator or a filter.
 
-**Оговорка, которая едет вместе с этим:** на страницах 1 и 2 захват переполнялся (потеряно
-602/1747 и 2209/2964 записей), поэтому списки изменившихся регистров - **нижняя граница**.
-Что перечисленное изменилось, установлено; что ничего сверх него не изменилось - нет.
+**A caveat that travels with this:** on pages 1 and 2 the capture overflowed (602/1747
+and 2209/2964 writes lost), so the lists of changed registers are a **lower bound**. That
+what's listed changed is established; that nothing beyond it changed is not.
 
-### До параметров партиалов ведёт Part+ - найдено разведкой
+### Part+ leads to the partial parameters - found by exploration
 
-Режим `d110_la32_regmap find` перебирает сетку нажатий и на каждой клетке смотрит, какой байт
-тембра сдвинулся. О назначении кнопок он не предполагает ничего - байт называет параметр сам.
-**Нот при этом не играется, поэтому разведка не тратит голосовые слоты**, и всю сетку можно
-пройти за один прогон, тогда как измерение регистров упирается в 32 слота.
+The `d110_la32_regmap find` mode sweeps a grid of button presses and, at each cell,
+checks which timbre byte shifted. It assumes nothing about what the buttons do - the
+byte names the parameter itself. **No notes are played during this, so the exploration
+doesn't spend voice slots**, and the whole grid can be swept in one run, whereas
+measuring registers is bottlenecked at 32 slots.
 
-Ответ: **`Part+`**.
+Answer: **`Part+`**.
 
-**`Part+` выбирает партиал, `Group+` - параметр внутри него.** Вся сетка снята, и она сходится
-без единого исключения:
+**`Part+` selects the partial, `Group+` selects the parameter within it.** The whole grid
+has been captured, and it agrees without a single exception:
 
-| `Part+` | база партиала в тембре | сдвинувшиеся байты при `Group+` 0..6 |
+| `Part+` | partial base in the timbre | bytes shifted at `Group+` 0..6 |
 | --- | --- | --- |
 | 1 | **14** | 14, 22, 34, 37, 42, 55, 61 |
 | 2 | **72** | 72, 80, 92, 95, 100, 113, 119 |
 | 3 | **130** | 130, 138, 150, 153, 158, 171, 177 |
 | 4 | **188** | 188, 196, ... |
 
-Базы отстоят ровно на **58 байт** - это и есть размер партиала в тембре D-110 (10 байт имени,
-4 байта общей части, дальше четыре партиала по 58; 14 + 4×58 = 246, вся длина тембра).
-Смещения, которые даёт `Group+`, у всех четырёх партиалов одинаковы: **+0, +8, +20, +23, +28,
-+41, +47**.
+The bases are spaced exactly **58 bytes** apart - this is the size of a partial within a
+D-110 timbre (10 bytes of name, 4 bytes of the common part, then four partials of 58
+bytes each; 14 + 4×58 = 246, the full length of the timbre). The offsets that `Group+`
+produces are the same for all four partials: **+0, +8, +20, +23, +28, +41, +47**.
 
-**Ловушка, которую пришлось обойти:** значения в памяти прошивки живут между прогонами, а
-прошлые прогоны их только прибавляли - к этому моменту многие стояли на верхнем упоре, и
-«ничего не сдвинулось» означало бы не «страница пустая», а «прибавлять некуда». Зонд теперь,
-не увидев движения вверх, пробует вниз.
+**A trap that had to be worked around:** values in firmware memory persist across runs,
+and previous runs only ever incremented them - by this point many were sitting at the
+upper limit, and "nothing shifted" would mean not "the page is empty" but "there's
+nowhere left to add to". The probe now, on seeing no upward movement, tries downward.
 
-### С чистого тембра: первый параметр партиала - это высота, и он подтверждает банк `0x0CC0`
+### Starting from a clean timbre: the partial's first parameter is pitch, and it confirms bank `0x0CC0`
 
-С заводским сбросом в начале прогона (тембр 1/24, структуры 2 и 0, нота берёт ровно два
-слота) правка **байта 14** - первого параметра партиала 1 - с 36 на 39 сдвинула **ровно один
-регистр и никакой больше**:
+With a factory reset at the start of the run (timbre 1/24, structures 2 and 0, the note
+takes exactly two slots), editing **byte 14** - the first parameter of partial 1 - from
+36 to 39 shifted **exactly one register and no others**:
 
 ```
 0CC0.0.1 :  FF 4E 4E 4E ...  ->  FF 52 52 52 ...
 ```
 
-Старший байт высоты, `4E` → `52`, то есть **+4 в старшем байте = +1024** в шестнадцатибитном
-значении. Три полутона по измеренной раньше шкале - 1028. Сходится.
+The high byte of pitch, `4E` → `52`, i.e. **+4 in the high byte = +1024** in the
+sixteen-bit value. Three semitones on the previously measured scale is 1028. Matches.
 
-**Это независимое подтверждение банка `0x0CC0`, и оно ценно именно тем, что раздражитель
-совсем другой.** Раньше высоту опознавали НОМЕРОМ НОТЫ, теперь - ПАРАМЕТРОМ ТЕМБРА, и оба
-указывают в одну ячейку. Заодно названо, что такое байт +0 партиала: это его грубая высота.
+**This is an independent confirmation of bank `0x0CC0`, and it's valuable precisely
+because the stimulus is completely different.** Earlier, pitch was identified by NOTE
+NUMBER; now, by a TIMBRE PARAMETER, and both point to the same cell. This also names
+what partial byte +0 is: its coarse pitch.
 
-**Остальные параметры партиала в регистры не уходят.** Пройдены все семь достижимых смещений
-(+0, +8, +20, +23, +28, +41, +47), каждый раз с заводского сброса, и **сдвинул регистр только
-+0**. Байты 22, 34, 37, 42 менялись в тембре, а в микросхеме не отражалось ничего.
+**The remaining partial parameters don't reach the registers.** All seven reachable
+offsets were tried (+0, +8, +20, +23, +28, +41, +47), each time from a factory reset,
+and **only +0 shifted a register**. Bytes 22, 34, 37, 42 changed in the timbre, but
+nothing was reflected in the chip.
 
-Из этого складывается вид самого интерфейса, и он объясняет банк `0x0CC0`: **в микросхему
-уходит не описание звука, а его текущее состояние**. Высота записывается один раз при выдаче
-голоса, а всё остальное - огибающие, фильтр, уровень - прошивка, судя по всему, считает сама и
-шлёт результатом в поток `0x0CC0`, который и обновляется непрерывно из ПЗУ `0x2C0D`, пока нота
-звучит. Для микросхемы 1988 года это естественно: считать огибающие в ней нечем.
+From this a picture of the interface itself emerges, and it explains bank `0x0CC0`:
+**what goes to the chip is not a description of the sound but its current state**. Pitch
+is written once at voice note-on, while everything else - envelopes, filter, level - the
+firmware, it seems, computes itself and sends as a result into the `0x0CC0` stream,
+which is continuously updated from ROM `0x2C0D` for as long as the note sounds. For a
+1988 chip this makes sense: there's nothing in it to compute envelopes with.
 
-**Оговорка, которая обязана ехать вместе с этим выводом:** нота держится всего 0.5 с. Параметр,
-влияющий на медленную часть огибающей, за это окно мог и не проявиться. Утверждение «в
-регистры не уходит» проверено на коротком окне, и для длинных огибающих его надо
-перепроверить.
+**A caveat that must travel with this conclusion:** the note is held for only 0.5 s. A
+parameter affecting the slow part of the envelope might simply not have shown up within
+this window. The claim that a parameter "doesn't reach the registers" has been checked
+on a short window, and needs re-checking for long envelopes.
 
-### Прежняя попытка мерить по партиалу и почему она ничего не дала
+### An earlier attempt to measure per-partial, and why it gave nothing
 
-С найденным `Part+` точечные правки по партиалу 1 (страницы 0, 1, 2 - байты тембра 14, 22, 34)
-сдвинули байт, но **не сдвинули ни одного регистра**. При этом списки слотов стали неровными:
-`0 2 3` вместо четырёх подряд.
+With `Part+` found, targeted edits on partial 1 (pages 0, 1, 2 - timbre bytes 14, 22, 34)
+shifted the byte but **did not shift a single register**. At the same time the slot
+lists became irregular: `0 2 3` instead of four in a row.
 
-Самое вероятное объяснение - партиал 1 в текущей структуре тембра просто не участвует, и тогда
-его параметрам до микросхемы и не положено доходить. Но отличить это от ошибки измерения на
-таких данных нельзя, поэтому вывода тут нет.
+The most likely explanation is that partial 1 simply isn't active in the current timbre
+structure, in which case its parameters aren't supposed to reach the chip anyway. But
+this can't be distinguished from a measurement error on this data, so there's no
+conclusion here.
 
-**Причина в накопленном состоянии.** Тембр живёт в памяти прошивки между прогонами, а прогонов
-с нажатиями `Number+` было много: структуры доехали до упора, партиалы включались и
-выключались, и к этому моменту тембр находится в состоянии, которого никто не выбирал.
-**Следующий прогон обязан начинаться с заводского сброса** - иначе исходная точка неизвестна,
-а без неё «регистр не сдвинулся» ничего не значит.
+**The cause is accumulated state.** The timbre lives in firmware memory across runs, and
+there were many runs with `Number+` presses: structures ran up to their limits, partials
+were switched on and off, and by this point the timbre is in a state nobody chose. **The
+next run must start from a factory reset** - otherwise the starting point is unknown, and
+without it "the register didn't shift" means nothing.
 
-### Чем НЕ ведёт, хотя выглядело правдоподобно
+### What does NOT lead anywhere, although it looked plausible
 
-`Group+` дальше второй страницы упирается в конец: на страницах 3, 4 и 5 в ОЗУ тембра не
-двигается **ничего**, и ни один регистр, соответственно, тоже. Значит у группы Common ровно
-три параметра - имя и две структуры, - и это сходится с тем, что страницы 0-2 как раз ими и
-оказались.
+`Group+` hits a wall past the second page: on pages 3, 4, and 5 nothing moves in timbre
+RAM **at all**, and consequently no register does either. So the Common group has
+exactly three parameters - the name and the two structures - and this matches pages 0-2
+turning out to be exactly those.
 
-`Bank+` до партиалов тоже не ведёт: с ним сдвинулся байт +1 тембра, то есть **вторая буква
-имени**, а регистры не шевельнулись. Внутри правки тембра он двигает курсор по имени - ровно
-как уже было измерено для страницы Patch Edit (`reverb_path_probe`). Я перенёс сюда чужое
-допущение про «Bank+ выбирает группу» вместо того, чтобы померить, и это стоило прогона.
+`Bank+` doesn't lead to the partials either: with it, timbre byte +1 shifted, i.e. **the
+second letter of the name**, while the registers didn't move at all. Within the timbre
+edit it moves the cursor along the name - exactly as already measured for the Patch Edit
+page (`reverb_path_probe`). I carried over someone else's assumption that "Bank+ selects
+the group" instead of measuring it, and that cost a run.
 
-**Как искать дальше - не угадывать назначение кнопок, а мерить**: жать значение на каждой
-достижимой странице и смотреть, какой байт тембра сдвинулся. Байт называет параметр сам, а
-раскладка меню при этом не нужна вовсе. Так уже находились страницы в
-`tone_edit_survives_probe` и `reverb_reg_probe`.
+**How to keep searching - don't guess what the buttons do, measure**: press the value
+key on every reachable page and see which timbre byte shifted. The byte names the
+parameter itself, and the menu layout isn't needed at all. This is how pages were
+already found in `tone_edit_survives_probe` and `reverb_reg_probe`.
 
-## 2026-08-02: ИСПРАВЛЕНИЕ прошлого вывода, и настоящая карта регистров
+## 2026-08-02: CORRECTION of an earlier conclusion, and the actual register map
 
-### Чего стоила ошибка: «семь параметров партиала» их не семь
+### What the mistake cost: "seven partial parameters" - there aren't seven
 
-Записанное выше «пройдены все семь достижимых смещений (+0, +8, +20, +23, +28, +41, +47), и
-регистр двигает только +0» **неверно истолковано**. Это не семь параметров партиала, а
-ПЕРВЫЕ параметры семи ГРУПП. Видно сразу, если сверить их с раскладкой тембра:
+The earlier statement "all seven reachable offsets were tried (+0, +8, +20, +23, +28,
++41, +47), and only +0 moves a register" was **misinterpreted**. These aren't seven
+partial parameters but the FIRST parameters of seven GROUPS. This is obvious at once if
+you check them against the timbre layout:
 
-| смещение | что там на самом деле | группа |
+| offset | what's actually there | group |
 | --- | --- | --- |
 | +0 | WG Pitch Coarse | **WG** |
 | +8 | P-ENV Depth | **P-ENV** |
@@ -374,526 +402,567 @@ LA-синтеза естественно: структура и определя
 | +41 | TVA Level | **TVA** |
 | +47 | TVA ENV Time KF | **TVA-ENV** |
 
-И ровно эти семь имён лежат строками в ПЗУ прошивки (`P-ENV`, `P-LFO`, `TVF-ENV`,
-`TVA-ENV`). То есть **`Group+` выбирает группу, а `Bank+` - параметр внутри неё**, и из
-тридцати параметров партиала измерены были семь. Форма волны, номер волны ПЗУ, ширина
-импульса и резонанс - те, которым до микросхемы дойти ОБЯЗАНО, потому что генерирует волну
-она сама, - не проверялись ни разу. Вывод «в микросхему уходит только высота, всё прочее
-прошивка считает сама» на этих данных не стоял.
+And exactly these seven names sit as strings in the firmware ROM (`P-ENV`, `P-LFO`,
+`TVF-ENV`, `TVA-ENV`). That is, **`Group+` selects the group, and `Bank+` selects the
+parameter within it**, and only seven of the partial's thirty parameters had been
+measured. Waveform, PCM wave number, pulse width, and resonance - the ones that MUST
+reach the chip, because it's the chip itself that generates the waveform - were never
+checked. The conclusion that "only pitch goes to the chip, and the firmware computes
+everything else itself" didn't hold up on this data.
 
-Прежде чем мерить, `Bank+` был проверен: раньше он двигал курсор по ИМЕНИ тембра, и я
-перенёс это наблюдение со страницы имени на все прочие. На странице параметра он делает
-другое, и это надо было померить, а не унаследовать.
+Before measuring, `Bank+` had been checked: earlier it moved the cursor along the
+timbre NAME, and I carried that observation over from the name page to all the others.
+On a parameter page it does something different, and that needed to be measured, not
+inherited.
 
-### Сетка снята целиком (`d110_la32_regmap grid`)
+### The grid captured in full (`d110_la32_regmap grid`)
 
-Ноты не играются, слоты не тратятся, поэтому вся сетка снимается за один прогон. Результат
-**совпал с раскладкой тембра MT-32 (munt, `Structures.h`) байт в байт**: группа 0 даёт
-смещения +0..+7, группа 1 +8..+16, группа 2 +20..+22, группа 3 +23..+27, группа 4 +28..+36,
-группа 5 +41..+46, группа 6 +47..+55. Это независимое подтверждение того, что тембр D-110 -
-это тембр MT-32, снятое с живой прошивки, а не взятое из чужого заголовка.
+No notes are played, no slots are spent, so the whole grid is captured in one run. The
+result **matched the MT-32 timbre layout (munt, `Structures.h`) byte for byte**: group 0
+gives offsets +0..+7, group 1 +8..+16, group 2 +20..+22, group 3 +23..+27, group 4
++28..+36, group 5 +41..+46, group 6 +47..+55. This is an independent confirmation, taken
+from live firmware rather than borrowed from someone else's header, that the D-110
+timbre is the MT-32 timbre.
 
-### Регистры, снятые точечными правками
+### Registers captured by targeted edits
 
-Каждый параметр правится в одиночку, от заводского сброса, и сравниваются две одинаковые
-ноты - до правки и после. Тембр 1/24, структуры 2 и 0.
+Each parameter is edited on its own, from a factory reset, and two identical notes are
+compared - before the edit and after. Timbre 1/24, structures 2 and 0.
 
-| параметр тембра | регистр | закон | чем подтверждено |
+| timbre parameter | register | law | confirmed by |
 | --- | --- | --- | --- |
-| **TVF Cutoff** (+23) | `0C40 .x.1` | **один в один** | шаг +5 дал +5, шаг +7 дал +7 |
-| **WG Pulse Width** (+6) | `0C40 .x.0` | **значение × 2.55** | 69→`B0`, 89→`E3`; 69×2.55=176, 89×2.55=227 |
-| **TVF Resonance** (+24) | `0D00 .x.1`, младшие 5 бит | **значение + 1** | 24→25, 29→30, 30→31 (упор) |
-| **WG Waveform** SQU→SAW (+4) | `0D00 .x.0`, бит 6 | флаг | `12`→`52` |
-| **WG PCM Bank / PCM Wave** (+4, +5) | `0C40 .x.1`, `0D00 .x.1` старшие биты | выбор волны ПЗУ | только на PCM-партиале |
-| TVA velocity, Resonance | `0C80 .x.1` | амплитуда | резонанс её тоже двигает |
-| номер ноты, WG Pitch Coarse | `0CC0 .x.{1,0}` | 16 бит, 342.57 на полутон | снято раньше |
+| **TVF Cutoff** (+23) | `0C40 .x.1` | **one-to-one** | a step of +5 gave +5, a step of +7 gave +7 |
+| **WG Pulse Width** (+6) | `0C40 .x.0` | **value × 2.55** | 69→`B0`, 89→`E3`; 69×2.55=176, 89×2.55=227 |
+| **TVF Resonance** (+24) | `0D00 .x.1`, low 5 bits | **value + 1** | 24→25, 29→30, 30→31 (ceiling) |
+| **WG Waveform** SQU→SAW (+4) | `0D00 .x.0`, bit 6 | flag | `12`→`52` |
+| **WG PCM Bank / PCM Wave** (+4, +5) | `0C40 .x.1`, `0D00 .x.1` high bits | ROM wave selection | PCM partial only |
+| TVA velocity, Resonance | `0C80 .x.1` | amplitude | resonance moves it too |
+| note number, WG Pitch Coarse | `0CC0 .x.{1,0}` | 16 bit, 342.57 per semitone | captured earlier |
 
-**Два встроенных контроля прошли, и без них таблица не стоила бы ничего.** На СИНТЕТИЧЕСКОМ
-партиале правка номера волны ПЗУ и банка PCM не сдвинула НИ ОДНОГО регистра - как и должно
-быть, волны ПЗУ у него нет. На PCM-партиале наоборот: SQU→SAW не сдвинул ничего, а номер
-волны сдвинул сразу три регистра.
+**Two built-in controls passed, and without them the table would be worth nothing.** On
+the SYNTHETIC partial, editing the ROM wave number and the PCM bank didn't shift a
+SINGLE register - as it should be, it has no ROM wave. On the PCM partial the opposite:
+SQU→SAW shifted nothing, while the wave number shifted three registers at once.
 
-**Который партиал синтетический, а который PCM, решает структура, и это надо знать заранее.**
-У тембра со структурами 2 и 0 первый партиал - PCM, второй - синтетический (`PartialStruct`
-из munt: структура 2 даёт маску `0b10`). Первая попытка мерить форму волны попала на PCM-партиал
-и дала «ни одного регистра» - результат верный, но означающий не то, что можно было подумать.
+**Which partial is synthetic and which is PCM is decided by the structure, and this has
+to be known in advance.** For a timbre with structures 2 and 0, the first partial is
+PCM, the second synthetic (`PartialStruct` from munt: structure 2 gives mask `0b10`).
+The first attempt to measure waveform landed on the PCM partial and gave "not a single
+register" - a correct result, but meaning something other than what one might think.
 
-### Почему это и есть путь к эмуляции
+### Why this is the path to emulation
 
-Найденное ложится на интерфейс `LA32WaveGenerator` из munt **без единого зазора**:
+What's been found maps onto the `LA32WaveGenerator` interface from munt **without a
+single gap**:
 
 ```
-initSynth(sawtoothWaveform, pulseWidth, resonance)   <- 0D00.x.0 бит 6, 0C40.x.0, 0D00.x.1
-initPCM(pcmWaveAddress, pcmWaveLength, looped, ...)  <- 0C40.x.1, 0D00.x.1 (выбор волны)
+initSynth(sawtoothWaveform, pulseWidth, resonance)   <- 0D00.x.0 bit 6, 0C40.x.0, 0D00.x.1
+initPCM(pcmWaveAddress, pcmWaveLength, looped, ...)  <- 0C40.x.1, 0D00.x.1 (wave selection)
 generateNextSample(amp, pitch, cutoff)               <- 0C80.x.1, 0CC0.x.*, 0C40.x.1
 ```
 
-То есть munt уже содержит модель самой микросхемы; чего у него нет - это подачи в неё
-состояния от НАСТОЯЩЕЙ прошивки. Карта выше - ровно та недостающая связь, и именно поэтому
-её стоило доснять до конца.
+In other words munt already contains a model of the chip itself; what it lacks is
+feeding it state from the REAL firmware. The map above is exactly that missing link,
+which is why it was worth capturing to completion.
 
-**Что осталось выяснить до того, как это можно писать кодом:**
+**What remains to work out before this can be turned into code:**
 
-1. **Что несёт поток `0x0CC0` во времени.** Два байта на слот, но переписываются они
-   непрерывно, пока нота звучит (из ПЗУ `0x2C0D`). Первое осмысленное значение - высота. Но
-   огибающие TVA и TVF тоже обязаны как-то доходить, а `generateNextSample` требует три
-   величины на каждый отсчёт. Либо поток мультиплексирован, либо у амплитуды и среза свои
-   потоки, которые захват пока не отделил. **Это следующий опыт, и он решает форму всей
-   реализации.**
-2. **Что такое `0C00 .x.1`.** Следует за клавишей ровно на единицу на полутон, но двигается и
-   от силы нажатия. На срез не похоже - срез нашёлся в `0C40 .x.1` и один в один.
-3. **Ведущее `FF`** - сброс перед загрузкой или адресация.
+1. **What the `0x0CC0` stream carries over time.** Two bytes per slot, but they're
+   rewritten continuously while the note sounds (from ROM `0x2C0D`). The first
+   meaningful value is pitch. But the TVA and TVF envelopes must also reach the chip
+   somehow, and `generateNextSample` needs three values per sample. Either the stream is
+   multiplexed, or amplitude and cutoff have their own streams that the capture hasn't
+   separated out yet. **This is the next experiment, and it decides the shape of the
+   whole implementation.**
+2. **What `0C00 .x.1` is.** Tracks the key exactly one unit per semitone, but also moves
+   with velocity. Doesn't look like cutoff - cutoff was found in `0C40 .x.1`,
+   one-to-one.
+3. **The leading `FF`** - a reset before loading, or addressing.
 
-## 2026-08-02, дальше: поток - это ВЫСОТА, а огибающие микросхема ведёт САМА
+## 2026-08-02, continued: the stream is PITCH, and the chip drives envelopes ITSELF
 
-Зонд `plugin/la32_stream_probe.cpp` (`d110_la32_stream`) печатает поток как ряд во времени, а
-не сравнивает множества значений - на этом сравнении три прежних захода и провалились. Одна
-нота, держится 1.5 с, потом 1.2 с после снятия, захват на всё окно `0x0C00`-`0x0DFF`, ничего
-не потеряно. Контроль - окно той же длины без ноты - дал **ноль записей**.
+The probe `plugin/la32_stream_probe.cpp` (`d110_la32_stream`) prints the stream as a time
+series instead of comparing sets of values - it was exactly this kind of comparison that
+sank the previous three passes. One note, held 1.5 s, then 1.2 s after release, capture
+over the whole `0x0C00`-`0x0DFF` window, nothing lost. The control - a window of the same
+length with no note - gave **zero writes**.
 
-### Что течёт, а что настраивается разово
+### What streams, and what is set once
 
-| банк | записей за ноту | кто пишет |
+| bank | writes per note | who writes |
 | --- | --- | --- |
-| `0C00` | **8** | ПЗУ 3B1E, 39DB, 30B5, 3080 |
-| `0C40` | **3** | ПЗУ 393E, 38B0, 3704 |
-| `0C80` | **6** | ПЗУ 3B25, 394B, 308C, 3087 |
-| `0CC0` | **16468** | ПЗУ **2C0D** x16460 |
-| `0D00` | **4** | ПЗУ 379D, 3781, 36FA, 36C7 |
+| `0C00` | **8** | ROM 3B1E, 39DB, 30B5, 3080 |
+| `0C40` | **3** | ROM 393E, 38B0, 3704 |
+| `0C80` | **6** | ROM 3B25, 394B, 308C, 3087 |
+| `0CC0` | **16468** | ROM **2C0D** x16460 |
+| `0D00` | **4** | ROM 379D, 3781, 36FA, 36C7 |
 
-Течёт ровно один банк. Но - и это оказалось неожиданным - **он переписывает одно и то же
-значение**: у слота 0 на 4117 записей приходится ровно два разных значения подряд (ведущее
-`FF`, затем величина). Поток не несёт огибающую; он **обновляет высоту**, и значение меняется
-только там, где высоте и положено двигаться: первые 40 мс (атака высотной огибающей) и в
-момент снятия ноты.
+Exactly one bank streams. But - and this turned out to be unexpected - **it keeps
+rewriting the same value**: for slot 0, across 4117 writes there are exactly two
+distinct successive values (a leading `FF`, then a value). The stream doesn't carry an
+envelope; it **updates pitch**, and the value only changes where pitch is actually
+supposed to move: the first 40 ms (the pitch envelope's attack) and at the moment the
+note is released.
 
-### Подпрограмма 0x2C08 читается прямо
+### Subroutine 0x2C08 read directly
 
 ```
-2BEA  add 70, ef40[40]      база высоты этого слота (ОЗУ 0x2F40 + слот*2)
+2BEA  add 70, ef40[40]      this slot's base pitch (RAM 0x2F40 + slot*2)
 2BEF  addc 72, 0
-2BF2  jbs 73, 7, 2c06       ушло в минус - прижать к нулю
-2BFA  cmp 70, #e800         иначе прижать сверху к 0xE800
-2C08  st  70, 0cc0[40]      ЗАПИСЬ ШЕСТНАДЦАТИБИТНАЯ
+2BF2  jbs 73, 7, 2c06       went negative - clamp to zero
+2BFA  cmp 70, #e800         otherwise clamp above to 0xE800
+2C08  st  70, 0cc0[40]      SIXTEEN-BIT WRITE
 ```
 
-`st`, а не `stb`: два байта слота - это **одно 16-битное число**, что раньше выводилось из
-переносов между байтами, а теперь видно в самой инструкции. Заодно измерен потолок: **высота
-ограничена сверху `0xE800`**.
+`st`, not `stb`: the slot's two bytes are **one 16-bit number**, which earlier was
+inferred from carries between the bytes, and is now visible in the instruction itself.
+This also establishes the ceiling: **pitch is capped above at `0xE800`**.
 
-### Огибающие в регистры НЕ ПОПАДАЮТ - и вот почему
+### Envelopes do NOT reach the registers - and here's why
 
-Правки огибающей TVA - уровень `envLevel[0]` со 100 до 40 и время атаки с 12 до 72, обе
-подтверждены сдвигом байтов тембра - **не сдвинули в регистрах ровно ничего**. Банк `0x0C80`
-как писался дважды за ноту (`7E` при нажатии, `00` при снятии), так и остался.
+Edits to the TVA envelope - level `envLevel[0]` from 100 to 40, and attack time from 12
+to 72, both confirmed by a shift in the timbre bytes - **did not shift anything in the
+registers at all**. Bank `0x0C80` kept being written twice per note (`7E` at note-on,
+`00` at note-off), exactly as before.
 
-Причина найдена тем же прогоном: **счётчик ответов микросхемы за всю ноту - НОЛЬ.**
+The cause was found by the same run: **the count of chip responses over the whole note
+is ZERO.**
 
-Отсюда складывается модель, и она объясняет разом и это, и старую историю с зависанием
-панели:
+From this a model emerges, and it explains both this and the old story of the panel
+freezing:
 
-- **Амплитуда и срез - это АППАРАТНЫЕ РАМПЫ внутри микросхемы.** Прошивка кладёт в банк два
-  байта - цель и приращение, - микросхема идёт к цели сама и по достижении поднимает вывод
-  `INT`. Прошивка по этому прерыванию загружает следующую ступень огибающей.
-- Поэтому за ноту в `0x0C80` ровно две записи: первая ступень при нажатии и первая ступень
-  затухания при снятии. **Остальных ступеней нет не потому, что их не бывает, а потому что
-  некому сказать «рампа дошла».**
-- Поэтому же правка времён и уровней огибающей ничего не двигает: до этих ступеней дело не
-  доходит.
+- **Amplitude and cutoff are HARDWARE RAMPS inside the chip.** The firmware puts two
+  bytes into the bank - target and increment - the chip moves toward the target on its
+  own and, on reaching it, raises the `INT` pin. On this interrupt the firmware loads
+  the next envelope stage.
+- That's why there are exactly two writes to `0x0C80` per note: the first stage at
+  note-on and the first release stage at note-off. **The remaining stages aren't missing
+  because they don't exist, but because there's nobody to say "the ramp arrived".**
+- For the same reason, editing envelope times and levels moves nothing: those stages are
+  never reached.
 
-**Это ровно то, что моделирует munt**: класс `LA32Ramp` с методами
-`startRamp(Bit8u target, Bit8u increment)` и `checkInterrupt()`. Совпадение не приблизительное
-- два байта на слот и прерывание по завершении.
+**This is exactly what munt models**: the `LA32Ramp` class with methods
+`startRamp(Bit8u target, Bit8u increment)` and `checkInterrupt()`. The match isn't
+approximate - two bytes per slot and an interrupt on completion.
 
-**И это переворачивает прежний вывод**, записанный выше как «в микросхему уходит не описание
-звука, а его текущее состояние, а огибающие прошивка считает сама». Для ВЫСОТЫ это верно -
-её прошивка и вправду считает и льёт потоком. Для амплитуды и среза - наоборот: их ведёт
-микросхема, а прошивка только подаёт ступени.
+**And this overturns the earlier conclusion**, recorded above as "what goes to the chip
+isn't a description of the sound but its current state, and the firmware computes the
+envelopes itself." For PITCH this is true - the firmware really does compute it and pour
+it out as a stream. For amplitude and cutoff, the opposite: the chip drives them, and the
+firmware only supplies the stages.
 
-**И, наконец, это объясняет вывод `INT`.** Байт состояния по `0x0C00`, который разбирался в
-`la32_interface.md` как «какой голос освободился», - это, судя по всему, **какая рампа
-дошла до цели**: обработчик читает его, и биты 0-4 называют голос. Заглушка `La32Stub`
-отвечала на тот же регистр, но с другим смыслом.
+**And finally, this explains the `INT` pin.** The status byte at `0x0C00`, which
+`la32_interface.md` analyzed as "which voice was freed", is, it seems, actually **which
+ramp reached its target**: the handler reads it, and bits 0-4 name the voice. The
+`La32Stub` stub answered on the same register, but with a different meaning.
 
-### Что из этого следует для реализации
+### What follows from this for the implementation
 
-Полная схема того, что надо написать, теперь известна:
+The full picture of what needs to be written is now known:
 
-| в микросхему | откуда | что с этим делает munt |
+| into the chip | from where | what munt does with it |
 | --- | --- | --- |
-| форма волны, ширина импульса, резонанс, волна ПЗУ | `0C40`, `0D00`, разово | `initSynth` / `initPCM` |
-| высота, 16 бит, потоком | `0CC0`, из ПЗУ 2C0D | `pitch` в `generateNextSample` |
-| амплитуда: цель и приращение | `0C80`, по ступеням | `LA32Ramp` -> `amp` |
-| срез: цель и приращение | `0C00`, по ступеням | `LA32Ramp` -> `cutoff` |
-| «рампа дошла» обратно в процессор | `INT` + байт состояния по `0C00` | `LA32Ramp::checkInterrupt` |
+| waveform, pulse width, resonance, ROM wave | `0C40`, `0D00`, once | `initSynth` / `initPCM` |
+| pitch, 16 bit, streamed | `0CC0`, from ROM 2C0D | `pitch` in `generateNextSample` |
+| amplitude: target and increment | `0C80`, by stages | `LA32Ramp` -> `amp` |
+| cutoff: target and increment | `0C00`, by stages | `LA32Ramp` -> `cutoff` |
+| "ramp arrived" back to the processor | `INT` + status byte at `0C00` | `LA32Ramp::checkInterrupt` |
 
-**Оговорки, которые едут вместе с этим.** Что банк `0x0C00` - это рампа СРЕЗА, пока не
-доказано: за него говорят два байта, запись при нажатии и при снятии, и то, что старший байт
-следует за клавишей ровно на полутон и зависит от силы нажатия, - но прямой правкой среза он
-не двигался (двигался `0C40 .x.1`, один в один). Возможно, `0C40` несёт базу, а `0C00` - цель
-рампы; возможно, нет. Проверять это надо тогда, когда рампы заработают и ступени пойдут.
+**Caveats that travel with this.** That bank `0x0C00` is the CUTOFF ramp is not yet
+proven: in its favor are the two bytes, a write at note-on and at note-off, and the fact
+that the high byte tracks the key exactly per semitone and depends on velocity - but it
+didn't move under a direct cutoff edit (`0C40 .x.1` moved instead, one-to-one). Perhaps
+`0C40` carries the base and `0C00` the ramp's target; perhaps not. This needs checking
+once the ramps are working and stages are flowing.
 
-## 2026-08-02, ещё дальше: рампы написаны и работают, обработчик прочитан целиком
+## 2026-08-02, further still: ramps are written and working, the handler read in full
 
-### Движок рамп: `StuckPolicy::La32Ramps`
+### The ramp engine: `StuckPolicy::La32Ramps`
 
-Написан по образцу `LA32Ramp` из munt (модель той же микросхемы, восстановленная там анализом
-записей с живого прибора): старший бит приращения - сторона, младшие семь - скорость по
-экспоненте, нулевое приращение не двигает и не прерывает, уже пройденная цель даёт мгновенную
-установку и прерывание. Считается аналитически, а не по отсчёту за раз: приращение постоянно,
-поэтому обслуживать можно на частоте такта MIDI, не теряя точности момента прибытия.
+Written after the model of `LA32Ramp` from munt (a model of the same chip, reconstructed
+there by analyzing recordings from a live unit): the high bit of the increment is
+direction, the low seven bits are exponential speed, a zero increment neither moves nor
+interrupts, a target already passed gives an instant set and interrupt. It's computed
+analytically rather than sample by sample: the increment is constant, so it can be
+serviced at MIDI clock rate without losing precision on the arrival moment.
 
-**Порядок байтов в слоте снят с измерения, а не выбран**: нечётный байт - ЦЕЛЬ (при нажатии
-`7E` при силе 100 и `6E` при силе 40, то есть уровень), чётный - ПРИРАЩЕНИЕ (при снятии `CF`,
-старший бит - «вниз»). Банк среза `0x0C00` ведёт себя в точности так же, и это само по себе
-довод в пользу того, что он тоже рампа.
+**Byte order within the slot was taken from measurement, not chosen**: the odd byte is
+the TARGET (at note-on, `7E` at velocity 100 and `6E` at velocity 40, i.e. the level),
+the even byte is the INCREMENT (at note-off, `CF`, high bit meaning "down"). The cutoff
+bank `0x0C00` behaves exactly the same way, and this is itself an argument that it's a
+ramp too.
 
-**Механизм заработал сразу**: за ноту 5 запусков, 5 прибытий, 5 ответов процессору - против
-НУЛЯ ответов до него. И в банках появились записи из подпрограмм, которых там раньше не было
-вовсе (`0x32AF`, `0x32B4`, `0x3180`, `0x3185`, `0x32DA`) - то есть прошивка действительно
-стала отвечать на прибытие рампы загрузкой следующей ступени.
+**The mechanism worked right away**: 5 starts, 5 arrivals, 5 responses to the processor
+per note - against ZERO responses before it. And writes appeared in the banks from
+subroutines that had never shown up there before (`0x32AF`, `0x32B4`, `0x3180`,
+`0x3185`, `0x32DA`) - meaning the firmware genuinely started responding to a ramp's
+arrival by loading the next stage.
 
-### Обработчик, прочитанный вместо угадывания
+### The handler, read instead of guessed
 
-Четыре кодировки байта состояния перебором ничего не дали, и перебор был отброшен в пользу
-разбора. ПЗУ `0x3138`:
+Trying four encodings of the status byte by brute force gave nothing, and brute force
+was dropped in favor of disassembly. ROM `0x3138`:
 
 ```
-3139  jbs port2, 2, 313e     вывод INT ещё поднят? иначе выйти
-313E  ldbze 64, 0c00         ПРОЧИТАТЬ БАЙТ СОСТОЯНИЯ
-3147  jbs 64, 7, 3190        бит 7 ВЗВЕДЁН - на 3190
-314A  shlb 64, #01           бит 7 сброшен: значение * 2
+3139  jbs port2, 2, 313e     is the INT pin still raised? if not, exit
+313E  ldbze 64, 0c00         READ THE STATUS BYTE
+3147  jbs 64, 7, 3190        bit 7 SET - go to 3190
+314A  shlb 64, #01           bit 7 clear: value * 2
 314D  andb 64, #3e
-3150  subb 64, #02           минус два
-3156  ldb 80, edc0[64]       таблица состояний слотов по индексу
-315B  cmpb 80, #80           слот свободен?
-3160  ldb 81, #ff            да - записать 0xFF80 в высоту, то есть ЗАГЛУШИТЬ слот
-318D  ljmp 32dc              нет - длинный путь, обслуживание голоса
-3190  jbc 64, 5, 31a1        бит 7 взведён: по биту 5 - на 31a1 или на 32c2
+3150  subb 64, #02           minus two
+3156  ldb 80, edc0[64]       slot state table, indexed
+315B  cmpb 80, #80           is the slot free?
+3160  ldb 81, #ff            yes - write 0xFF80 into pitch, i.e. MUTE the slot
+318D  ljmp 32dc              no - the long path, voice servicing
+3190  jbc 64, 5, 31a1        bit 7 set: branch on bit 5 to 31a1 or 32c2
 ```
 
-Отсюда прямо: **номер в байте состояния - это `слот + 1`**, потому что `(v*2 - 2) & 0x3E`
-даёт `слот*2`. Гадать было не нужно.
+From this, directly: **the number in the status byte is `slot + 1`**, because
+`(v*2 - 2) & 0x3E` gives `slot*2`. No guessing needed.
 
-**И это исправляет ещё одну давнюю запись.** В `la32_interface.md` стояло «бит 7 взведён =
-обслуживать нечего». Ничего подобного: при взведённом бите 7 обработчик не выходит, а уходит
-на `0x3190` и там ветвится по биту 5 на два РАЗНЫХ живых пути. То есть ответ `0xFF`, которым
-здесь изображалось «нечего обслуживать», на самом деле отправляет прошивку по одному из них.
+**And this corrects yet another old entry.** `la32_interface.md` stated "bit 7 set =
+nothing to service." Nothing of the sort: with bit 7 set the handler doesn't exit but
+jumps to `0x3190` and there branches on bit 5 into two DIFFERENT live paths. So the
+`0xFF` response, which here was taken to depict "nothing to service," actually sends the
+firmware down one of them.
 
-### Где механизм упирается сейчас
+### Where the mechanism gets stuck right now
 
-При правильной кодировке (`слот + 1`) нота гаснет сразу: в ряду видно, что вторая запись в
-регистры приходит на нулевой миллисекунде, а не при снятии. Причина читается из того же
-обработчика - он проверяет `edc0[слот*2]`, и если слот ещё числится свободным, **глушит его**
-записью `0xFF80` в регистр высоты. Мы докладываем о прибытии рампы РАНЬШЕ, чем прошивка
-успевает пометить слот занятым.
+With the correct encoding (`slot + 1`), the note goes silent immediately: in the trace,
+the second register write arrives at millisecond zero, not at note-off. The reason reads
+out of the same handler - it checks `edc0[slot*2]`, and if the slot is still listed as
+free, it **mutes it** by writing `0xFF80` into the pitch register. We're reporting the
+ramp's arrival EARLIER than the firmware manages to mark the slot occupied.
 
-Отсюда два кандидата, и различать их надо измерением, а не выбором:
+From this, two candidates, and they must be told apart by measurement, not by choice:
 
-1. **Ведущее `0xFF` - не приращение, а «установить и не прерывать».** Это ложится на давнее
-   наблюдение, что `FF` в этих ячейках выглядит сбросом перед загрузкой. Тогда при нажатии
-   прошивка просто ставит уровень без прерывания, а рампа с прерыванием бывает только там,
-   где огибающая и вправду едет.
-2. **Мы докладываем слишком рано** - у настоящей микросхемы между прибытием и прерыванием
-   есть задержка (в munt это `INTERRUPT_TIME`, семь отсчётов), и порядок «запись регистров -
-   выдача голоса» на железе успевает завершиться.
+1. **The leading `0xFF` isn't an increment but "set and don't interrupt".** This fits
+   the long-standing observation that `FF` in these cells looks like a reset before
+   loading. In that case, on note-on the firmware simply sets the level without an
+   interrupt, and a ramp with an interrupt only happens where the envelope is actually
+   moving.
+2. **We're reporting too early** - on a real chip there's a delay between arrival and
+   the interrupt (in munt this is `INTERRUPT_TIME`, seven samples), and the "write
+   registers - issue voice" sequence has time to complete on real hardware.
 
-Первый кандидат проверен переключателем `D110Core::setLa32PresetFf` (гипотеза, поэтому
-переключатель, а не решение в коде):
+The first candidate was tested with the `D110Core::setLa32PresetFf` switch (a
+hypothesis, hence a switch rather than a decision baked into the code):
 
-| | ответов | прибытий | ряд банка амплитуды, слот 1 |
+| | responses | arrivals | amplitude bank trace, slot 1 |
 | --- | --- | --- | --- |
-| `0xFF` как скорость | 3 | 3 | `0:FF` `0:00` - нота гаснет на нулевой миллисекунде |
-| `0xFF` как установка | 2 | 2 | `0:FF` `1520:CF` **`1520:00`** - дожила до снятия |
+| `0xFF` as speed | 3 | 3 | `0:FF` `0:00` - the note goes silent at millisecond zero |
+| `0xFF` as a set | 2 | 2 | `0:FF` `1520:CF` **`1520:00`** - survived to note-off |
 
-**Половина подтвердилась**: нота доживает до снятия, и появляется ТРЕТЬЯ запись, которой не
-было никогда, - прошивка загрузила следующую ступень после того, как рампа затухания дошла.
-Механизм «прибытие -> следующая ступень» работает.
+**Half of it was confirmed**: the note survives to note-off, and a THIRD write appears,
+one that had never been there before - the firmware loaded the next stage after the
+release ramp arrived. The "arrival -> next stage" mechanism works.
 
-**Половина не подтвердилась**: правка огибающей TVA (уровень 100→40, время атаки 12→72) в
-регистрах по-прежнему ничего не меняет. Значит атака не едет: прошивка ставит уровень сразу
-и держит. Если `0xFF` - это установка без прерывания, то запускать атаку должна какая-то
-ДРУГАЯ запись, а её в захвате нет. Стало быть, либо `0xFF` всё-таки скорость и дело во
-втором кандидате (мы докладываем раньше, чем прошивка помечает слот занятым), либо ступень
-атаки не грузится по какой-то третьей причине.
+**Half of it wasn't confirmed**: editing the TVA envelope (level 100→40, attack time
+12→72) still changes nothing in the registers. So the attack doesn't ramp: the firmware
+sets the level immediately and holds it. If `0xFF` is a set without an interrupt, then
+something else must be the write that kicks off the attack, and it isn't in the capture.
+So either `0xFF` really is a speed after all and the second candidate is at play (we
+report before the firmware marks the slot occupied), or the attack stage doesn't get
+loaded for some third reason.
 
-### Порядок событий измерен, и он отбрасывает второй кандидат
+### The order of events measured, and it rules out the second candidate
 
-Оба перехвата сведены на одну ось времени (`d110_la32_stream order`): перехват таблиц
-прошивки теперь пишет и во временной захват, а фильтр по адресу расширен так, чтобы пустить
-туда обе стороны. Оба перехвата живут на одном потоке процессора, поэтому порядок в общем
-журнале - настоящий порядок событий, без сортировки.
+Both intercepts are put on a single timeline (`d110_la32_stream order`): the intercept
+of firmware tables now also writes into the time-ordered capture, and the address filter
+has been widened to let both sides through. Both intercepts live on the same processor
+thread, so the order in the combined log is the real order of events, with no sorting.
 
 ```
-0.02 | 364E | EDC0 = 20 | СЛОТ ПОМЕЧЕН ЗАНЯТЫМ
-0.02 | 36C7 | 0D00      | настройка (волна, резонанс)
-0.03 | 3704 | 0C41      | настройка (ширина импульса, срез)
-0.06 | 394B | 0C80      | РАМПА АМПЛИТУДЫ
-0.06 | 3B1E | 0C00      | РАМПА СРЕЗА
+0.02 | 364E | EDC0 = 20 | SLOT MARKED OCCUPIED
+0.02 | 36C7 | 0D00      | setup (waveform, resonance)
+0.03 | 3704 | 0C41      | setup (pulse width, cutoff)
+0.06 | 394B | 0C80      | AMPLITUDE RAMP
+0.06 | 3B1E | 0C00      | CUTOFF RAMP
 ```
 
-**Прошивка помечает слот занятым РАНЬШЕ, чем пишет регистры рамп.** Значит доклад о прибытии
-сразу после записи - законен: проверка обработчика `edc0 != 0x80` к этому моменту уже
-проходит. **Второй кандидат отброшен измерением**, а не отброшен ради удобства.
+**The firmware marks the slot occupied EARLIER than it writes the ramp registers.** So
+reporting arrival right after the write is legitimate: the handler's `edc0 != 0x80`
+check already passes by that point. **The second candidate is ruled out by
+measurement**, not discarded for convenience.
 
-Отсюда первый кандидат остаётся единственным: раз при `0xFF`-как-скорости прошивка получает
-прерывание, которого не ждёт, и глушит голос, - **`0xFF` это установка без прерывания**. Это
-вывод исключением, а не подгонка под желаемое, и `setLa32PresetFf` теперь описывает железо, а
-не обходит неудобство.
+From this the first candidate remains the only one: since with `0xFF`-as-speed the
+firmware receives an interrupt it isn't expecting and mutes the voice, - **`0xFF` is a
+set without an interrupt**. This is a conclusion by elimination, not fitting the desired
+outcome, and `setLa32PresetFf` now describes the hardware rather than working around an
+inconvenience.
 
-### Банк рампы выбирает ФЛАГ ГОЛОСА, а не назначение - и это чинило остальное
+### The ramp bank is chosen by the VOICE FLAG, not by function - and this fixed the rest
 
-Записи рамп у двух слотов одной ноты шли из РАЗНЫХ подпрограмм и в РАЗНЫЕ банки. Разбор
-называет причину прямо (ПЗУ `0x3B0E`, и точно так же `0x393E`):
+Ramp writes for the two slots of one note came from DIFFERENT subroutines and went to
+DIFFERENT banks. Disassembly names the reason directly (ROM `0x3B0E`, and `0x393E` the
+same way):
 
 ```
 3B0E  ldb 78, #ff
-3B11  ldb 70, ef80[54]     флаг голоса
-3B16  jbc 70, 7, 3b20      БИТ 7 РЕШАЕТ, В КАКОЙ БАНК ПИСАТЬ
-3B19  st  78, 0c00[54]     взведён  -> банк 0x0C00
-3B20  st  78, 0c80[54]     сброшен  -> банк 0x0C80
+3B11  ldb 70, ef80[54]     voice flag
+3B16  jbc 70, 7, 3b20      BIT 7 DECIDES WHICH BANK TO WRITE
+3B19  st  78, 0c00[54]     set    -> bank 0x0C00
+3B20  st  78, 0c80[54]     clear  -> bank 0x0C80
 ```
 
-`ef80[слот]` - это тот же байт, который уходит в регистр `0x0D00` (в журнале порядка видно
-пару: `EF80=D2` затем `0D00=D2`). У PCM-партиала он `D2` (бит 7 взведён), у синтетического
-`12` (сброшен). **Значит `0x0C00` и `0x0C80` - не «рампа среза» и «рампа амплитуды», а один
-и тот же регистр рампы для двух РОДОВ партиала**; голос пользуется одним банком, а во второй
-прошивка кладёт своё.
+`ef80[slot]` is the same byte that goes into register `0x0D00` (the order log shows the
+pair: `EF80=D2` then `0D00=D2`). For a PCM partial it's `D2` (bit 7 set), for a synthetic
+one `12` (clear). **So `0x0C00` and `0x0C80` aren't "cutoff ramp" and "amplitude ramp"
+but one and the same ramp register for two KINDS of partial**; the voice uses one bank,
+and the firmware puts its own thing into the other.
 
-Пока движок вёл рампы по обоим банкам сразу, каждый голос получал лишнюю рампу, её прибытие
-давало прерывание, которого прошивка не ждёт, и цепочка ступеней рушилась. С выбором банка по
-флагу всё встало на место.
+As long as the engine drove ramps in both banks at once, every voice got an extra ramp,
+its arrival produced an interrupt the firmware wasn't expecting, and the chain of stages
+fell apart. With bank selection by flag, everything fell into place.
 
-### Огибающая ДОШЛА до микросхемы - измерено, с контролем в обе стороны
+### The envelope DID REACH the chip - measured, with controls in both directions
 
-Правка времени затухания TVA (партиал 2, `TVA-ENV`, параметр `envTime[4]`), три точки:
+Editing the TVA release time (partial 2, `TVA-ENV`, parameter `envTime[4]`), three
+points:
 
-| время затухания | приращение при снятии | когда пришла следующая ступень |
+| release time | increment at note-off | when the next stage arrived |
 | --- | --- | --- |
-| 49 (заводское) | `CF` | через 141 мс |
-| 89 (медленнее) | `A7` | за окно захвата не успела |
-| 9 (быстрее) | `F7` | сразу |
+| 49 (factory) | `CF` | after 141 ms |
+| 89 (slower) | `A7` | didn't make it within the capture window |
+| 9 (faster) | `F7` | immediately |
 
-Приращение следует за параметром, длительность рампы - за приращением. **До рамп эта правка
-не двигала в регистрах ничего вообще.** Контроль в обе стороны от исходной точки, поэтому
-«совпало случайно» здесь не проходит.
+The increment follows the parameter, ramp duration follows the increment. **Before the
+ramps, this edit didn't move anything in the registers at all.** Controls run in both
+directions from the starting point, so "coincidence" doesn't fly here.
 
-### Почему атака не едет, и это тоже оказалось правильным
+### Why the attack doesn't ramp, and this too turned out to be correct
 
-Правка `envLevel[0]` со 100 до 40 регистров не двигает, а правка **уровня партиала TVA** (+41)
-со 85 до 45 двигает цель при нажатии с `7E` на `5B`. Значит при нажатии прошивка ставит
-УРОВЕНЬ ПАРТИАЛА установкой без прерывания, а не проигрывает первую ступень огибающей. У
-заводского тембра огибающая начинается с максимума, поэтому ступени атаки просто нет - ей
-нечего вести. Соответствие уровня и цели не линейное (85→126, 45→91), что для амплитуды в
-логарифмической области LA32 и ожидается.
+Editing `envLevel[0]` from 100 to 40 doesn't move the registers, while editing the **TVA
+partial level** (+41) from 85 to 45 moves the note-on target from `7E` to `5B`. So at
+note-on the firmware sets the PARTIAL LEVEL by an interrupt-free set, rather than
+playing back the envelope's first stage. In the factory timbre the envelope starts at
+its maximum, so there simply is no attack stage - there's nothing to ramp. The mapping
+between level and target isn't linear (85→126, 45→91), which is expected for amplitude
+in LA32's logarithmic domain.
 
-### Итог: интерфейс рамп работает от начала до конца
+### Summary: the ramp interface works end to end
 
-Прошивка грузит ступень -> микросхема ведёт её сама -> по прибытии поднимает `INT` и называет
-голос в байте состояния -> прошивка грузит следующую. За ноту: 4 запуска, 2 прибытия, 2 ответа
-против НУЛЯ ответов до всего этого.
+The firmware loads a stage -> the chip drives it on its own -> on arrival it raises
+`INT` and names the voice in the status byte -> the firmware loads the next one. Per
+note: 4 starts, 2 arrivals, 2 responses, against ZERO responses before all this.
 
-## 2026-08-02, мост к звуку: снятые регистры прогнаны через модель микросхемы
+## 2026-08-02, bridge to sound: captured registers run through a model of the chip
 
-`plugin/la32_render.cpp` (`d110_la32_render`) берёт то, что прошивка положила в регистры при
-выдаче голоса, и подаёт это в `LA32FloatWaveGenerator` из munt - модель ТОЙ ЖЕ микросхемы.
-Библиотека собирается статически, поэтому её внутренние заголовки доступны; публичного
-интерфейса у генератора волны нет и не задумано.
+`plugin/la32_render.cpp` (`d110_la32_render`) takes what the firmware put into the
+registers at voice note-on and feeds it into `LA32FloatWaveGenerator` from munt - a
+model of the SAME chip. The library is built statically, so its internal headers are
+accessible; the wave generator has no public interface and was never meant to.
 
-Разбор одной ноты выглядит так:
+The breakdown of a single note looks like this:
 
 ```
-слот | род    | пила | ширина | срез | резонанс | уровень | высота
-   0 | PCM    | да   |      0 |  186 |       24 |     241 | 4E3E
-   1 | синтез | нет  |    176 |  118 |       25 |     126 | 810D
+slot | kind    | saw | width | cutoff | resonance | level | pitch
+   0 | PCM     | yes |     0 |    186 |        24 |   241 | 4E3E
+   1 | synth   | no  |   176 |    118 |        25 |   126 | 810D
 ```
 
-### Проверка не на слух: основной тон меряется
+### A check not by ear: the fundamental is measured
 
-| нота | регистр высоты | основной тон |
+| note | pitch register | fundamental |
 | --- | --- | --- |
-| 60 | `0x810D` | 130.82 Гц |
-| 67 | `0x8A6B` | 196.30 Гц |
-| 72 | `0x911E` | 262.40 Гц |
+| 60 | `0x810D` | 130.82 Hz |
+| 67 | `0x8A6B` | 196.30 Hz |
+| 72 | `0x911E` | 262.40 Hz |
 
-**Нота 60 звучит ровно на октаву ниже C4 при строе 440, с расхождением 0.1 цента.** Октава -
-это, скорее всего, собственная настройка партиала (грубая высота), а не свойство интерфейса:
-тембр брался заводской, и его никто не нормировал.
+**Note 60 sounds exactly an octave below C4 at A440, with a discrepancy of 0.1 cent.**
+The octave is most likely the partial's own tuning (coarse pitch), not a property of the
+interface: the timbre used was the factory one, and nobody normalized it.
 
-**Интервалы совпадают с законом микросхемы до сотых долей цента:**
+**The intervals match the chip's law to within hundredths of a cent:**
 
-| интервал | разница регистров | предсказано законом 4096 на октаву | измерено | расхождение |
+| interval | register difference | predicted by the 4096-per-octave law | measured | discrepancy |
 | --- | --- | --- | --- | --- |
-| 7 полутонов | +2398 | 702.54 цента | 702.57 | **+0.03** |
-| 12 полутонов | +4113 | 1204.98 цента | 1205.02 | **+0.04** |
+| 7 semitones | +2398 | 702.54 cents | 702.57 | **+0.03** |
+| 12 semitones | +4113 | 1204.98 cents | 1205.02 | **+0.04** |
 
-Разбор регистров и модель микросхемы согласуются полностью. Это первый раз, когда что-то
-снятое с настоящей прошивки D-110 прошло через модель её микросхемы синтеза и дало
-предсказуемый результат.
+The register analysis and the chip model agree completely. This is the first time
+something captured from real D-110 firmware has been run through a model of its
+synthesis chip and given a predictable result.
 
-### И это разрешает вопрос про 4111 против 4096
+### And this resolves the question of 4111 versus 4096
 
-Записанное выше «4111 близко к 4096, но не равно ему, и что это значит - неизвестно»
-проясняется. Закон самой микросхемы - **4096 на октаву** (`sampleStep = 2^(pitch/4096 + 4)`,
-`LA32FloatWaveGenerator::getSampleStep`), и рендер это подтверждает с точностью до сотых цента.
-А **прошивка шагает на 342.6 единицы на полутон** - и по семи полутонам, и по двенадцати, два
-независимых измерения. При шкале 4096 на октаву шаг был бы 341.33.
+The earlier note that "4111 is close to 4096 but not equal to it, and what this means is
+unknown" is now clarified. The chip's own law is **4096 per octave**
+(`sampleStep = 2^(pitch/4096 + 4)`, `LA32FloatWaveGenerator::getSampleStep`), and the
+render confirms this to within hundredths of a cent. But **the firmware steps by 342.6
+units per semitone** - both across seven semitones and across twelve, two independent
+measurements. At a scale of 4096 per octave the step would be 341.33.
 
-Значит **октава у D-110 растянута примерно на 5 центов**. Три объяснения, и выбирать между
-ними пока не на чем: у настоящей микросхемы показательная таблица чуть иная, чем чистая
-двойка в степени; в munt константа слегка неточна; либо прибор и вправду растянут. Записано
-как измеренный факт с открытым толкованием, а не как приговор чьей-то модели.
+So **the D-110's octave is stretched by roughly 5 cents**. Three explanations, and
+there's nothing yet to choose between them: the real chip's exponential table might
+differ slightly from a pure power of two; munt's constant might be slightly imprecise;
+or the unit genuinely is stretched. Recorded as a measured fact with an open
+interpretation, not as a verdict on anyone's model.
 
-### Громкость: регистр несёт УРОВЕНЬ, а генератор ждёт его дополнение
+### Volume: the register carries a LEVEL, and the generator expects its complement
 
-В munt (`Partial.cpp`) стоит `ampRampVal = 67117056 - ampRamp.nextValue()`, а дальше
-`amp = 2^(-ampVal / 2^22)`. То есть **большее число значит тише**, а регистр несёт именно
-уровень. Подавать его напрямую - вывернуть громкость наизнанку: полный уровень 255 дал бы
-тишину. Единица уровня выходит `2^(1/16)`, то есть **0.376 дБ**.
+In munt (`Partial.cpp`) there's `ampRampVal = 67117056 - ampRamp.nextValue()`, and then
+`amp = 2^(-ampVal / 2^22)`. That is, **a bigger number means quieter**, and the register
+does carry the level. Feeding it in directly would turn volume inside out: a full level
+of 255 would give silence. One unit of level works out to `2^(1/16)`, i.e. **0.376 dB**.
 
-Проверено по НАКЛОНУ, а не по одному пику - абсолютный пик зависит ещё и от формы волны:
+Checked by SLOPE, not by a single peak - the absolute peak also depends on waveform:
 
-| сила нажатия | уровень в регистре | пик | расчётный потолок | пик ниже потолка |
+| velocity | level in register | peak | computed ceiling | peak below ceiling |
 | --- | --- | --- | --- | --- |
-| 100 | 126 | 0.0015 | 0.0036 | **7.5 дБ** |
-| 40 | 110 | 0.0008 | 0.0018 | **7.5 дБ** |
+| 100 | 126 | 0.0015 | 0.0036 | **7.5 dB** |
+| 40 | 110 | 0.0008 | 0.0018 | **7.5 dB** |
 
-Разница уровней в 16 единиц меняет и пик, и потолок ровно на 6 дБ, а расстояние между ними
-остаётся тем же с точностью до десятой доли. Постоянные 7.5 дБ - это гребень фильтрованного
-меандра, а не ошибка разбора.
+A level difference of 16 units changes both the peak and the ceiling by exactly 6 dB,
+and the gap between them stays the same to within a tenth of a dB. The constant 7.5 dB
+is the crest factor of a filtered square wave, not a parsing error.
 
-### Огибающая прошивки ведёт звук
+### The firmware's envelope drives the sound
 
-В рендер теперь подаются ступени рампы по мере их прихода, тем же законом, что в `D110Core`.
-Нота держится секунду и отпускается. Прошивка выдала три ступени:
+The render is now fed ramp stages as they arrive, using the same law as in `D110Core`.
+The note is held for a second and released. The firmware issued three stages:
 
 ```
-   0 мс: цель 126, приращение FF   установка при нажатии
-1000 мс: цель 0,   приращение CF   рампа затухания при снятии
-1121 мс: цель 0,   приращение 00   СЛЕДУЮЩАЯ СТУПЕНЬ, загруженная по прибытии рампы
+   0 ms: target 126, increment FF   set at note-on
+1000 ms: target 0,   increment CF   release ramp at note-off
+1121 ms: target 0,   increment 00   NEXT STAGE, loaded on ramp arrival
 ```
 
-Огибающая самого звука (пик по 25 мс, дБ от максимума):
+The envelope of the sound itself (peak per 25 ms, dB from maximum):
 
 ```
-0..1000 мс:  0    держится
-1100 мс:   -35    затухает
-1200 мс:   -42    и дальше ровно
+0..1000 ms:  0    holding
+1100 ms:   -35    decaying
+1200 ms:   -42    and flat from here
 ```
 
-Затухание кончается там же, где рампа доходит до цели, - на 1121 мс. Остаточные -42 дБ это не
-тишина, а минимум микросхемы: при уровне 0 генератор даёт `2^-16`, что от пика этой ноты и
-есть -42 дБ. Голос глушится не нулём уровня, а отдельной командой прошивки.
+The decay ends at exactly the point where the ramp reaches its target - 1121 ms. The
+residual -42 dB isn't silence but the chip's floor: at level 0 the generator gives
+`2^-16`, which relative to this note's peak is exactly -42 dB. The voice is muted not by
+a zero level but by a separate firmware command.
 
-**Третья ступень - это и есть работающая цепочка**: рампа дошла, микросхема подняла
-прерывание, прошивка загрузила следующее. Видно не по счётчику, а по звуку.
+**The third stage is the working chain itself**: the ramp arrived, the chip raised the
+interrupt, the firmware loaded the next stage. Visible not in a counter but in the
+sound.
 
-## 2026-08-02, PCM: адрес и длина волны читаются прямо из регистров, без таблицы
+## 2026-08-02, PCM: wave address and length read straight from the registers, no table needed
 
-Правка параметра `pcmWave` (тон +19) двумя разными шагами дала точное побайтовое совпадение с
-таблицей волн из ПЗУ пресетов (`r15179873-lh5310-97.ic12.bin`, смещение `0x0900`, тот же адрес,
-что `ControlROMMaps["ctrl_d110_1_10_2"].pcmTable` в munt):
+Editing the `pcmWave` parameter (timbre +19) with two different step sizes gave an exact
+byte-for-byte match with the wave table from the preset ROM
+(`r15179873-lh5310-97.ic12.bin`, offset `0x0900`, the same address as
+`ControlROMMaps["ctrl_d110_1_10_2"].pcmTable` in munt):
 
-| pcmWave | регистр `0C40.x.1` | `pos` в таблице волн | регистр `0D00.x.1` | `len` в таблице |
+| pcmWave | register `0C40.x.1` | `pos` in the wave table | register `0D00.x.1` | `len` in the table |
 | --- | --- | --- | --- | --- |
-| 61 | `BA` | `BA` | `18` | `10` (плюс резонанс `08` в младших битах) |
-| 64 | `C0` | `C0` | - (не задет) | `10` |
-| 81 | `E3` | `E3` | `88` | `80` (плюс те же `08`) |
+| 61 | `BA` | `BA` | `18` | `10` (plus resonance `08` in the low bits) |
+| 64 | `C0` | `C0` | - (untouched) | `10` |
+| 81 | `E3` | `E3` | `88` | `80` (plus the same `08`) |
 
-Совпадение точное, цифра в цифру, а не приблизительное. Отсюда:
+The match is exact, digit for digit, not approximate. From this:
 
-- **`0x0C40 .партиал.1` (нечётный байт) у PCM-партиала - это байт `pos` из таблицы волн
-  НАПРЯМУЮ, то есть адрес ПЗУ волн, делённый на `0x800`.** Не индекс для микросхемы - сам
-  адрес, уже вычисленный прошивкой. Это согласуется с сервисными заметками: у LA32 есть
-  собственная адресная шина в ПЗУ волн (`RA0-19`, 20 линий), и таблица нужна только
-  прошивке, микросхема никаких таблиц не знает.
-- **`0x0D00 .партиал.1` (нечётный байт) у PCM-партиала несёт старшими битами байт `len`**
-  (бит 7 - цикл, биты 6-4 - показатель степени длины), а младшими - тот же резонанс, что и у
-  синтетического партиала. Один регистр обслуживает оба назначения не потому, что они
-  перепутаны, а потому что резонансный фильтр в LA32 общий для PCM и синтеза.
+- **`0x0C40 .partial.1` (odd byte), for a PCM partial, is the `pos` byte from the wave
+  table DIRECTLY, i.e. the wave ROM address divided by `0x800`.** Not an index for the
+  chip - the address itself, already computed by the firmware. This agrees with the
+  service notes: the LA32 has its own address bus into the wave ROM (`RA0-19`, 20
+  lines), and the table is only needed by the firmware - the chip knows nothing about
+  any tables.
+- **`0x0D00 .partial.1` (odd byte), for a PCM partial, carries the `len` byte in its
+  high bits** (bit 7 is loop, bits 6-4 are the length exponent), and the same resonance
+  as the synthetic partial in its low bits. One register serves both purposes not
+  because they got mixed up, but because the resonant filter in the LA32 is shared
+  between PCM and synthesis.
 
-**Значит для звука таблица волн вообще не нужна** - только сырые отсчёты волнового ПЗУ и два
-регистра, которые уже разобраны. Ровно так, как это видит сама микросхема.
+**So the wave table isn't needed for sound at all** - only raw samples from the wave ROM
+and the two registers already analyzed. Exactly as the chip itself sees it.
 
-`plugin/la32_render.cpp` теперь рендерит и PCM-партиал: раскодирует то же волновое ПЗУ, что
-загружает сам плагин (`waveIc8`+`waveIc7`, тот же порядок сборки и та же чересстрочная
-развёртка, что `Synth::loadPCMROM` в munt), берёт адрес и длину из регистров и подаёт в
-`LA32FloatWaveGenerator::initPCM`. Нота 60: адрес `0x05D000`, длина 4096, без цикла, пик
-0.2081 - звук, не тишина и не выход за границы ПЗУ.
+`plugin/la32_render.cpp` now renders the PCM partial too: it decodes the same wave ROM
+the plugin itself loads (`waveIc8`+`waveIc7`, the same assembly order and the same
+interleaving as `Synth::loadPCMROM` in munt), takes address and length from the
+registers, and feeds them into `LA32FloatWaveGenerator::initPCM`. Note 60: address
+`0x05D000`, length 4096, no loop, peak 0.2081 - sound, neither silence nor an
+out-of-bounds read from the ROM.
 
-## 2026-08-02, структура пары: бит 5 флага голоса, и он совпал с munt на 22 точках
+## 2026-08-02, pair structure: bit 5 of the voice flag, matching munt at 22 points
 
-Структура тембра решает две вещи разом: который партиал синтетический, а который PCM (это уже
-найдено - бит 7), и складываются ли партиалы или перемножаются кольцевым модулятором. Второе
-искать наугад незачем: `d110_la32_stream struct` перебирает ВСЕ достижимые структуры, играет
-на каждой ноту и печатает флаговый байт `0x0D00` обоих слотов рядом с тем, что об этой
-структуре говорят таблицы munt (`PartialStruct` и `PartialMixStruct` из `Part.cpp`).
+Timbre structure decides two things at once: which partial is synthetic and which is
+PCM (already found - bit 7), and whether the partials add or get multiplied by a ring
+modulator. No need to search for the second one at random: `d110_la32_stream struct`
+sweeps ALL reachable structures, plays a note on each, and prints the `0x0D00` flag byte
+for both slots next to what munt's tables (`PartialStruct` and `PartialMixStruct` from
+`Part.cpp`) say about that structure.
 
-| структура | по munt | флаг ведущего | флаг ведомого | бит 5 |
+| structure | per munt | leading flag | trailing flag | bit 5 |
 | --- | --- | --- | --- | --- |
-| 2 | PCM + синт, mix 0 | `D2` | `12` | 0 0 |
-| 3 | PCM + синт, mix 1 | `D2` | `32` | 0 **1** |
-| 4 | синт + PCM, mix 1 | `12` | `B2` | 0 **1** |
+| 2 | PCM + synth, mix 0 | `D2` | `12` | 0 0 |
+| 3 | PCM + synth, mix 1 | `D2` | `32` | 0 **1** |
+| 4 | synth + PCM, mix 1 | `12` | `B2` | 0 **1** |
 | 5 | PCM + PCM, mix 0 | `D2` | `D2` | 0 0 |
 | 6 | PCM + PCM, mix 1 | `D2` | `B2` | 0 **1** |
-| 7 | синт + синт, mix 3 | `10` | `14` | 0 0 |
+| 7 | synth + synth, mix 3 | `10` | `14` | 0 0 |
 | 8 | PCM + PCM, mix 3 | `D0` | `D4` | 0 0 |
-| 9 | синт + синт, mix 2 | `32` | `32` | **1 1** |
-| 10 | PCM + синт, mix 2 | `F2` | `32` | **1 1** |
-| 11 | синт + PCM, mix 2 | `32` | `B2` | **1 1** |
+| 9 | synth + synth, mix 2 | `32` | `32` | **1 1** |
+| 10 | PCM + synth, mix 2 | `F2` | `32` | **1 1** |
+| 11 | synth + PCM, mix 2 | `32` | `B2` | **1 1** |
 | 12 | PCM + PCM, mix 2 | `F2` | `B2` | **1 1** |
 
-**Бит 5 в точности повторяет `Partial::isRingModulatingNoMix()` из munt** -
-`(позиция == 1 && mix == 1) || mix == 2` - на всех одиннадцати структурах и обоих слотах, то
-есть на 22 точках без единого исключения. Ноль при mix 0 и mix 3, только у ведомого при
-mix 1, у обоих при mix 2.
+**Bit 5 exactly reproduces `Partial::isRingModulatingNoMix()` from munt** -
+`(position == 1 && mix == 1) || mix == 2` - across all eleven structures and both slots,
+i.e. at 22 points without a single exception. Zero at mix 0 and mix 3, only for the
+trailing partial at mix 1, for both at mix 2.
 
-**Бит 7 подтверждён заодно**: на всех одиннадцати структурах он взведён ровно там, где munt
-ждёт PCM-партиал, и сброшен там, где синтетический.
+**Bit 7 is confirmed along the way**: across all eleven structures it's set exactly
+where munt expects a PCM partial, and clear where it expects a synthetic one.
 
-**Бит 6 у PCM-партиала гаснет ровно у ведомого в кольцевой модуляции** (`B2` против `D2`,
-`F2`). Это в точности условие `pcmWaveInterpolated` у munt, где прямо сказано: у такого
-партиала умножитель интерполяции занят кольцевым модулятором. У синтетического партиала тот
-же бит несёт пилу (измерено раньше правкой SQU→SAW). Разделить эти два смысла на нынешних
-данных нечем - у заводского тембра все синтетические партиалы прямоугольные, - и оба
-толкования не опровергнуты.
+**Bit 6 for a PCM partial goes off exactly for the trailing partial under ring
+modulation** (`B2` versus `D2`, `F2`). This is exactly munt's `pcmWaveInterpolated`
+condition, which states outright that for such a partial the interpolation multiplier is
+busy with the ring modulator. For a synthetic partial the same bit carries the sawtooth
+flag (measured earlier via the SQU→SAW edit). There's nothing in the current data to
+separate these two meanings - in the factory timbre all synthetic partials are square
+waves - and neither interpretation has been ruled out.
 
-### Голос собран из пары
+### The voice is assembled from a pair
 
-`la32_render` больше не рендерит партиалы порознь: они идут в `LA32FloatPartialPair`, режим
-которого берётся из измеренного бита 5. На заводской структуре 2 (PCM + синтез, сложение) пик
-пары 0.0517; на структуре 9 (синтез + синтез, кольцевая модуляция) - 0.00000258.
+`la32_render` no longer renders partials separately: they go into
+`LA32FloatPartialPair`, whose mode is taken from the measured bit 5. On the factory
+structure 2 (PCM + synth, addition) the pair's peak is 0.0517; on structure 9 (synth +
+synth, ring modulation) it's 0.00000258.
 
-**Второе число чуть не прочиталось как «не работает».** На четырёх знаках после запятой оно
-печаталось нулём, а это не тишина: кольцевая модуляция ПЕРЕМНОЖАЕТ два сигнала, и
-произведение двух тихих партиалов и обязано быть крошечным. Печать теперь с восемью знаками.
+**The second number nearly got read as "not working".** At four decimal places it
+printed as zero, and that isn't silence: ring modulation MULTIPLIES two signals, and the
+product of two quiet partials is bound to be tiny. Printing is now to eight decimal
+places.
 
-**Оговорка, которая едет вместе со всем разделом**: записи с настоящего D-110 у нас нет, так
-что «верно» здесь означает «согласуется с моделью munt и внутренне непротиворечиво», а не
-«совпало с железом». Совпадение шкалы высоты до сотых цента и совпадение битов структуры на
-22 точках - это сильные доводы, но не сличение с прибором.
+**A caveat that travels with the whole section**: we don't have a recording from a real
+D-110, so "correct" here means "agrees with the munt model and is internally
+consistent," not "matches the hardware." The pitch scale matching to hundredths of a
+cent, and the structure bits matching at 22 points, are strong arguments, but not a
+comparison against a real unit.
 
-### Чего мост пока не умеет
+### What the bridge still can't do
 
-- **Срез держится постоянным**: рампа среза (если она есть - см. оговорку выше) в рендер не
-  подаётся.
-- **Огибающая подаётся только синтетическому партиалу** в отдельном прогоне; пара рендерится
-  с постоянным уровнем.
-- Это стенд, а не звук плагина: в плагине по-прежнему играет собственный синтезатор mt32emu.
+- **Cutoff is held constant**: the cutoff ramp (if it exists - see the caveat above) is
+  not fed into the render.
+- **The envelope is only fed to the synthetic partial**, in a separate run; the pair is
+  rendered at a constant level.
+- This is a test rig, not the plugin's sound: the plugin still plays through its own
+  mt32emu synthesizer.
 
-## Куда идти дальше
+## Where to go next
 
-Первые два пункта прежнего списка сделаны - слот берётся у прошивки, четвёртый раздражитель
-добавлен. Осталось и добавилось:
+The first two items of the earlier list are done - the slot is taken from the firmware,
+the fourth stimulus has been added. What remains, plus what's been added:
 
-1. **Высоту так и не видно отдельно.** Ни один регистр не двигается от ноты, стоя на месте
-   при смене силы. Скорее всего она внутри потока `0x0CC0`, который двигается от всего сразу
-   и разбирается как поток, а не как значение. Следующий опыт: писать не набор значений, а
-   их ПОСЛЕДОВАТЕЛЬНОСТЬ во времени и сравнивать форму кривых, а не множества.
-2. **Развести «только тембр» на составляющие.** Девять регистров двигает смена тембра - это
-   слишком грубый раздражитель. Нужны точечные: сменить у одного тембра ТОЛЬКО волновую
-   форму, только структуру, только огибающую TVA. Дорога к этим страницам уже известна
-   (Timbre → Edit → Edit, дальше Group+/Bank+, см. `service_notes_findings.md`).
-3. **Проверить пары байтов как одно число.** Байты внутри слота могут быть половинами
-   шестнадцатибитного значения; сейчас они сравниваются порознь.
-4. **Понять ведущее `FF`** - сброс это или адресация.
+1. **Pitch still isn't visible on its own.** No register moves with the note while
+   staying put across a velocity change. Most likely it's inside the `0x0CC0` stream,
+   which moves in response to everything at once and needs to be analyzed as a stream,
+   not as a value. Next experiment: record not a set of values but their SEQUENCE over
+   time, and compare the shape of the curves, not sets.
+2. **Break "timbre only" down into its components.** Changing timbre moves nine
+   registers - too crude a stimulus. Targeted changes are needed: change ONLY the
+   waveform, only the structure, only the TVA envelope, for a single timbre. The route
+   to these pages is already known (Timbre → Edit → Edit, then Group+/Bank+, see
+   `service_notes_findings.md`).
+3. **Check byte pairs as a single number.** The bytes within a slot might be halves of a
+   sixteen-bit value; currently they're compared separately.
+4. **Understand the leading `FF`** - is it a reset or addressing.

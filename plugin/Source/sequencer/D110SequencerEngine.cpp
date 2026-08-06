@@ -19,6 +19,10 @@ int D110SequencerEngine::channelForTrack(int trackIndex) const {
 	return trackIndex == kRhythmTrack ? 10 : 1;
 }
 
+void D110SequencerEngine::setProgramSource(std::function<int(int)> f) {
+	programSource = std::move(f);
+}
+
 void D110SequencerEngine::setTempo(double bpm) {
 	tempoBpm = juce::jlimit(20.0, 300.0, bpm);
 }
@@ -42,11 +46,58 @@ void D110SequencerEngine::stop() {
 }
 
 bool D110SequencerEngine::isPrecounting() const {
-	return recording && positionBeats < recordStartBeats;
+	return recording && precountRemainingBeats > 0.0;
 }
 
 void D110SequencerEngine::gotoBar(int bar) {
 	positionBeats = juce::jmax(0, bar - 1) * barLengthBeats();
+	loopBar = juce::jmax(1, bar);
+}
+
+void D110SequencerEngine::setLoopMode(LoopMode mode) {
+	loopMode = mode;
+	double s = 0.0, e = 0.0;
+	if (mode == LoopMode::bar) {
+		s = double(loopBar - 1) * barLengthBeats();
+		e = s + barLengthBeats();
+	} else if (mode == LoopMode::punch) {
+		s = double(punchInBar - 1) * barLengthBeats();
+		e = double(punchOutBar) * barLengthBeats();
+	} else {
+		return;
+	}
+	if (positionBeats < s || positionBeats >= e) positionBeats = s;
+}
+
+int D110SequencerEngine::clicksPerBar() const {
+	const double clickGrid = 4.0 / static_cast<double>(timeSigDen);
+	if (clickGrid <= 0.0) return 1;
+	return juce::jmax(1, juce::roundToInt(barLengthBeats() / clickGrid));
+}
+
+int D110SequencerEngine::currentClickInBar() const {
+	const double clickGrid = 4.0 / static_cast<double>(timeSigDen);
+	const double bar = barLengthBeats();
+	if (clickGrid <= 0.0 || bar <= 0.0) return 0;
+	double beatInBar = std::fmod(positionBeats, bar);
+	if (beatInBar < 0.0) beatInBar += bar;
+	const int idx = static_cast<int>(std::floor(beatInBar / clickGrid + 1.0e-9));
+	return juce::jlimit(0, clicksPerBar() - 1, idx);
+}
+
+void D110SequencerEngine::setPunchIn(int bar) {
+	punchInBar = juce::jmax(1, bar);
+	if (punchOutBar < punchInBar) punchOutBar = punchInBar;
+}
+
+void D110SequencerEngine::setPunchOut(int bar) {
+	punchOutBar = juce::jmax(1, bar);
+	if (punchInBar > punchOutBar) punchInBar = punchOutBar;
+}
+
+void D110SequencerEngine::setPunchRange(int inBar, int outBar) {
+	punchInBar = juce::jmax(1, inBar);
+	punchOutBar = juce::jmax(punchInBar, outBar);
 }
 
 int D110SequencerEngine::getCurrentBar() const {
@@ -71,13 +122,17 @@ void D110SequencerEngine::startRecording() {
 	if (armedTrack < 0) return;
 	playing = true;
 	recording = true;
-	recordStartBeats = positionBeats + double(precountBars) * barLengthBeats();
+	// Precount is fictitious - it never moves positionBeats (see renderInto()), so the take
+	// starts exactly on the bar the transport was already sitting on when this was called.
+	recordStartBeats = positionBeats;
+	precountRemainingBeats = double(precountBars) * barLengthBeats();
 	recordBuffer.clear();
 }
 
 void D110SequencerEngine::stopRecording() {
 	if (!recording) return;
 	recording = false;
+	precountRemainingBeats = 0.0;
 	if (armedTrack < 0) {
 		recordBuffer.clear();
 		return;
@@ -136,13 +191,12 @@ double D110SequencerEngine::gridBeats(QuantizeGrid grid) const {
 	}
 }
 
-void D110SequencerEngine::quantizeTrack(int index, QuantizeGrid grid) {
-	jassert(index >= 0 && index < kNumTracks);
-	trackAt(index).quantize = grid;
+void D110SequencerEngine::snapTrackToGrid(Track &track, QuantizeGrid grid) const {
+	track.quantize = grid;
 	const double step = gridBeats(grid);
 	if (step <= 0.0) return;
 
-	auto &seq = trackAt(index).events;
+	auto &seq = track.events;
 	seq.updateMatchedPairs();
 	for (int i = 0; i < seq.getNumEvents(); ++i) {
 		auto *ev = seq.getEventPointer(i);
@@ -159,65 +213,250 @@ void D110SequencerEngine::quantizeTrack(int index, QuantizeGrid grid) {
 	seq.updateMatchedPairs();
 }
 
+void D110SequencerEngine::quantizeTrack(int index, QuantizeGrid grid) {
+	jassert(index >= 0 && index < kNumTracks);
+	snapTrackToGrid(trackAt(index), grid);
+}
+
 QuantizeGrid D110SequencerEngine::getTrackQuantize(int index) const { return trackAt(index).quantize; }
+
+void D110SequencerEngine::clearTrack(int index) {
+	jassert(index >= 0 && index < kNumTracks);
+	trackAt(index).events.clear();
+}
+
+D110SequencerEngine::Track &D110SequencerEngine::songTrackAt(int slot, int track) {
+	if (slot == currentSlot) return trackAt(track);
+	return songs[static_cast<size_t>(slot)].tracks[static_cast<size_t>(track)];
+}
+
+const D110SequencerEngine::Track &D110SequencerEngine::songTrackAt(int slot, int track) const {
+	if (slot == currentSlot) return trackAt(track);
+	return songs[static_cast<size_t>(slot)].tracks[static_cast<size_t>(track)];
+}
+
+void D110SequencerEngine::newSong() {
+	if (recording) stopRecording();
+	for (auto &t : tracks) {
+		t.events.clear();
+		t.muted = false;
+		t.soloed = false;
+		t.quantize = QuantizeGrid::off;
+	}
+	armedTrack = -1;
+	positionBeats = 0.0;
+	playing = false;
+}
+
+void D110SequencerEngine::selectSongSlot(int slot) {
+	slot = juce::jlimit(0, kNumSongSlots - 1, slot);
+	if (slot == currentSlot) return;
+	if (recording) stopRecording();
+
+	auto &outgoing = songs[static_cast<size_t>(currentSlot)];
+	outgoing.tempoBpm = tempoBpm;
+	outgoing.timeSigNum = timeSigNum;
+	outgoing.timeSigDen = timeSigDen;
+	outgoing.tracks = tracks;
+
+	const auto &incoming = songs[static_cast<size_t>(slot)];
+	tempoBpm = incoming.tempoBpm;
+	timeSigNum = incoming.timeSigNum;
+	timeSigDen = incoming.timeSigDen;
+	tracks = incoming.tracks;
+
+	currentSlot = slot;
+	playing = false;
+	armedTrack = -1;
+	positionBeats = 0.0;
+}
+
+bool D110SequencerEngine::songSlotHasContent(int slot) const {
+	slot = juce::jlimit(0, kNumSongSlots - 1, slot);
+	const auto &trks = (slot == currentSlot) ? tracks : songs[static_cast<size_t>(slot)].tracks;
+	for (const auto &t : trks)
+		if (t.events.getNumEvents() > 0) return true;
+	return false;
+}
+
+double D110SequencerEngine::slotTempo(int slot) const {
+	return slot == currentSlot ? tempoBpm : songs[static_cast<size_t>(slot)].tempoBpm;
+}
+
+void D110SequencerEngine::setSlotTempo(int slot, double bpm) {
+	if (slot == currentSlot) { setTempo(bpm); return; }
+	songs[static_cast<size_t>(slot)].tempoBpm = juce::jlimit(20.0, 300.0, bpm);
+}
+
+int D110SequencerEngine::slotTimeSigNumerator(int slot) const {
+	return slot == currentSlot ? timeSigNum : songs[static_cast<size_t>(slot)].timeSigNum;
+}
+
+int D110SequencerEngine::slotTimeSigDenominator(int slot) const {
+	return slot == currentSlot ? timeSigDen : songs[static_cast<size_t>(slot)].timeSigDen;
+}
+
+void D110SequencerEngine::setSlotTimeSignature(int slot, int numerator, int denominator) {
+	if (slot == currentSlot) { setTimeSignature(numerator, denominator); return; }
+	auto &s = songs[static_cast<size_t>(slot)];
+	s.timeSigNum = juce::jlimit(1, 32, numerator);
+	s.timeSigDen = juce::jlimit(1, 32, denominator);
+}
+
+bool D110SequencerEngine::slotTrackMuted(int slot, int track) const { return songTrackAt(slot, track).muted; }
+void D110SequencerEngine::setSlotTrackMuted(int slot, int track, bool muted) {
+	songTrackAt(slot, track).muted = muted;
+}
+bool D110SequencerEngine::slotTrackSoloed(int slot, int track) const { return songTrackAt(slot, track).soloed; }
+void D110SequencerEngine::setSlotTrackSoloed(int slot, int track, bool soloed) {
+	songTrackAt(slot, track).soloed = soloed;
+}
+QuantizeGrid D110SequencerEngine::slotTrackQuantize(int slot, int track) const {
+	return songTrackAt(slot, track).quantize;
+}
+void D110SequencerEngine::setSlotTrackQuantize(int slot, int track, QuantizeGrid grid) {
+	snapTrackToGrid(songTrackAt(slot, track), grid);
+}
 
 void D110SequencerEngine::renderInto(juce::MidiBuffer &midiMessages, int numSamples, double sampleRate,
                                       std::vector<MetronomeClick> *clicksOut) {
 	if (numSamples <= 0 || sampleRate <= 0.0 || !playing) return;
 
 	const double beatsPerSample = (tempoBpm / 60.0) / sampleRate;
-	const double windowStart = positionBeats;
-	const double windowEnd = positionBeats + beatsPerSample * numSamples;
+	int samplesRendered = 0;
+
+	// Precount: a fictitious count-in, not a real position on the timeline - it plays the
+	// metronome without positionBeats moving and without any track content sounding, so the
+	// take that follows starts exactly on the bar the transport was already on, not however
+	// many bars further along. Consumes up to precountRemainingBeats worth of this block;
+	// whatever's left over falls through to normal playback/recording below using the SAME
+	// (unmoved) positionBeats as its start.
+	if (recording && precountRemainingBeats > 0.0) {
+		const double totalPrecountBeats = double(precountBars) * barLengthBeats();
+		const double elapsedBefore = juce::jmax(0.0, totalPrecountBeats - precountRemainingBeats);
+		const int precountSamples =
+		    juce::jlimit(0, numSamples, juce::roundToInt(precountRemainingBeats / beatsPerSample));
+
+		if (clicksOut != nullptr && metronomeEnabled && precountSamples > 0) {
+			const double clickGrid = 4.0 / static_cast<double>(timeSigDen);
+			const int clicksPerBarCount =
+			    clickGrid > 0.0 ? juce::roundToInt(barLengthBeats() / clickGrid) : 0;
+			const double windowStart = elapsedBefore;
+			const double windowEnd = elapsedBefore + beatsPerSample * precountSamples;
+			double nextClickBeat = std::ceil(windowStart / clickGrid - 1.0e-9) * clickGrid;
+			while (nextClickBeat < windowEnd) {
+				if (nextClickBeat >= windowStart) {
+					int sampleOffset = juce::roundToInt((nextClickBeat - windowStart) / beatsPerSample);
+					sampleOffset = juce::jlimit(0, numSamples - 1, sampleOffset);
+					const int clickIndex = clicksPerBarCount > 0
+					                            ? juce::roundToInt(nextClickBeat / clickGrid) % clicksPerBarCount
+					                            : 0;
+					clicksOut->push_back({sampleOffset, clickIndex == 0});
+				}
+				nextClickBeat += clickGrid;
+			}
+		}
+
+		precountRemainingBeats = juce::jmax(0.0, precountRemainingBeats - beatsPerSample * precountSamples);
+		samplesRendered = precountSamples;
+		if (samplesRendered >= numSamples) return; // the whole block was still count-in
+	}
 
 	const bool solo = anySoloed();
-	for (int t = 0; t < kNumTracks; ++t) {
-		// Even the armed track, mid-take, plays back its own already-committed content
-		// normally here - new captures go to recordBuffer (a separate sequence this loop
-		// never touches), not into the track itself, until stopRecording() folds them in.
-		// That's what makes overdub's existing material actually audible while recording.
-		const auto &track = trackAt(t);
-		if (track.muted) continue;
-		if (solo && !track.soloed) continue;
 
-		const auto &seq = track.events;
-		for (int i = seq.getNextIndexAtTime(windowStart); i < seq.getNumEvents(); ++i) {
-			const auto *ev = seq.getEventPointer(i);
-			const double ts = ev->message.getTimeStamp();
-			if (ts >= windowEnd) break;
-			if (!isNoteEvent(ev->message)) continue; // tracks are note-only in this model
-			auto msg = ev->message;
-			if (msg.getChannel() > 0) msg.setChannel(channelForTrack(t));
-			int sampleOffset = juce::roundToInt((ts - windowStart) / beatsPerSample);
-			sampleOffset = juce::jlimit(0, numSamples - 1, sampleOffset);
-			midiMessages.addEvent(msg, sampleOffset);
+	// Loop bounds in beats, if a loop is active - not applied while precounting/recording,
+	// since punching in mid-loop would otherwise cut a take short out from under the user.
+	double loopStart = 0.0, loopEnd = 0.0;
+	bool loopActive = false;
+	if (!recording) {
+		if (loopMode == LoopMode::bar) {
+			loopStart = double(loopBar - 1) * barLengthBeats();
+			loopEnd = loopStart + barLengthBeats();
+			loopActive = loopEnd > loopStart;
+		} else if (loopMode == LoopMode::punch) {
+			loopStart = double(punchInBar - 1) * barLengthBeats();
+			loopEnd = double(punchOutBar) * barLengthBeats();
+			loopActive = loopEnd > loopStart;
 		}
 	}
 
-	if (clicksOut != nullptr && metronomeEnabled) {
-		// Metronome clicks on the meter's own reporting subdivision (a quarter in 4/4,
-		// an eighth in 6/8, ...), not on the quarter-note beat unit events are stored in.
-		const double clickGrid = 4.0 / static_cast<double>(timeSigDen);
-		const double bar = barLengthBeats();
-		const int clicksPerBar = clickGrid > 0.0 ? juce::roundToInt(bar / clickGrid) : 0;
-		double nextClickBeat = std::ceil(windowStart / clickGrid - 1.0e-9) * clickGrid;
-		while (nextClickBeat < windowEnd) {
-			if (nextClickBeat >= windowStart) {
-				int sampleOffset = juce::roundToInt((nextClickBeat - windowStart) / beatsPerSample);
+	// Render in sub-blocks so a loop wrap that falls mid-block still emits every event on
+	// both sides of the seam at the right sample offset, instead of skipping or misplacing
+	// whatever's near the loop point.
+	while (samplesRendered < numSamples) {
+		const double windowStart = positionBeats;
+		int samplesThisPass = numSamples - samplesRendered;
+		double windowEnd = windowStart + beatsPerSample * samplesThisPass;
+
+		if (loopActive && windowStart >= loopStart && windowEnd > loopEnd) {
+			samplesThisPass = juce::jmax(0, juce::roundToInt((loopEnd - windowStart) / beatsPerSample));
+			windowEnd = windowStart + beatsPerSample * samplesThisPass;
+		}
+
+		for (int t = 0; t < kNumTracks; ++t) {
+			// Even the armed track, mid-take, plays back its own already-committed content
+			// normally here - new captures go to recordBuffer (a separate sequence this loop
+			// never touches), not into the track itself, until stopRecording() folds them in.
+			// That's what makes overdub's existing material actually audible while recording.
+			const auto &track = trackAt(t);
+			if (track.muted) continue;
+			if (solo && !track.soloed) continue;
+
+			const auto &seq = track.events;
+			for (int i = seq.getNextIndexAtTime(windowStart); i < seq.getNumEvents(); ++i) {
+				const auto *ev = seq.getEventPointer(i);
+				const double ts = ev->message.getTimeStamp();
+				if (ts >= windowEnd) break;
+				if (!isNoteEvent(ev->message)) continue; // tracks are note-only in this model
+				auto msg = ev->message;
+				if (msg.getChannel() > 0) msg.setChannel(channelForTrack(t));
+				int sampleOffset = samplesRendered + juce::roundToInt((ts - windowStart) / beatsPerSample);
 				sampleOffset = juce::jlimit(0, numSamples - 1, sampleOffset);
-				const int clickIndex =
-				    clicksPerBar > 0 ? juce::roundToInt(nextClickBeat / clickGrid) % clicksPerBar : 0;
-				clicksOut->push_back({sampleOffset, clickIndex == 0});
+				midiMessages.addEvent(msg, sampleOffset);
 			}
-			nextClickBeat += clickGrid;
 		}
-	}
 
-	positionBeats = windowEnd;
+		if (clicksOut != nullptr && metronomeEnabled) {
+			// Metronome clicks on the meter's own reporting subdivision (a quarter in 4/4,
+			// an eighth in 6/8, ...), not on the quarter-note beat unit events are stored in.
+			const double clickGrid = 4.0 / static_cast<double>(timeSigDen);
+			const double bar = barLengthBeats();
+			const int clicksPerBar = clickGrid > 0.0 ? juce::roundToInt(bar / clickGrid) : 0;
+			double nextClickBeat = std::ceil(windowStart / clickGrid - 1.0e-9) * clickGrid;
+			while (nextClickBeat < windowEnd) {
+				if (nextClickBeat >= windowStart) {
+					int sampleOffset =
+					    samplesRendered + juce::roundToInt((nextClickBeat - windowStart) / beatsPerSample);
+					sampleOffset = juce::jlimit(0, numSamples - 1, sampleOffset);
+					const int clickIndex =
+					    clicksPerBar > 0 ? juce::roundToInt(nextClickBeat / clickGrid) % clicksPerBar : 0;
+					clicksOut->push_back({sampleOffset, clickIndex == 0});
+				}
+				nextClickBeat += clickGrid;
+			}
+		}
+
+		positionBeats = windowEnd;
+		samplesRendered += samplesThisPass;
+
+		if (loopActive && positionBeats >= loopEnd - 1.0e-9) positionBeats = loopStart;
+		if (samplesThisPass <= 0) break; // degenerate loop range (loopEnd <= loopStart) - bail, don't spin
+	}
 }
 
 void D110SequencerEngine::captureEvent(const juce::MidiMessage &message, double atBeats) {
 	if (!recording || armedTrack < 0) return;
+	// Precount no longer advances positionBeats (it's fictitious), so without this a note
+	// played during the count-in would compute as "at or after recordStartBeats" - the very
+	// value positionBeats is frozen at - and get captured immediately, defeating the count-in.
+	if (precountRemainingBeats > 0.0) return;
 	if (atBeats < recordStartBeats) return;
+	if (loopMode == LoopMode::punch) {
+		// Punch mode doubles as "record only in this range" - see setLoopMode()'s own comment.
+		const double punchInBeats = double(punchInBar - 1) * barLengthBeats();
+		const double punchOutBeats = double(punchOutBar) * barLengthBeats();
+		if (atBeats < punchInBeats || atBeats >= punchOutBeats) return;
+	}
 	if (!isNoteEvent(message)) return;
 
 	auto msg = message;
@@ -239,6 +478,15 @@ bool D110SequencerEngine::saveMidiFile(const juce::File &file) const {
 	for (int t = 0; t < kNumTracks; ++t) {
 		juce::MidiMessageSequence seq;
 		const int channel = channelForTrack(t);
+		// A Program Change at time 0, ahead of the track's own notes, so a receiving synth
+		// (including this same plugin, reimporting the file) starts the piece on
+		// approximately the sound that was live when this was exported. See setProgramSource's
+		// own comment for why "approximately", and for what changing it later actually means.
+		if (programSource) {
+			const int program = programSource(t);
+			if (program >= 0 && program < 128)
+				seq.addEvent(juce::MidiMessage::programChange(channel, program), 0.0);
+		}
 		const auto &src = trackAt(t).events;
 		for (int i = 0; i < src.getNumEvents(); ++i) {
 			auto msg = src.getEventPointer(i)->message;
@@ -324,16 +572,14 @@ bool D110SequencerEngine::loadMidiFile(const juce::File &file) {
 	return true;
 }
 
-juce::MemoryBlock D110SequencerEngine::trackToBytes(int index) const {
-	jassert(index >= 0 && index < kNumTracks);
+juce::MemoryBlock D110SequencerEngine::serializeTrack(const juce::MidiMessageSequence &events) const {
 	juce::MidiFile mf;
 	constexpr int tpqn = 960;
 	mf.setTicksPerQuarterNote(tpqn);
 
 	juce::MidiMessageSequence seq;
-	const auto &src = trackAt(index).events;
-	for (int i = 0; i < src.getNumEvents(); ++i) {
-		auto msg = src.getEventPointer(i)->message;
+	for (int i = 0; i < events.getNumEvents(); ++i) {
+		auto msg = events.getEventPointer(i)->message;
 		msg.setTimeStamp(msg.getTimeStamp() * tpqn);
 		seq.addEvent(msg);
 	}
@@ -344,10 +590,10 @@ juce::MemoryBlock D110SequencerEngine::trackToBytes(int index) const {
 	return out.getMemoryBlock();
 }
 
-void D110SequencerEngine::trackFromBytes(int index, const void *data, size_t size) {
-	jassert(index >= 0 && index < kNumTracks);
+void D110SequencerEngine::deserializeTrack(juce::MidiMessageSequence &events, const void *data,
+                                            size_t size) const {
 	if (size == 0) {
-		trackAt(index).events.clear();
+		events.clear();
 		return;
 	}
 
@@ -367,7 +613,25 @@ void D110SequencerEngine::trackFromBytes(int index, const void *data, size_t siz
 		fresh.addEvent(msg);
 	}
 	fresh.updateMatchedPairs();
-	trackAt(index).events = std::move(fresh);
+	events = std::move(fresh);
+}
+
+juce::MemoryBlock D110SequencerEngine::trackToBytes(int index) const {
+	jassert(index >= 0 && index < kNumTracks);
+	return serializeTrack(trackAt(index).events);
+}
+
+void D110SequencerEngine::trackFromBytes(int index, const void *data, size_t size) {
+	jassert(index >= 0 && index < kNumTracks);
+	deserializeTrack(trackAt(index).events, data, size);
+}
+
+juce::MemoryBlock D110SequencerEngine::slotTrackToBytes(int slot, int track) const {
+	return serializeTrack(songTrackAt(slot, track).events);
+}
+
+void D110SequencerEngine::slotTrackFromBytes(int slot, int track, const void *data, size_t size) {
+	deserializeTrack(songTrackAt(slot, track).events, data, size);
 }
 
 } // namespace d110seq

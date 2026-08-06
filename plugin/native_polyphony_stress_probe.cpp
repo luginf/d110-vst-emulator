@@ -63,6 +63,7 @@ int main(int argc, char **argv) {
 	{
 		D110CoreNative core;
 		if (!core.start("C:/Program Files/Common Files/VST3/D-110 Data", nvramDir)) return 1;
+		core.factoryReset();
 		core.setStuckPolicy(D110CoreNative::StuckPolicy::La32Stub);
 		core.runForSeconds(9.0);
 		stubBusy = runBurst(core, kNotes, "La32Stub");
@@ -71,6 +72,7 @@ int main(int argc, char **argv) {
 	{
 		D110CoreNative core;
 		if (!core.start("C:/Program Files/Common Files/VST3/D-110 Data", nvramDir)) return 1;
+		core.factoryReset();
 		core.setStuckPolicy(D110CoreNative::StuckPolicy::La32Ramps);
 		core.runForSeconds(9.0);
 		rampsBusy = runBurst(core, kNotes, "La32Ramps");

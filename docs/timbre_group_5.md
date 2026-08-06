@@ -1,149 +1,153 @@
-# Группа тембра 5, из-за которой две партии демо-песни звучали на 21 дБ тише
+# Timbre group 5, which made two demo-song parts play 21 dB quieter
 
-Закрыто 2026-07-31. Здесь записано и то, что оказалось настоящей ошибкой, и то, что
-ошибкой не было, - чтобы вторую половину не начали чинить заново.
+Closed 2026-07-31. This records both what turned out to be a real bug and what wasn't a
+bug - so that the second half doesn't get "fixed" again from scratch.
 
-## Что было измерено
+## What was measured
 
-В демо-песне «Macho Memory» посольная отрисовка (`plugin/solo_level_test.cpp`, цель
-`d110_solo_level`: свежая машина на каждую строку, та же песня с начала, в движок
-доставляется только одна партия) давала:
+In the demo song "Macho Memory", solo rendering (`plugin/solo_level_test.cpp`, target
+`d110_solo_level`: a fresh machine instance for each row, the same song from the start,
+with only one part delivered to the engine) gave:
 
-| партия | нот | дБ к партии 1 |
+| part | notes | dB relative to part 1 |
 | --- | --- | --- |
 | 1 | 124 | 0.0 |
-| 5 | 0 | тишина |
+| 5 | 0 | silence |
 | 6 | 50 | **-20.8** |
 | 7 | 66 | **-23.7** |
-| ритм | 241 | -0.7 |
+| rhythm | 241 | -0.7 |
 
-Одновременно прошивка держала для партий 6 и 7 **группу тембра 5**, а для всех
-остальных 0 или 1.
+At the same time, the firmware held **timbre group 5** for parts 6 and 7, and 0 or 1 for
+all the rest.
 
-## Настоящая ошибка: подмена тембра при записи Timbre Temporary
+## The real bug: timbre substitution on a Timbre Temporary write
 
-Три факта, каждый проверяемый отдельно.
+Three facts, each independently verifiable.
 
-**1. Группа 5 нелегальна и по меркам самого D-110.** Таблица максимумов в управляющем
-ПЗУ (`ControlROMMap::patchMaxTable`, у `ctrl_d110_1_10_*` это смещение `0x4A49` в
-собранном образе «прошивка + пресеты») читается так:
+**1. Group 5 is illegal even by the D-110's own standards.** The maximum-value table in
+the control ROM (`ControlROMMap::patchMaxTable`, for `ctrl_d110_1_10_*` this is offset
+`0x4A49` in the combined "firmware + presets" image) reads as follows:
 
 ```
 03 3F 30 64 18 03 07 7F 64 0E 7F 7F 00 00 00 00 ...
-^^ группа тембра: максимум 3
+^^ timbre group: maximum 3
 ```
 
-То есть прошивка сама объявляет группе тембра предел 3 - в её внутреннем ОЗУ значение 5
-означает что-то иное, чем поле, которое уходит по SysEx. Движок при записи прижимает 5
-к 3 (`MemoryRegion::write` ограничивает каждый байт этой же таблицей), а группа 3 - это
-**банк ритма**.
+In other words, the firmware itself declares a limit of 3 for the timbre group - in its
+internal RAM, the value 5 means something other than the field that goes out over SysEx.
+On write, the engine clamps 5 down to 3 (`MemoryRegion::write` limits each byte using
+this same table), and group 3 is the **rhythm bank**.
 
-**2. Запись Timbre Temporary перезагружает тембр партии из банка.**
-`Synth::writeMemoryRegion` для `MR_PatchTemp` вызывает
-`parts[i]->setTimbre(&mt32ram.timbres[getAbsTimbreNum()].timbre)`, а
-`getAbsTimbreNum()` это `группа * 64 + номер`. Для MT-32 это правильно. Для D-110 - нет:
-Tone Temporary, который прошивка уже отдала мосту, при этом затирается.
+**2. A Timbre Temporary write reloads the part's timbre from the bank.**
+`Synth::writeMemoryRegion` for `MR_PatchTemp` calls
+`parts[i]->setTimbre(&mt32ram.timbres[getAbsTimbreNum()].timbre)`, and
+`getAbsTimbreNum()` is `group * 64 + number`. This is correct for the MT-32. For the
+D-110 it is not: Tone Temporary, which the firmware has already handed to the bridge,
+gets overwritten in the process.
 
-**3. Мост слал Timbre Temporary чаще, чем тембры.** За 40 секунд демо счётчик отправок
-по регионам показал 8 сообщений Timbre Temporary против 1 на каждый Tone Temporary. Даже
-одной такой записи после тембра достаточно, чтобы подмена стала постоянной.
+**3. The bridge sent Timbre Temporary more often than timbres.** Over 40 seconds of the
+demo, the per-region send counter showed 8 Timbre Temporary messages against 1 for each
+Tone Temporary. Even a single such write after a timbre is enough to make the
+substitution permanent.
 
-Итог, снятый по **именам** (первые десять байт тембра - его имя в ASCII), за один прогон
-`plugin/tone_clobber_probe.cpp` (цель `d110_tone_clobber`):
+The result, captured by **name** (the first ten bytes of a timbre are its name in
+ASCII), from a single run of `plugin/tone_clobber_probe.cpp` (target
+`d110_tone_clobber`):
 
 ```
- партия | прошивка       | движок
+ part   | firmware       | engine
       1 | "SlapBass 1"   | "SlapBass 1"
       5 | "Guitar 2  "   | "Guitar 2  "
-      6 | "Syn Lead 1"   | "ClsdHiHat1"   <-- ПОДМЕНА
-      7 | "Syn Lead 1"   | "ClsdHiHat1"   <-- ПОДМЕНА
+      6 | "Syn Lead 1"   | "ClsdHiHat1"   <-- SUBSTITUTED
+      7 | "Syn Lead 1"   | "ClsdHiHat1"   <-- SUBSTITUTED
       8 | "Strings 3 "   | "Strings 3 "
 ```
 
-Лид играл закрытым хай-хэтом. Совпадение остальных шести партий на том же прогоне - это
-и есть доказательство, что метод работает, а не оправдание.
+The lead was playing a closed hi-hat. The match on the other six parts in the same run
+is the proof that the method works, not an excuse.
 
-Почему на этом прогоне у остальных партий подмена не видна: для легальных групп поиск в
-банке даёт ровно тот же тембр, который прошивка положила в Tone Temporary, потому что обе
-половины берут его из одного ПЗУ. **Но это верно только для НЕПРАВЛЕНОГО тембра**, и
-формулировка «у остальных партий подмена безвредна», стоявшая здесь сначала, оказалась
-шире измеренного. В банке движка лежит заводской звук; правку, сделанную с панели,
-прошивка держит только в Tone Temporary, и перезагрузка из банка её теряет независимо от
-группы. Измерено отдельно - см. «Проверено на обычном патче» ниже.
+Why the substitution isn't visible for the other parts in this run: for legal groups, a
+bank lookup returns exactly the same timbre that the firmware put into Tone Temporary,
+because both halves pull it from the same ROM. **But this only holds for an UNEDITED
+timbre**, and the claim "the substitution is harmless for the other parts", which
+originally stood here, turned out to be broader than what was actually measured. The
+engine's bank holds the factory sound; an edit made from the panel is held by the
+firmware only in Tone Temporary, and reloading from the bank loses it regardless of
+group. Measured separately - see "Verified on an ordinary patch" below.
 
-## Исправление
+## Fix
 
-`D110Core::MirrorRegion::reassertAfterTimbreTemp` - регион Tone Temporary
-пересылается всякий раз, когда уходит Timbre Temporary, даже если сам он не менялся.
-Порядок задан позицией в `kMirrorRegions`, тембры стоят после Timbre Temporary, поэтому
-подтверждение всегда приходит последним. Ни строчки в munt менять не пришлось: прошивка
-остаётся хозяином, движок - исполнителем.
+`D110Core::MirrorRegion::reassertAfterTimbreTemp` - the Tone Temporary region is resent
+every time a Timbre Temporary goes out, even if it hasn't itself changed. The order is
+set by position in `kMirrorRegions`; timbres come after Timbre Temporary, so the
+reassertion always arrives last. Not a single line in munt had to change: the firmware
+remains the master, the engine the executor.
 
-Побочно пришлось увеличить кольцо SysEx с 64 слотов до 256 (`kSysexSlots`) и завести
-счётчик `D110Core::sysexDropped()`: смена тембра теперь шлёт девять сообщений вместо
-одного, и на 64 слотах измерение потеряло 3 сообщения. Молча потерянное сообщение
-зеркала - это не применённый параметр, то есть ровно тот класс ошибки, который здесь и
-чинится.
+As a side effect, the SysEx ring had to be enlarged from 64 slots to 256 (`kSysexSlots`),
+and a `D110Core::sysexDropped()` counter added: a timbre change now sends nine messages
+instead of one, and at 64 slots the measurement lost 3 messages. A silently dropped
+mirror message is an unapplied parameter - exactly the class of bug being fixed here.
 
-### Проверено звуком
+### Verified by sound
 
-`d110_solo_level`, та же песня, после правки, без потерь в обоих счётчиках:
+`d110_solo_level`, same song, after the fix, with zero losses on both counters:
 
-| партия | было | стало |
+| part | before | after |
 | --- | --- | --- |
-| 6 | -20.8 дБ | **+5.2 дБ** |
-| 7 | -23.7 дБ | **+2.5 дБ** |
+| 6 | -20.8 dB | **+5.2 dB** |
+| 7 | -23.7 dB | **+2.5 dB** |
 
-Контроль A/B на одном и том же инструменте (`d110_demo_wav`, полный микс, два прогона
-подряд с флагом выключенным и включённым): пик 0.988 / СКЗ 0.0899 против пика 1.150 /
-СКЗ 0.1555. Микс стал громче примерно на 4.8 дБ, потому что вернулись два лида.
+A/B control with the same instrument (`d110_demo_wav`, full mix, two consecutive runs
+with the flag off and on): peak 0.988 / RMS 0.0899 versus peak 1.150 / RMS 0.1555. The
+mix got louder by about 4.8 dB, because the two leads came back.
 
-### Проверено на обычном патче
+### Verified on an ordinary patch
 
-Всё выше измерено на демо-песне, а демо - случай особенный: группу тембра 5 туда положило
-ПЗУ пресетов, с панели её выставить нельзя. Значит оставался вопрос, на который демо
-ответить не может: теряется ли правка, которую делает человек с панели на обычном патче.
+Everything above was measured on the demo song, and the demo is a special case: the
+preset ROM is what put timbre group 5 there - it can't be set from the panel. So a
+question remained that the demo can't answer: is an edit a person makes from the panel
+on an ordinary patch lost as well.
 
-`plugin/tone_edit_survives_probe.cpp` (цель `d110_tone_edit_survives`) ставит этот опыт
-ДВАЖДЫ в одном прогоне - с подтверждением тембров и без него
-(`D110Core::setToneReassert`, переключатель только для стендов). Проверка, умеющая
-напечатать одно «уцелело», выглядит одинаково и когда исправление работает, и когда терять
-было нечего.
+`plugin/tone_edit_survives_probe.cpp` (target `d110_tone_edit_survives`) runs this
+experiment TWICE in a single pass - with timbre reassertion on and off
+(`D110Core::setToneReassert`, a switch that exists only for test rigs). A check that can
+only print a single "survived" looks the same whether the fix is working or there was
+nothing to lose in the first place.
 
-Обе страницы правки зонд находит нажатиями, а не по памяти: жмёт значение и смотрит, какой
-байт ОЗУ сдвинулся ровно на число нажатий. Нашлось `Tone Edit/Common/Name` -> `0x21E4`
-(первая буква имени тембра партии 1) и `TIMB_E/Part1/Key Shift` -> `0x2002`. Страницу
-`Tone =` (`0x2001`) зонд отбраковывает сам: она выбирает ДРУГОЙ звук и тембр меняет по
-праву.
+The probe finds both edit pages by button presses, not by memory inspection: it presses
+a value and watches which RAM byte shifted by exactly the number of presses. It found
+`Tone Edit/Common/Name` -> `0x21E4` (the first letter of part 1's timbre name) and
+`TIMB_E/Part1/Key Shift` -> `0x2002`. The probe rejects the `Tone =` page (`0x2001`) on
+its own: it selects a DIFFERENT sound, and changing the timbre there is legitimate.
 
-Заводской сброс, потом Number+ x5 на имени (`A`=65 -> `F`=70), потом Key Shift на +3:
+Factory reset, then Number+ x5 on the name (`A`=65 -> `F`=70), then Key Shift by +3:
 
-| подтверждение тембров | прошивка | движок | расхождение |
+| timbre reassertion | firmware | engine | discrepancy |
 | --- | --- | --- | --- |
-| выключено (контроль) | `FcouBass 1` | `AcouBass 1` | 0 -> **1 из 246 байт** |
-| включено (как в плагине) | `FcouBass 1` | `FcouBass 1` | 0 -> **0** |
+| off (control) | `FcouBass 1` | `AcouBass 1` | 0 -> **1 of 246 bytes** |
+| on (as in the plugin) | `FcouBass 1` | `FcouBass 1` | 0 -> **0** |
 
-Движок вернул ЗАВОДСКОЕ имя - то есть перезагрузил тембр из банка и потерял правку. До
-смены Key Shift обе половины на обоих прогонах сходились байт в байт, так что теряется
-именно на ней, а не по дороге.
+The engine came back with the FACTORY name - i.e., it reloaded the timbre from the bank
+and lost the edit. Before the Key Shift change, both halves matched byte-for-byte in
+both runs, so the loss happens exactly there, not somewhere along the way.
 
-Счётчики отправок показывают механику целиком: Timbre Temporary ушёл по 3 раза в обоих
-прогонах, а тембр партии 1 - **5 раз без подтверждения и 8 с ним**, ровно по одному
-добавочному на каждую отправку Timbre Temporary. Потерянных сообщений зеркала ноль в обоих
-случаях.
+The send counters show the whole mechanism: Timbre Temporary went out 3 times in both
+runs, and part 1's timbre - **5 times without reassertion and 8 with it**, exactly one
+extra for every Timbre Temporary send. Dropped mirror messages are zero in both cases.
 
-Отсюда и поправка выше: дело было не в группе 5. Она сделала потерю СЛЫШНОЙ (лид против
-хай-хэта), но терялась бы любая правка тембра с панели, за которой следует любое изменение
-параметра партии.
+Hence the correction above: the issue was never group 5. It made the loss AUDIBLE (lead
+versus hi-hat), but any panel timbre edit followed by any part-parameter change would
+have been lost just the same.
 
-# Выход выходил за полную шкалу
+# Output was exceeding full scale
 
-Обнаружено следом за предыдущим: на единичной громкости демо пикует около 1.1.
+Found right after the previous one: at unity volume, the demo peaks around 1.1.
 
-Это расхождение с прибором, а не его характер. ЦАП D-110 шестнадцатибитный и больше
-полной шкалы выдать не может, а ручка громкости аналоговая и стоит ЗА ним. Движок это
-насыщение моделирует - `Synth::clipSampleEx(Bit32s)` прижимает сумму голосов к +-32767, -
-но у той же функции есть перегрузка для float, и она намеренно пустая:
+This is a discrepancy with the real unit, not its character. The D-110's DAC is
+sixteen-bit and cannot output more than full scale, and the volume knob is analog and
+sits AFTER it. The engine does model this saturation - `Synth::clipSampleEx(Bit32s)`
+clamps the voice sum to +-32767 - but the same function has a float overload, and it's
+deliberately empty:
 
 ```cpp
 static inline float clipSampleEx(float sampleEx) {
@@ -151,105 +155,114 @@ static inline float clipSampleEx(float sampleEx) {
 }
 ```
 
-Наша сборка идёт по float-пути, поэтому модель ЦАПа до выхода не доезжала.
+Our build goes through the float path, so the DAC model never reached the output.
 
-Прежде чем ограничивать, измерено, сколько сигнала вообще выходит за шкалу: на «Macho
-Memory» **69 отсчётов из 6 614 016, то есть 0.001%** (`d110_demo_wav` печатает это в
-каждом прогоне). Одиночные пики, а не работа в ограничении, - ЦАП срезал бы их неслышно.
+Before adding a limiter, it was measured how much signal actually exceeds full scale at
+all: on "Macho Memory" **69 samples out of 6,614,016, i.e. 0.001%** (`d110_demo_wav`
+prints this on every run). Isolated peaks, not sustained clipping - the real DAC would
+have shaved them off inaudibly.
 
-Правка в `processBlock`: сначала насыщение до +-1, потом умножение на громкость - в том
-порядке, в каком это стоит в приборе. После неё пик ровно 1.000 и ноль отсчётов за
-шкалой. Ручка идёт 0..2 с единичным усилением посередине, где она и стоит по умолчанию,
-так что в покое выход не превышает полную шкалу; правее середины это уже запрошенное
-усиление, а не поведение прибора.
+The fix in `processBlock`: saturate to +-1 first, then multiply by volume - in the same
+order as in the real unit. After it, the peak is exactly 1.000 and zero out-of-scale
+samples. The knob runs 0..2 with unity gain at its midpoint, which is also its default
+position, so at rest the output never exceeds full scale; past the midpoint, that's
+requested gain, not the unit's behavior.
 
-Не сделано и требует отдельного решения: настоящие ЦАПы этого семейства удваивали
-громкость перестановкой битов на входе, и их переполнение - та самая известная
-«цифровая перегрузка MT-32». Движок умеет её воспроизводить (`DACInputMode_GENERATION1`
-и `GENERATION2`), но мы работаем в режиме по умолчанию `NICE`, который его же
-документация описывает как «выше качеством, чем реальные приборы».
+Not done, and needs a separate decision: the real DACs in this family doubled the volume
+by permuting the input bits, and their overflow is the well-known "MT-32 digital
+overload". The engine can reproduce it (`DACInputMode_GENERATION1` and `GENERATION2`),
+but we run in the default `NICE` mode, which its own documentation describes as "higher
+quality than the real units".
 
-## А вот это ошибкой НЕ было: партия 5 без нот
+## This, however, was NOT a bug: part 5 with no notes
 
-«Macho Memory» просто не использует партии 3, 5 и 8. Счётчики без потерь за один прогон:
-у этих трёх партий **ноль** и note-on, и записей в байт партии `f3a0[]`, - то есть мост
-ничего не терял, прошивка их не назначала.
+"Macho Memory" simply doesn't use parts 3, 5, and 8. Loss-free counters from a single
+run: these three parts have **zero** note-on events and zero writes to the part byte
+`f3a0[]` - meaning the bridge lost nothing, the firmware just never assigned them.
 
-Жалоба «партия не звучит, хотя её индикатор горит» появилась из-за обратного прочтения
-индикатора. Верхняя строка ЖКИ показывает **цифру партии, когда та молчит**, и заменяет
-её сплошным блоком 5x7, **когда партия звучит**, - ровно как на железе. Блок это
-пользовательский символ, знакогенератор его назвать не может, и в текстовой расшифровке
-он выглядел как `?`. `dumpIndicatorGlyphs()` в зонде печатает эти знакоместа точками
-именно поэтому:
+The complaint "the part doesn't sound even though its indicator is lit" came from
+reading the indicator backwards. The top row of the LCD shows the **part's digit when
+it's silent**, and replaces it with a solid 5x7 block **when the part is sounding** -
+exactly as on the real hardware. The block is a custom character the character
+generator can't name, and in text dumps it showed up as `?`. That's exactly why
+`dumpIndicatorGlyphs()` in the probe prints these cells as dots:
 
 ```
    ##### ##### ##### ##### ##### ##### ##### .###. ####.
      ?     ?     3     ?     5     ?     7     8     R
 ```
 
-Здесь звучат партии 1, 2, 4, 6 - а 3, 5, 8 и ритм показывают свои символы, потому что
-молчат. Это совпадает со счётчиками нот на том же прогоне вплоть до состава партий.
+Here parts 1, 2, 4, and 6 are sounding - while 3, 5, 8, and rhythm show their digit,
+because they're silent. This matches the note counters from the same run, right down to
+the exact set of parts.
 
-## Инструменты
+## Tools
 
-- `plugin/tone_clobber_probe.cpp` (`d110_tone_clobber`) - сравнение по именам за один
-  прогон, с контролем пути чтения и со счётчиками полноты. Начинать с него.
-- `plugin/tone_edit_survives_probe.cpp` (`d110_tone_edit_survives`) - тот же вопрос, но на
-  обычном патче и с правкой, сделанной с панели. Страницы меню ищет сам, опыт ставит
-  дважды - с подтверждением тембров и без, - так что у результата есть контроль, умеющий
-  показать отказ.
-- `plugin/part_state_compare.cpp` (`d110_part_state`) - побайтное сравнение Timbre
-  Temporary. Штатно расходится ровно байт 0 у партий 6 и 7 (прошивка 5, движок 3).
-- `plugin/solo_level_test.cpp` (`d110_solo_level`) - уровень по партиям, свежая машина на
-  строку.
+- `plugin/tone_clobber_probe.cpp` (`d110_tone_clobber`) - name comparison from a single
+  run, with a read-path control and completeness counters. Start with this one.
+- `plugin/tone_edit_survives_probe.cpp` (`d110_tone_edit_survives`) - the same question,
+  but on an ordinary patch and with an edit made from the panel. It finds the menu pages
+  itself, and runs the experiment twice - with and without timbre reassertion - so the
+  result has a control capable of showing failure.
+- `plugin/part_state_compare.cpp` (`d110_part_state`) - a byte-by-byte comparison of
+  Timbre Temporary. Normally differs in exactly byte 0 for parts 6 and 7 (firmware 5,
+  engine 3).
+- `plugin/solo_level_test.cpp` (`d110_solo_level`) - per-part level, a fresh machine
+  instance per row.
 
-Два предупреждения про сами измерения, оба стоили этому расследованию по неверному выводу:
+Two warnings about the measurements themselves, each of which cost this investigation a
+wrong conclusion:
 
-- `Synth::playSysex` ставит сообщение в очередь; применяется оно при расчёте звука. Между
-  записью и чтением обратно обязан быть `processBlock`.
-- Проспать загрузку прошивки вместо расчёта звука - значит начать измерение с непримененной
-  очередью зеркала: первый же расчёт проигрывает весь затор поверх измеряемого состояния.
-- Цель, которой нет в `scripts/build_plugin.bat`, молча остаётся старой. Так «инструмент
-  читает нули» оказался запуском бинарника, собранного до исправления адреса.
+- `Synth::playSysex` queues the message; it's applied during sound rendering. There must
+  be a `processBlock` between writing and reading it back.
+- Sleeping through the firmware boot instead of rendering audio means starting the
+  measurement with an unapplied mirror queue: the very first render plays the whole
+  backlog on top of the state being measured.
+- A target that's missing from `scripts/build_plugin.bat` silently stays stale. That's
+  how "the tool reads zeros" turned out to be running a binary built before the address
+  fix.
 
-## Что осталось открытым
+## What remains open
 
-- Что группа 5 означает во внутреннем ОЗУ прошивки, так и не расшифровано. Оно и не
-  нужно: истина о звуке партии лежит в Tone Temporary, и мост его переносит целиком.
-  Расшифровка понадобится, только если появится страница панели, которая эту группу
-  показывает или правит.
-Ничего. Второй дефект, найденный по ходу, разобран ниже и тоже закрыт.
+- What group 5 actually means in the firmware's internal RAM was never deciphered. Nor
+  is it needed: the truth about a part's sound lives in Tone Temporary, and the bridge
+  carries it across whole. Deciphering it would only be needed if a panel page appeared
+  that displays or edits this group.
+Nothing. The second defect found along the way is covered below, and it's closed too.
 
-# Ноты обгоняли параметры, от которых зависят
+# Notes outran the parameters they depended on
 
-`Attempted to play unmapped key 25/27` в начале демо - два барабанных удара, которые
-движок молча выбрасывал.
+`Attempted to play unmapped key 25/27` at the start of the demo - two drum hits that the
+engine silently dropped.
 
-Причина не в гонке с эмулятором, а в двух разных дисциплинах доставки внутри одного
-`processBlock`:
+The cause isn't a race with the emulator, but two different delivery disciplines within
+a single `processBlock`:
 
-| путь | вызов | когда применяется |
+| path | call | when it's applied |
 | --- | --- | --- |
-| параметры зеркала | `Synth::playSysex` | ставится в очередь движка с отметкой времени и применяется, когда до неё дойдёт расчёт звука |
-| ноты прошивки | `Synth::playMsgOnPart` | **немедленно**, прямо в `Part::noteOn` |
+| mirror parameters | `Synth::playSysex` | queued in the engine with a timestamp, applied when audio rendering reaches it |
+| firmware notes | `Synth::playMsgOnPart` | **immediately**, directly inside `Part::noteOn` |
 
-Цикл в `processBlock` разбирает сперва параметры, потом ноты - но фактический порядок был
-обратный, потому что ноты действовали сразу, а параметры ждали расчёта. На старте песни
-прошивка загружает карту ритма и почти сразу стучит по клавишам 25 и 27; удары применялись
-раньше карты, находили там тембр 127 (OFF) и отбрасывались.
+The loop in `processBlock` processes parameters first, then notes - but the actual order
+was reversed, because notes took effect immediately while parameters waited for
+rendering. At the start of the song, the firmware loads the rhythm map and almost
+immediately hits keys 25 and 27; the hits were applied before the map, found timbre 127
+(OFF) there, and were dropped.
 
-Правка: мост шлёт `playSysexNow`, и обе половины действуют в момент разбора очередей -
-порядок цикла становится настоящим. Очереди импорта банка и смены тембра из меню
-намеренно оставлены на `playSysex`: их источник - действие пользователя, отстоящее от
-любой ноты на секунды.
+Fix: the bridge sends `playSysexNow`, and both halves take effect at the moment the
+queues are processed - the loop order becomes real. The bank-import and menu
+timbre-change queues are deliberately left on `playSysex`: their source is a user
+action, seconds removed from any note.
 
-Измерено (`plugin/rhythm_map_probe.cpp`, цель `d110_rhythm_map`, один прогон, ноль потерь
-в обоих счётчиках): карта ритма уходит на 61 и 93 мс, первые удары идут с 380 мс, клавиши
-27 и 25 - на 579 и 747 мс. Прошивка и движок держат одинаковые записи и до песни (все
-OFF), и после (тембры 80, 86, 87, 81 …). Предупреждений нет ни одного - против стабильных
-двух за прогон до правки, на тех же неизменённых `d110_tone_clobber` и `d110_demo_wav`.
+Measured (`plugin/rhythm_map_probe.cpp`, target `d110_rhythm_map`, one run, zero losses
+on both counters): the rhythm map goes out at 61 and 93 ms, the first hits start at 380
+ms, keys 27 and 25 come at 579 and 747 ms. Firmware and engine hold identical records
+both before the song (all OFF) and after (timbres 80, 86, 87, 81 ...). Zero warnings -
+against a steady two per run before the fix, on the same unchanged `d110_tone_clobber`
+and `d110_demo_wav`.
 
-Ещё одна ловушка измерения, из-за которой первый прогон зонда ответа не дал: счётчик
-отправок регионов растёт на потоке машины, а опрашивался только после нажатий кнопок -
-к первому же опросу он был уже накоплен, и по нему читалось лишь «когда-то до сих пор».
-Опрос должен идти тем же циклом, что считает звук, и охватывать нажатия тоже.
+Another measurement trap that made the probe's first run inconclusive: the region send
+counter grows on the machine's thread, but was only polled after button presses - by the
+very first poll it had already accumulated, so all it read was "sometime up until now".
+Polling has to run on the same loop that renders audio, and cover the button presses
+too.

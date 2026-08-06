@@ -118,6 +118,10 @@ D110AudioProcessor::D110AudioProcessor()
 	sequencerEngine.setChannelSource(
 		[this](int track) { return sequencerLiveChannels[static_cast<size_t>(track)]; });
 
+	sequencerLivePrograms.fill(-1);
+	sequencerEngine.setProgramSource(
+		[this](int track) { return sequencerLivePrograms[static_cast<size_t>(track)]; });
+
 	tryAutoLoadRoms();
 }
 
@@ -254,16 +258,22 @@ static juce::File resolveNamedFolder(const juce::File &parent, const juce::Strin
 	return spaced;
 }
 
-// The firmware's memory lives beside the ROMs, in the plugin's own data folder, exactly as
-// it does for the other synths in this series - MU-100R keeps `mame_nvram\mu100r\nvram`,
-// QS300 keeps `mame_nvram\qs300\ram`, and so on. Same shape here, so the D-110's battery
-// RAM is simply `D-110 Data\mame_nvram\d110\rams`.
+// The firmware's memory lives beside the ROMs, in the plugin's own data folder - so the
+// D-110's battery RAM is simply `D-110 Data\nvram\d110\rams`.
 //
-// That folder is normally writable without elevation, but it sits under Program Files and
-// on another machine it may not be. Falling back to app data keeps the plugin working
-// rather than silently losing every edit; the right-click menu reports which is in use.
+// Named `mame_nvram` until 2026-08-06, matching a convention shared with this project's own
+// MAME-based sibling emulators (MU-100R's `mame_nvram\mu100r\nvram`, QS300's
+// `mame_nvram\qs300\ram`, etc.) - no longer apt now that D110EmulatorNative (MAME-free) is
+// the default/shipping backend, and it was already inconsistent with the plain `nvram` name
+// the app-data fallback below has always used. Renamed, with a one-time migration so an
+// existing install's saved patches/timbres/memory card aren't silently orphaned under the old
+// name.
 juce::File D110AudioProcessor::getNvramRoot() {
-	const auto preferred = getAutoRomFolder().getChildFile("mame_nvram");
+	const auto romFolder = getAutoRomFolder();
+	const auto preferred = romFolder.getChildFile("nvram");
+	const auto legacyName = romFolder.getChildFile("mame_nvram");
+	if (!preferred.isDirectory() && legacyName.isDirectory()) legacyName.moveFileTo(preferred);
+
 	static const bool writable = [preferred] {
 		preferred.createDirectory();
 		const auto probe = preferred.getChildFile(".write-test");
@@ -685,14 +695,25 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 				sequencerRamScratch.resize(static_cast<size_t>(D110CoreType::kRamSize));
 			if (core.getRam(sequencerRamScratch.data())) {
 				for (int t = 0; t < d110seq::D110SequencerEngine::kRhythmTrack; ++t) {
-					const size_t addr = static_cast<size_t>(D110CoreType::kRamSystem + 13 + t);
-					const int raw = addr < sequencerRamScratch.size()
-					                    ? static_cast<int>(sequencerRamScratch[addr])
+					const size_t chAddr = static_cast<size_t>(D110CoreType::kRamSystem + 13 + t);
+					const int raw = chAddr < sequencerRamScratch.size()
+					                    ? static_cast<int>(sequencerRamScratch[chAddr])
 					                    : -1;
 					// 0..15 = channel 1..16; 16 = the part is OFF, and anything else means
 					// the read didn't land where expected - both fall back to the engine's
 					// own default (channelForTrack) by staying -1.
 					sequencerLiveChannels[static_cast<size_t>(t)] = (raw >= 0 && raw <= 15) ? raw + 1 : -1;
+
+					// TimbreTemp field 1 = the part's live tone NUMBER (0-63), the same byte
+					// D110EditorPane's Parts tab shows in its own TONE column - see
+					// sequencerLivePrograms' own comment for why this, not the tone GROUP, is
+					// what gets embedded as a Program Change.
+					const size_t toneAddr = static_cast<size_t>(D110CoreType::kRamTimbreTemp)
+					                       + static_cast<size_t>(t) * D110CoreType::kTimbreTempRecord + 1;
+					const int tone = toneAddr < sequencerRamScratch.size()
+					                      ? static_cast<int>(sequencerRamScratch[toneAddr])
+					                      : -1;
+					sequencerLivePrograms[static_cast<size_t>(t)] = (tone >= 0 && tone <= 63) ? tone : -1;
 				}
 			}
 		}
@@ -750,11 +771,15 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 	// Synth's MIDI queue only tolerates a single writer thread.
 	std::vector<std::vector<MT32Emu::Bit8u>> pendingImportsToSend;
 	std::vector<MT32Emu::Bit32u> pendingShortMessagesToSend;
+	std::vector<juce::uint8> pendingPanicBytesToSend;
 	{
 		const juce::ScopedLock slEngine(engineActionLock);
 		pendingImportsToSend.swap(pendingSysexImports);
 		pendingShortMessagesToSend.swap(pendingShortMessages);
+		pendingPanicBytesToSend.swap(pendingPanicBytes);
 	}
+	if (!pendingPanicBytesToSend.empty())
+		core.pushMidi(pendingPanicBytesToSend.data(), static_cast<int>(pendingPanicBytesToSend.size()));
 	// Эти две очереди намеренно идут через очередь движка с отметкой времени, а не через
 	// «немедленные» формы, которыми пользуется мост ниже: их источник - действие
 	// пользователя на панели, оно отстоит от любой ноты на секунды, и обгон в один блок
@@ -1366,6 +1391,26 @@ void D110AudioProcessor::stepPatch(int direction) {
 	pendingShortMessages.push_back(message);
 }
 
+void D110AudioProcessor::midiPanic() {
+	std::vector<juce::uint8> firmwareBytes;
+	std::vector<MT32Emu::Bit32u> engineMessages;
+	firmwareBytes.reserve(16 * 2 * 3);
+	engineMessages.reserve(16 * 2);
+	for (int channel = 0; channel < 16; ++channel) {
+		const juce::uint8 status = juce::uint8(0xB0 | channel);
+		for (juce::uint8 controller : { juce::uint8(64), juce::uint8(123) }) { // hold pedal off, all notes off
+			firmwareBytes.push_back(status);
+			firmwareBytes.push_back(controller);
+			firmwareBytes.push_back(0);
+			engineMessages.push_back(MT32Emu::Bit32u(status) | (MT32Emu::Bit32u(controller) << 8));
+		}
+	}
+
+	const juce::ScopedLock sl(engineActionLock);
+	pendingPanicBytes.insert(pendingPanicBytes.end(), firmwareBytes.begin(), firmwareBytes.end());
+	pendingShortMessages.insert(pendingShortMessages.end(), engineMessages.begin(), engineMessages.end());
+}
+
 // ---- the extended editor -----------------------------------------------------
 //
 // Every one of these builds a Roland "Data set 1" and hands it to the CONTROL BOARD's own
@@ -1710,23 +1755,53 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	xml->setAttribute("cardInserted", core.cardInserted() ? 1 : 0);
 	xml->setAttribute("cardWriteProtect", core.cardWriteProtect() ? 1 : 0);
 
+	// The on-screen test keyboard's own config - see D110AudioProcessor::getKeyboardMidiChannel()
+	// and friends for why this lives on the processor rather than the UI component.
+	xml->setAttribute("kbChannel", keyboardMidiChannel);
+	xml->setAttribute("kbOmni", keyboardOmni ? 1 : 0);
+	xml->setAttribute("kbPcInput", keyboardPcInput ? 1 : 0);
+	xml->setAttribute("kbPcLayout", keyboardPcLayout);
+
+	// Utility tab's THEME toggle - see getUiThemeLight().
+	xml->setAttribute("uiThemeLight", uiThemeLight ? 1 : 0);
+	// Editor drawer's own height, drag-resized via the keyboard handle band - see
+	// getEditorPaneRefH().
+	xml->setAttribute("editorPaneRefH", editorPaneRefH);
+
 	// The D-20-style sequencer's own tracks and transport settings, packed the same way
 	// the firmware NVRAM is above - so a project brings the whole sequencer back exactly
 	// as left, not just the instrument. The playhead position and armed/record/play state
 	// are deliberately NOT saved: like most sequencers, a reopened project starts stopped
 	// at bar 1 rather than mid-transport.
-	xml->setAttribute("seqTempo", sequencerEngine.getTempo());
-	xml->setAttribute("seqTimeSigNum", sequencerEngine.getTimeSigNumerator());
-	xml->setAttribute("seqTimeSigDen", sequencerEngine.getTimeSigDenominator());
+	// Metronome, precount, record mode and loop/punch read as workspace preferences rather
+	// than song content (see D110SequencerEngine::newSong()'s own comment), so they're saved
+	// once, not per slot.
 	xml->setAttribute("seqMetronome", sequencerEngine.getMetronomeEnabled() ? 1 : 0);
 	xml->setAttribute("seqPrecountBars", sequencerEngine.getPrecountBars());
 	xml->setAttribute("seqRecordMode", static_cast<int>(sequencerEngine.getRecordMode()));
-	for (int t = 0; t < d110seq::D110SequencerEngine::kNumTracks; ++t) {
-		const juce::String suffix(t);
-		xml->setAttribute("seqMute" + suffix, sequencerEngine.isTrackMuted(t) ? 1 : 0);
-		xml->setAttribute("seqSolo" + suffix, sequencerEngine.isTrackSoloed(t) ? 1 : 0);
-		xml->setAttribute("seqQuantize" + suffix, static_cast<int>(sequencerEngine.getTrackQuantize(t)));
-		xml->setAttribute("seqTrack" + suffix, packBlock(sequencerEngine.trackToBytes(t)));
+	xml->setAttribute("seqLoopMode", static_cast<int>(sequencerEngine.getLoopMode()));
+	xml->setAttribute("seqPunchIn", sequencerEngine.getPunchIn());
+	xml->setAttribute("seqPunchOut", sequencerEngine.getPunchOut());
+
+	// Tempo, time signature and the 9 tracks ARE song content, so all kNumSongSlots songs
+	// are saved, not just the one currently selected - via the slot* accessors, which read
+	// any slot's data without disturbing which one is actually live (see their own comment
+	// in D110SequencerEngine.h). "seqCurrentSlot" being present at all is what tells
+	// setStateInformation this is the new, slotted format rather than an older single-song
+	// project - see its own comment.
+	xml->setAttribute("seqCurrentSlot", sequencerEngine.getCurrentSongSlot());
+	for (int slot = 0; slot < d110seq::D110SequencerEngine::kNumSongSlots; ++slot) {
+		const juce::String slotSuffix = "Slot" + juce::String(slot);
+		xml->setAttribute("seqTempo" + slotSuffix, sequencerEngine.slotTempo(slot));
+		xml->setAttribute("seqTimeSigNum" + slotSuffix, sequencerEngine.slotTimeSigNumerator(slot));
+		xml->setAttribute("seqTimeSigDen" + slotSuffix, sequencerEngine.slotTimeSigDenominator(slot));
+		for (int t = 0; t < d110seq::D110SequencerEngine::kNumTracks; ++t) {
+			const juce::String suffix = slotSuffix + juce::String(t);
+			xml->setAttribute("seqMute" + suffix, sequencerEngine.slotTrackMuted(slot, t) ? 1 : 0);
+			xml->setAttribute("seqSolo" + suffix, sequencerEngine.slotTrackSoloed(slot, t) ? 1 : 0);
+			xml->setAttribute("seqQuantize" + suffix, static_cast<int>(sequencerEngine.slotTrackQuantize(slot, t)));
+			xml->setAttribute("seqTrack" + suffix, packBlock(sequencerEngine.slotTrackToBytes(slot, t)));
+		}
 	}
 
 	copyXmlToBinary(*xml, destData);
@@ -1777,14 +1852,22 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 	core.setCardInserted(xml->getIntAttribute("cardInserted", 1) != 0);
 	core.setCardWriteProtect(xml->getIntAttribute("cardWriteProtect", 0) != 0);
 
+	// The on-screen test keyboard's own config - a project saved before this existed simply
+	// has none of these attributes, and every getAttribute call below already has this
+	// instance's own current (default) value as its fallback.
+	setKeyboardMidiChannel(xml->getIntAttribute("kbChannel", keyboardMidiChannel));
+	setKeyboardOmni(xml->getIntAttribute("kbOmni", keyboardOmni ? 1 : 0) != 0);
+	setKeyboardPcInputEnabled(xml->getIntAttribute("kbPcInput", keyboardPcInput ? 1 : 0) != 0);
+	setKeyboardPcLayout(xml->getIntAttribute("kbPcLayout", keyboardPcLayout));
+
+	setUiThemeLight(xml->getIntAttribute("uiThemeLight", uiThemeLight ? 1 : 0) != 0);
+	setEditorPaneRefH(float(xml->getDoubleAttribute("editorPaneRefH", double(editorPaneRefH))));
+
 	// The sequencer's own tracks and transport settings - see the matching comment in
 	// getStateInformation. A project saved before this existed simply has none of these
 	// attributes, and every getAttribute call below already has the engine's own default
 	// as its fallback, so an old project loads with a fresh, empty sequencer rather than
 	// an error.
-	sequencerEngine.setTempo(xml->getDoubleAttribute("seqTempo", sequencerEngine.getTempo()));
-	sequencerEngine.setTimeSignature(xml->getIntAttribute("seqTimeSigNum", sequencerEngine.getTimeSigNumerator()),
-	                                  xml->getIntAttribute("seqTimeSigDen", sequencerEngine.getTimeSigDenominator()));
 	sequencerEngine.setMetronomeEnabled(xml->getIntAttribute("seqMetronome", 1) != 0);
 	// "seqPrecountBars" is the current attribute; "seqPrecount" (a plain 0/1 toggle) is
 	// what an older project saved before precount became a 0/1/2-bar cycle - read as 1
@@ -1795,17 +1878,50 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 		sequencerEngine.setPrecountBars(xml->getIntAttribute("seqPrecount", 1) != 0 ? 1 : 0);
 	sequencerEngine.setRecordMode(static_cast<d110seq::RecordMode>(
 		xml->getIntAttribute("seqRecordMode", static_cast<int>(d110seq::RecordMode::replaceRange))));
-	for (int t = 0; t < d110seq::D110SequencerEngine::kNumTracks; ++t) {
-		const juce::String suffix(t);
-		const auto trackBytes = unpackBlock(xml->getStringAttribute("seqTrack" + suffix));
-		sequencerEngine.trackFromBytes(t, trackBytes.getData(), trackBytes.getSize());
-		sequencerEngine.setTrackMuted(t, xml->getIntAttribute("seqMute" + suffix, 0) != 0);
-		sequencerEngine.setTrackSoloed(t, xml->getIntAttribute("seqSolo" + suffix, 0) != 0);
-		// quantizeTrack() re-snaps to the grid it's given, but the events restored above are
-		// already on that grid (they were saved post-quantize), so this is idempotent - it
-		// only actually needs to run to restore the stored preference for the drawer's menu.
-		sequencerEngine.quantizeTrack(
-			t, static_cast<d110seq::QuantizeGrid>(xml->getIntAttribute("seqQuantize" + suffix, 0)));
+	sequencerEngine.setPunchIn(xml->getIntAttribute("seqPunchIn", sequencerEngine.getPunchIn()));
+	sequencerEngine.setPunchOut(xml->getIntAttribute("seqPunchOut", sequencerEngine.getPunchOut()));
+	sequencerEngine.setLoopMode(static_cast<d110seq::LoopMode>(
+		xml->getIntAttribute("seqLoopMode", static_cast<int>(d110seq::LoopMode::off))));
+
+	// "seqCurrentSlot" only exists in projects saved after the 4-song-slot feature - an
+	// older project has a single, unslotted song under the plain "seqTempo"/"seqTrack0"/...
+	// names, which lands in slot 0 here; slots 1-3 simply stay empty. selectSongSlot() also
+	// stops/rewinds/disarms, which is fine - a reopened project already starts stopped at
+	// bar 1 regardless (see this function's own opening comment).
+	if (xml->hasAttribute("seqCurrentSlot")) {
+		sequencerEngine.selectSongSlot(
+			juce::jlimit(0, d110seq::D110SequencerEngine::kNumSongSlots - 1, xml->getIntAttribute("seqCurrentSlot", 0)));
+		for (int slot = 0; slot < d110seq::D110SequencerEngine::kNumSongSlots; ++slot) {
+			const juce::String slotSuffix = "Slot" + juce::String(slot);
+			sequencerEngine.setSlotTempo(slot, xml->getDoubleAttribute("seqTempo" + slotSuffix,
+			                                                          sequencerEngine.slotTempo(slot)));
+			sequencerEngine.setSlotTimeSignature(
+				slot, xml->getIntAttribute("seqTimeSigNum" + slotSuffix, sequencerEngine.slotTimeSigNumerator(slot)),
+				xml->getIntAttribute("seqTimeSigDen" + slotSuffix, sequencerEngine.slotTimeSigDenominator(slot)));
+			for (int t = 0; t < d110seq::D110SequencerEngine::kNumTracks; ++t) {
+				const juce::String suffix = slotSuffix + juce::String(t);
+				const auto trackBytes = unpackBlock(xml->getStringAttribute("seqTrack" + suffix));
+				sequencerEngine.slotTrackFromBytes(slot, t, trackBytes.getData(), trackBytes.getSize());
+				sequencerEngine.setSlotTrackMuted(slot, t, xml->getIntAttribute("seqMute" + suffix, 0) != 0);
+				sequencerEngine.setSlotTrackSoloed(slot, t, xml->getIntAttribute("seqSolo" + suffix, 0) != 0);
+				sequencerEngine.setSlotTrackQuantize(
+					slot, t, static_cast<d110seq::QuantizeGrid>(xml->getIntAttribute("seqQuantize" + suffix, 0)));
+			}
+		}
+	} else {
+		sequencerEngine.setTempo(xml->getDoubleAttribute("seqTempo", sequencerEngine.getTempo()));
+		sequencerEngine.setTimeSignature(
+			xml->getIntAttribute("seqTimeSigNum", sequencerEngine.getTimeSigNumerator()),
+			xml->getIntAttribute("seqTimeSigDen", sequencerEngine.getTimeSigDenominator()));
+		for (int t = 0; t < d110seq::D110SequencerEngine::kNumTracks; ++t) {
+			const juce::String suffix(t);
+			const auto trackBytes = unpackBlock(xml->getStringAttribute("seqTrack" + suffix));
+			sequencerEngine.trackFromBytes(t, trackBytes.getData(), trackBytes.getSize());
+			sequencerEngine.setTrackMuted(t, xml->getIntAttribute("seqMute" + suffix, 0) != 0);
+			sequencerEngine.setTrackSoloed(t, xml->getIntAttribute("seqSolo" + suffix, 0) != 0);
+			sequencerEngine.quantizeTrack(
+				t, static_cast<d110seq::QuantizeGrid>(xml->getIntAttribute("seqQuantize" + suffix, 0)));
+		}
 	}
 }
 

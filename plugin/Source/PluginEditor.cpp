@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "UiTheme.h"
 #include <BinaryData.h>
 
 #include <cmath>
@@ -736,15 +737,19 @@ void D110Panel::showOptionsMenu()
 
 namespace {
 
-// Цвета взяты с самого прибора, чтобы ящик читался его продолжением, а не чужой панелью:
-// подписи - синие, как шелкография Roland на передней панели, значения - зелёные, как
-// индикатор D-110, который у него не янтарный, а с зелёной подсветкой (docs/lcd_reference.png).
-const juce::Colour kEdBack(0xff141416);
-const juce::Colour kEdBox(0xff1d1d20);
-const juce::Colour kEdBorder(0xff34343a);
-const juce::Colour kEdLabel(0xff6fa8dc);
-const juce::Colour kEdValue(0xff8ede4a);
-const juce::Colour kEdDim(0xff787880);
+// Colours taken from the instrument itself, so the drawer reads as its continuation rather
+// than a foreign panel: labels are blue, like Roland's own silkscreen on the front panel;
+// values are green, like the D-110's own display, which is backlit green rather than amber
+// (docs/lcd_reference.png). Functions rather than constants because the theme (Utility ->
+// THEME) switches at runtime - see UiTheme.h for the actual dark/light palette; these six
+// names are just the facade left in place so the dozens of call sites below didn't need
+// touching.
+inline juce::Colour kEdBack() { return d110ui::palette().panelBg; }
+inline juce::Colour kEdBox() { return d110ui::palette().box; }
+inline juce::Colour kEdBorder() { return d110ui::palette().boxBorder; }
+inline juce::Colour kEdLabel() { return d110ui::palette().label; }
+inline juce::Colour kEdValue() { return d110ui::palette().value; }
+inline juce::Colour kEdDim() { return d110ui::palette().dim; }
 
 // Восемь голосовых партий и ритм - ровно те девять, для которых у прибора есть запись в
 // Timbre Temporary.
@@ -783,9 +788,9 @@ juce::String outputAssignText(int v) {
 }
 
 void drawBox(juce::Graphics &g, juce::Rectangle<float> r, bool highlight) {
-	g.setColour(kEdBox);
+	g.setColour(kEdBox());
 	g.fillRoundedRectangle(r, 3.0f);
-	g.setColour(highlight ? kEdValue.withAlpha(0.55f) : kEdBorder);
+	g.setColour(highlight ? kEdValue().withAlpha(0.55f) : kEdBorder());
 	g.drawRoundedRectangle(r.reduced(0.5f), 3.0f, 1.0f);
 }
 
@@ -819,9 +824,9 @@ D110EditorPane::D110EditorPane(D110AudioProcessor &p) : processor(p) {
 	textEntry.setInputRestrictions(20, " !\"#$%&'()*+,-./0123456789:;<=>?@"
 	                                   "ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`"
 	                                   "abcdefghijklmnopqrstuvwxyz{|}~");
-	textEntry.setColour(juce::TextEditor::backgroundColourId, kEdBox);
-	textEntry.setColour(juce::TextEditor::textColourId, kEdValue);
-	textEntry.setColour(juce::TextEditor::outlineColourId, kEdValue.withAlpha(0.6f));
+	textEntry.setColour(juce::TextEditor::backgroundColourId, kEdBox());
+	textEntry.setColour(juce::TextEditor::textColourId, kEdValue());
+	textEntry.setColour(juce::TextEditor::outlineColourId, kEdValue().withAlpha(0.6f));
 	textEntry.setFont(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 13.0f,
 	                                    juce::Font::plain));
 	textEntry.onReturnKey = [this] {
@@ -943,7 +948,7 @@ void D110EditorPane::layout() {
 	case Tab::Timbres: layoutTimbres(area); break;
 	case Tab::Tones:   layoutTones(area); break;
 	case Tab::System:  layoutSystem(area); break;
-	case Tab::Utility: layoutUtility(area); break;
+	case Tab::Utility: contentArea = area; layoutUtility(area); break;
 	default:           contentArea = area; break;   // монитор рисуется целиком
 	}
 
@@ -1270,20 +1275,29 @@ void D110EditorPane::layoutPatches(juce::Rectangle<float> area) {
 	                       + "   - what it puts into the parts when it is selected",
 	                   true });
 
+	// MIDI CH is a marker, not an offset-within-the-part-record field: the channel map is its
+	// own 9-byte block at patch offset 22-30 (one byte per part, rhythm last), sitting BEFORE
+	// the part records that start at 31 - not inside them. Confirmed empirically
+	// (plugin/native_timbre_group_number_probe.cpp): a freshly factory-reset patch 0 reads
+	// "4 4 4 4 3 3 3 2 5" at offset 13 (the reserve block right before it) and "1 2 3 4 5 6 7
+	// 8 9" at offset 22 - exactly the reserve/channel-map values docs/factory_defaults.md
+	// already confirmed for the LIVE System-area copy at 0x2D98/0x2DA1, byte for byte.
+	constexpr int kChannelMarker = -2;
 	struct PCol { const char *head; int field; int hi; float frac; };
 	static const PCol kPCols[] = {
 		{ "PART",       -1,   0, 0.000f },
 		{ "TONE GROUP",  0,   3, 0.045f },
 		{ "TONE",        1,  63, 0.150f },
-		{ "LEVEL",       8, 100, 0.330f },
-		{ "PAN",         9,  14, 0.395f },
-		{ "KEY SHIFT",   2,  48, 0.455f },
-		{ "FINE TUNE",   3, 100, 0.545f },
-		{ "BENDER",      4,  24, 0.635f },
-		{ "ASSIGN",      5,   3, 0.705f },
-		{ "OUTPUT",      6,   7, 0.785f },
-		{ "KEY LOW",    10, 127, 0.860f },
-		{ "KEY HIGH",   11, 127, 0.930f },
+		{ "MIDI CH", kChannelMarker, 16, 0.260f },
+		{ "LEVEL",       8, 100, 0.360f },
+		{ "PAN",         9,  14, 0.425f },
+		{ "KEY SHIFT",   2,  48, 0.485f },
+		{ "FINE TUNE",   3, 100, 0.575f },
+		{ "BENDER",      4,  24, 0.665f },
+		{ "ASSIGN",      5,   3, 0.735f },
+		{ "OUTPUT",      6,   7, 0.815f },
+		{ "KEY LOW",    10, 127, 0.880f },
+		{ "KEY HIGH",   11, 127, 0.940f },
 	};
 	constexpr int kNumPCols = int(sizeof(kPCols) / sizeof(kPCols[0]));
 	auto pcolAt = [&](int c, juce::Rectangle<float> row) {
@@ -1299,13 +1313,18 @@ void D110EditorPane::layoutPatches(juce::Rectangle<float> area) {
 	for (int p = 0; p < 8; ++p) {
 		auto row = area.removeFromTop(prowH).reduced(0.0f, 2.0f);
 		labels.push_back({ pcolAt(0, row), partLabel(p), true });
-		for (int i = 1; i < kNumPCols; ++i)
+		for (int i = 1; i < kNumPCols; ++i) {
+			if (kPCols[i].field == kChannelMarker) {
+				cells.push_back({ pcolAt(i, row), Area::Patches, chosen, 22 + p, 0, kPCols[i].hi });
+				continue;
+			}
 			// Запись партии - те же двенадцать байт, что и в Timbre Temporary, начиная с
 			// 31-го байта патча: имя 10, ревербератор 3, резерв 9, каналы 9. Измерено
 			// сличением с заводским содержимым - панорама этих восьми записей совпала с
 			// заводским веером 4 10 6 8 2 12 0 14 байт в байт.
 			cells.push_back({ pcolAt(i, row), Area::Patches, chosen,
 			                  31 + p * 12 + kPCols[i].field, 0, kPCols[i].hi });
+		}
 	}
 }
 
@@ -1451,7 +1470,62 @@ void D110EditorPane::layoutSystem(juce::Rectangle<float> area) {
 }
 
 void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
+	// Gutter for the scrollbar, reserved even when it turns out not to be needed - so no
+	// field's right edge ever has to jump sideways depending on whether scrolling is active.
+	area.removeFromRight(10.0f);
+	const float visibleH = area.getHeight();
+	// Rectangle::removeFromTop() CLAMPS once its source rectangle runs out of height instead
+	// of going negative - which is exactly the "sections keep landing at the same spot" bug
+	// this hit the first time: if area were left at its real (short) visible height, every
+	// removeFromTop() below would silently stop shrinking it the moment content overflowed,
+	// so utilityContentHeight (measured from how much area shrank) would floor at visibleH
+	// and never register as "too tall" - no matter how much actually overflowed. A tall
+	// working rectangle - comfortably above any realistic content total - sidesteps that; the
+	// real visible height (visibleH, captured just above) is what the clamp/scrollbar math
+	// below is measured against instead.
+	constexpr float kWorkingH = 6000.0f;
+	area.setHeight(kWorkingH);
+	// Shifted up by however far down the list we are; every section below still lays out with
+	// plain top-down removeFromTop() calls; the ones scrolled above the tab strip or below the
+	// caption strip just end up clipped by paint()'s clip region for this tab.
+	area.translate(0.0f, -utilityScrollOffset);
 	const float w = area.getWidth();
+
+	labels.push_back({ area.removeFromTop(15.0f), "MIDI PANIC", true });
+	{
+		auto row = area.removeFromTop(28.0f);
+		buttons.push_back({ row.removeFromLeft(150.0f), "MIDI PANIC", 9 });
+		labels.push_back({ row.reduced(12.0f, 0.0f),
+		                   "kills every note currently sounding, on the engine and the "
+		                   "firmware both, on all 16 MIDI channels - for the rare case "
+		                   "something leaves notes hung", false });
+	}
+	area.removeFromTop(18.0f);
+
+	labels.push_back({ area.removeFromTop(15.0f), "WINDOW SIZE", true });
+	{
+		auto row = area.removeFromTop(28.0f);
+		const int currentPercent = juce::roundToInt(float(getWidth()) / float(D110Panel::kRefW) * 100.0f);
+		zoomBounds = row.removeFromLeft(150.0f);
+		buttons.push_back({ zoomBounds, juce::String(currentPercent) + "%", 10 });
+		labels.push_back({ row.reduced(12.0f, 0.0f),
+		                   "click to step through 50/75/100/125/150%, right-click to pick "
+		                   "one directly - a plain resize, not a window manager maximise "
+		                   "(see the panel notes on why)", false });
+	}
+	area.removeFromTop(18.0f);
+
+	labels.push_back({ area.removeFromTop(15.0f), "THEME", true });
+	{
+		auto row = area.removeFromTop(28.0f);
+		buttons.push_back({ row.removeFromLeft(150.0f),
+		                    d110ui::getTheme() == d110ui::Theme::Light ? "LIGHT" : "DARK", 11 });
+		labels.push_back({ row.reduced(12.0f, 0.0f),
+		                   "click to switch this drawer's own colours between dark and "
+		                   "light - the photographed panel itself always keeps its own "
+		                   "colours", false });
+	}
+	area.removeFromTop(18.0f);
 
 	labels.push_back({ area.removeFromTop(15.0f), "MESSAGE ON THE INSTRUMENT'S OWN DISPLAY",
 	                   true });
@@ -1514,6 +1588,17 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 	                   "behind the instrument's back.", false });
 	area.removeFromTop(12.0f);
 
+	labels.push_back({ area.removeFromTop(15.0f), "REFERENCE", true });
+	{
+		auto row = area.removeFromTop(28.0f);
+		buttons.push_back({ row.removeFromLeft(150.0f), "LA REFERENCE", 8 });
+		labels.push_back({ row.reduced(12.0f, 0.0f),
+		                   "LA synthesis parameter reference sheet (from the D-20, the D-110's "
+		                   "sibling with the same LA32 engine), for looking things up while "
+		                   "editing tones", false });
+	}
+	area.removeFromTop(18.0f);
+
 	labels.push_back({ area.removeFromTop(15.0f), D110AudioProcessor::kExtendedPolyphonyLabel, true });
 	labels.push_back({ area.removeFromTop(28.0f),
 	                   "The real D-110 shares just 32 synthesis voices across all nine parts, "
@@ -1524,6 +1609,67 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 	                   "voices, measured comfortably cheap on a modern CPU even with all nine "
 	                   "parts playing at once. Everything else about the instrument - the "
 	                   "firmware, the panel, the sound itself - is unchanged.", false });
+
+	// How much vertical space every section above actually consumed, regardless of scroll
+	// position (translate() earlier moved the content, not how much of it there is) - this is
+	// what the scrollbar's own thumb size and the clamp below are measured against.
+	utilityContentHeight = kWorkingH - area.getHeight();
+	const float maxScroll = juce::jmax(0.0f, utilityContentHeight - visibleH);
+	utilityScrollOffset = juce::jlimit(0.0f, maxScroll, utilityScrollOffset);
+
+	if (utilityContentHeight > visibleH) {
+		constexpr float kTrackW = 8.0f;
+		utilityScrollTrack = { contentArea.getRight() - kTrackW, contentArea.getY(),
+		                       kTrackW, contentArea.getHeight() };
+		const float thumbH = juce::jmax(24.0f, visibleH * (visibleH / utilityContentHeight));
+		const float thumbY = contentArea.getY()
+		                    + (contentArea.getHeight() - thumbH) * (utilityScrollOffset / maxScroll);
+		utilityScrollThumb = { utilityScrollTrack.getX(), thumbY, kTrackW, thumbH };
+	} else {
+		utilityScrollTrack = utilityScrollThumb = juce::Rectangle<float>();
+	}
+}
+
+namespace {
+// DialogWindow::LaunchOptions::launchAsync() always calls enterModalState(true, ...) - an
+// app-modal dialog, which blocked clicking the rest of the editor while the reference image
+// was open (Alan's report). A plain top-level DocumentWindow behaves like any other
+// independent window instead - closable and resizable, but not modal - which is all this
+// popup ever needed. Self-deletes on close, the same ownership contract the dialog had.
+class ImagePopupWindow : public juce::DocumentWindow {
+public:
+	ImagePopupWindow(const juce::String &title, juce::Component *ownedContent)
+		: DocumentWindow(title, juce::Colours::black, DocumentWindow::closeButton) {
+		setUsingNativeTitleBar(true);
+		setContentOwned(ownedContent, true);
+		setResizable(true, true);
+		centreWithSize(getWidth(), getHeight());
+		setVisible(true);
+	}
+	void closeButtonPressed() override { delete this; }
+};
+} // namespace
+
+// Shows docs/D20infos.png (embedded as BinaryData, see plugin/CMakeLists.txt's
+// juce_add_binary_data(D110PanelData ...)) full-size in its own resizable pop-up window,
+// scaled down only if it wouldn't otherwise fit the screen. Not modal - see ImagePopupWindow.
+void D110EditorPane::showLaReferencePopup() {
+	auto image = juce::ImageCache::getFromMemory(BinaryData::D20infos_png, BinaryData::D20infos_pngSize);
+	if (image.isNull()) return;
+
+	auto *imageComponent = new juce::ImageComponent();
+	imageComponent->setImage(image);
+	imageComponent->setImagePlacement(juce::RectanglePlacement::centred
+	                                   | juce::RectanglePlacement::onlyReduceInSize);
+
+	const auto *display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay();
+	const auto screenArea =
+		display != nullptr ? display->userBounds.toNearestInt() : juce::Rectangle<int>(0, 0, 1600, 900);
+	const int w = juce::jmin(image.getWidth(), int(screenArea.getWidth() * 0.85f));
+	const int h = juce::jmin(image.getHeight(), int(screenArea.getHeight() * 0.85f));
+	imageComponent->setSize(w, h);
+
+	new ImagePopupWindow("LA reference", imageComponent);
 }
 
 // --- значения ---------------------------------------------------------------
@@ -1706,6 +1852,9 @@ juce::String D110EditorPane::textOf(const Cell &c) const {
 			// Всё, что начиная с 31-го байта, - это записи партий: тот же разбор, но
 			// смещение внутри записи считается от её начала.
 			if (c.field >= 31) return partField((c.field - 31) % 12);
+			// The 9-byte channel-map block, offset 22-30 - same 0-15/"OFF" encoding as the
+			// LIVE System-area copy (see the Area::System case's own >= 13 branch).
+			if (c.field >= 22 && c.field <= 30) return (v > 15) ? juce::String("OFF") : juce::String(v + 1);
 			return juce::String(v);
 		}
 	case Area::Rhythm:
@@ -1759,7 +1908,7 @@ juce::String D110EditorPane::textOf(const Cell &c) const {
 // --- рисование --------------------------------------------------------------
 
 void D110EditorPane::paint(juce::Graphics &g) {
-	g.fillAll(kEdBack);
+	g.fillAll(kEdBack());
 	if (cells.empty() && buttons.empty() && tab != Tab::Monitor) layout();
 
 	const float scale = juce::jlimit(0.75f, 1.4f, float(getWidth()) / 1500.0f);
@@ -1771,17 +1920,17 @@ void D110EditorPane::paint(juce::Graphics &g) {
 	                        "SYSTEM", "MONITOR", "UTILITY" };
 	for (int i = 0; i < kNumTabs; ++i) {
 		const bool active = (int(tab) == i);
-		g.setColour(active ? kEdBox.brighter(0.25f) : kEdBox);
+		g.setColour(active ? kEdBox().brighter(0.25f) : kEdBox());
 		g.fillRoundedRectangle(tabBounds[(size_t)i], 3.0f);
-		g.setColour(active ? kEdValue : kEdBorder);
+		g.setColour(active ? kEdValue() : kEdBorder());
 		g.drawRoundedRectangle(tabBounds[(size_t)i].reduced(0.5f), 3.0f, 1.0f);
-		g.setColour(active ? kEdValue : kEdLabel);
+		g.setColour(active ? kEdValue() : kEdLabel());
 		g.setFont(labelFont);
 		g.drawText(kTabs[i], tabBounds[(size_t)i], juce::Justification::centred);
 	}
 
 	if (!ramValid) {
-		g.setColour(kEdDim);
+		g.setColour(kEdDim());
 		g.setFont(labelFont);
 		g.drawText("SWITCH THE INSTRUMENT ON TO EDIT IT",
 		           getLocalBounds().reduced(20), juce::Justification::centred);
@@ -1798,25 +1947,33 @@ void D110EditorPane::paint(juce::Graphics &g) {
 	if (tab == Tab::Tone || tab == Tab::Timbres || tab == Tab::Tones) {
 		for (int p = 0; p < 8; ++p) {
 			const bool active = (p == part);
-			g.setColour(active ? kEdBox.brighter(0.3f) : kEdBox);
+			g.setColour(active ? kEdBox().brighter(0.3f) : kEdBox());
 			g.fillRoundedRectangle(partBounds[(size_t)p], 3.0f);
-			g.setColour(active ? kEdValue : kEdBorder);
+			g.setColour(active ? kEdValue() : kEdBorder());
 			g.drawRoundedRectangle(partBounds[(size_t)p].reduced(0.5f), 3.0f, 1.0f);
-			g.setColour(active ? kEdValue : kEdDim);
+			g.setColour(active ? kEdValue() : kEdDim());
 			g.setFont(labelFont);
 			g.drawText(juce::String(p + 1), partBounds[(size_t)p], juce::Justification::centred);
 		}
 	}
 	if (tab == Tab::Tone && !textEntry.isVisible()) {
-		g.setColour(kEdValue);
+		g.setColour(kEdValue());
 		g.setFont(valueFont);
 		g.drawText(nameAt(size_t(D110CoreType::kRamToneTemp) + size_t(part) * D110CoreType::kToneRecord),
 		           toneNameBounds, juce::Justification::centredLeft);
 	}
 
+	// UTILITY is the one tab whose content can run taller than the drawer (see
+	// layoutUtility()'s scroll offset) - clipped in its own scope, not for the rest of
+	// paint(), since that also draws the tab strip above and the caption strip below, neither
+	// of which utilityScrollOffset should be allowed to draw over.
+	{
+	juce::Graphics::ScopedSaveState clipState(g);
+	if (tab == Tab::Utility) g.reduceClipRegion(contentArea.getSmallestIntegerContainer());
+
 	g.setFont(labelFont);
 	for (const Label &l : labels) {
-		g.setColour(l.heading ? kEdLabel : kEdDim);
+		g.setColour(l.heading ? kEdLabel() : kEdDim());
 		g.drawText(l.text, l.bounds, l.just);
 	}
 
@@ -1830,7 +1987,7 @@ void D110EditorPane::paint(juce::Graphics &g) {
 			drawBox(g, b.bounds, chosen);
 			const juce::String name = nameAt(size_t(D110CoreType::kRamTones)
 			                                 + size_t(slot) * D110CoreType::kToneMemRecord);
-			g.setColour(chosen ? kEdValue : kEdDim);
+			g.setColour(chosen ? kEdValue() : kEdDim());
 			g.setFont(valueFont);
 			g.drawText(juce::String(slot + 1).paddedLeft(' ', 2) + "  "
 			               + (name.isEmpty() ? juce::String("- - -") : name),
@@ -1840,7 +1997,7 @@ void D110EditorPane::paint(juce::Graphics &g) {
 		if (b.id >= 400 && b.id < 500) {                    // имя патча
 			const int patch = b.id - 400;
 			drawBox(g, b.bounds, false);
-			g.setColour(kEdValue);
+			g.setColour(kEdValue());
 			g.setFont(valueFont);
 			g.drawText(nameAt(size_t(D110CoreType::kRamPatches)
 			                  + size_t(patch) * D110CoreType::kPatchRecord),
@@ -1854,7 +2011,7 @@ void D110EditorPane::paint(juce::Graphics &g) {
 		                   && int(ram[(size_t)D110CoreType::kRamPatchNumber]) == b.id - 200;
 		const bool chosenPatch = (b.id >= 200 && b.id < 300) && (b.id - 200 == patchSlot);
 		drawBox(g, b.bounds, current || chosenPatch);
-		g.setColour(current ? kEdValue : (b.text.isEmpty() ? kEdDim : kEdLabel));
+		g.setColour(current ? kEdValue() : (b.text.isEmpty() ? kEdDim() : kEdLabel()));
 		g.setFont(labelFont);
 		g.drawText(b.text.isEmpty() ? juce::String("click to type") : b.text, b.bounds,
 		           juce::Justification::centred);
@@ -1864,13 +2021,23 @@ void D110EditorPane::paint(juce::Graphics &g) {
 	for (size_t i = 0; i < cells.size(); ++i) {
 		const Cell &c = cells[i];
 		drawBox(g, c.bounds, int(i) == hovered || int(i) == dragging);
-		g.setColour(kEdValue);
+		g.setColour(kEdValue());
 		g.drawText(textOf(c), c.bounds.reduced(6.0f, 0.0f), juce::Justification::centredLeft);
+	}
+	} // end of the UTILITY clip scope
+
+	// Thin scrollbar on the right - only while the UTILITY tab genuinely doesn't fit; the
+	// track/thumb are computed in layoutUtility() along with the rest of that tab's geometry.
+	if (tab == Tab::Utility && !utilityScrollTrack.isEmpty()) {
+		g.setColour(kEdBox());
+		g.fillRoundedRectangle(utilityScrollTrack, 3.0f);
+		g.setColour(kEdBorder().brighter(0.2f));
+		g.fillRoundedRectangle(utilityScrollThumb.reduced(1.0f), 3.0f);
 	}
 
 	// Одна строка о том, чем этот ящик является, чтобы он не читался как отдельный «микшер
 	// плагина», живущий своей жизнью.
-	g.setColour(kEdDim);
+	g.setColour(kEdDim());
 	g.setFont(juce::FontOptions(10.0f * scale));
 	juce::String footer;
 	switch (tab) {
@@ -1926,7 +2093,7 @@ void D110EditorPane::paintMonitor(juce::Graphics &g, juce::Rectangle<float> area
 	const juce::Font valueFont(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(),
 	                                             12.0f * scale, juce::Font::plain));
 
-	g.setColour(kEdLabel);
+	g.setColour(kEdLabel());
 	g.setFont(labelFont);
 	g.drawText("LA32 VOICE SLOTS - THE FIRMWARE'S OWN TABLE",
 	           area.removeFromTop(16.0f), juce::Justification::centredLeft);
@@ -1941,13 +2108,13 @@ void D110EditorPane::paintMonitor(juce::Graphics &g, juce::Rectangle<float> area
 		if (on) ++busy;
 		const juce::Rectangle<float> r(pool.getX() + bw * float(s % 16),
 		                               pool.getY() + 26.0f * float(s / 16), bw - 4.0f, 22.0f);
-		g.setColour(on ? kEdValue : kEdBox);
+		g.setColour(on ? kEdValue() : kEdBox());
 		g.fillRoundedRectangle(r, 2.0f);
-		g.setColour(kEdBorder);
+		g.setColour(kEdBorder());
 		g.drawRoundedRectangle(r.reduced(0.5f), 2.0f, 1.0f);
 	}
 	area.removeFromTop(4.0f);
-	g.setColour(kEdDim);
+	g.setColour(kEdDim());
 	g.setFont(valueFont);
 	g.drawText(juce::String(busy) + " of " + juce::String(D110CoreType::kNumHardwareVoices)
 	               + " busy   -   and the sound engine has "
@@ -1963,7 +2130,7 @@ void D110EditorPane::paintMonitor(juce::Graphics &g, juce::Rectangle<float> area
 	// этой панели читала таблицы напрямую и показывала на ритм-партии четырнадцать нажатых
 	// клавиш там, где не звучало ни одной.
 	const uint32_t engineParts = processor.enginePartStates();
-	g.setColour(kEdLabel);
+	g.setColour(kEdLabel());
 	g.setFont(labelFont);
 	g.drawText("PARTS THE SOUND ENGINE IS HOLDING",
 	           area.removeFromTop(16.0f), juce::Justification::centredLeft);
@@ -1974,7 +2141,7 @@ void D110EditorPane::paintMonitor(juce::Graphics &g, juce::Rectangle<float> area
 		const juce::Rectangle<float> r(parts.getX() + pw * float(p), parts.getY(),
 		                               pw - 8.0f, 26.0f);
 		drawBox(g, r, on);
-		g.setColour(on ? kEdValue : kEdDim);
+		g.setColour(on ? kEdValue() : kEdDim());
 		g.setFont(valueFont);
 		g.drawText(juce::String(partLabel(p)) + (on ? ": sounding" : ": -"),
 		           r.reduced(6.0f, 0.0f), juce::Justification::centredLeft);
@@ -1983,10 +2150,10 @@ void D110EditorPane::paintMonitor(juce::Graphics &g, juce::Rectangle<float> area
 
 	// Мост в цифрах. Ноль потерянных сообщений - это условие, при котором всё показанное
 	// выше вообще что-то значит, поэтому счётчики стоят рядом, а не прячутся в журнале.
-	g.setColour(kEdLabel);
+	g.setColour(kEdLabel());
 	g.setFont(labelFont);
 	g.drawText("THE BRIDGE", area.removeFromTop(16.0f), juce::Justification::centredLeft);
-	g.setColour(kEdDim);
+	g.setColour(kEdDim());
 	g.setFont(valueFont);
 	g.drawText("mirror messages to the engine: "
 	               + juce::String(juce::int64(processor.getCore().sysexEmitted()))
@@ -1999,7 +2166,7 @@ void D110EditorPane::paintMonitor(juce::Graphics &g, juce::Rectangle<float> area
 	           area.removeFromTop(18.0f), juce::Justification::centredLeft);
 	area.removeFromTop(8.0f);
 
-	g.setColour(kEdLabel);
+	g.setColour(kEdLabel());
 	g.setFont(labelFont);
 	g.drawText("MIDI IN", area.removeFromTop(16.0f), juce::Justification::centredLeft);
 
@@ -2025,17 +2192,33 @@ void D110EditorPane::paintMonitor(juce::Graphics &g, juce::Rectangle<float> area
 			                          : ("status " + juce::String::toHexString(e.status));
 			break;
 		}
-		g.setColour(i == 0 ? kEdValue : kEdDim);
+		g.setColour(i == 0 ? kEdValue() : kEdDim());
 		g.drawText(text, area.removeFromTop(lineH), juce::Justification::centredLeft);
 	}
 	if (n == 0) {
-		g.setColour(kEdDim);
+		g.setColour(kEdDim());
 		g.drawText("nothing received yet", area.removeFromTop(lineH),
 		           juce::Justification::centredLeft);
 	}
 }
 
 void D110EditorPane::buttonPressed(int id) {
+	if (id == 11) {
+		const bool light = d110ui::getTheme() != d110ui::Theme::Light;
+		d110ui::setTheme(light ? d110ui::Theme::Light : d110ui::Theme::Dark);
+		processor.setUiThemeLight(light);
+		if (onThemeChanged) onThemeChanged();
+		return;
+	}
+	if (id == 10) {
+		static constexpr int kZoomPresets[] = { 50, 75, 100, 125, 150 };
+		const int current = juce::roundToInt(float(getWidth()) / float(D110Panel::kRefW) * 100.0f);
+		int next = kZoomPresets[0];
+		for (size_t i = 0; i < std::size(kZoomPresets); ++i)
+			if (kZoomPresets[i] > current) { next = kZoomPresets[i]; break; }
+		if (onRequestZoom) onRequestZoom(next);
+		return;
+	}
 	if (id == 1) {
 		processor.sendDisplayMessage(textEntry.getText());
 		return;
@@ -2109,6 +2292,8 @@ void D110EditorPane::buttonPressed(int id) {
 		                     });
 		return;
 	}
+	if (id == 8) { showLaReferencePopup(); return; }
+	if (id == 9) { processor.midiPanic(); return; }
 	if (id == 20) { processor.storeToneFromPart(part, toneSlot); return; }
 	if (id == 21) { processor.auditionTone(part, toneSlot); return; }
 	if (id >= 100 && id < 200) {
@@ -2182,14 +2367,14 @@ void D110EditorPane::showToneListMenu(Area area, int index, int groupField) {
 			if (result <= 0) return; // отменено
 			const int id = result - 1;
 			const int group = id / 64, number = id % 64;
-			if (area == Area::Patches) {
-				processor.editPatchField(index, groupField, uint8_t(group));
-				processor.editPatchField(index, groupField + 1, uint8_t(number));
-			} else {
-				processor.sendTimbreTempParam(index, groupField, uint8_t(group));
-				processor.sendTimbreTempParam(index, groupField + 1, uint8_t(number));
-			}
-			repaint();
+			// Through setValue(), not a direct processor.send*Param() call, so this updates the
+			// local ram[] mirror and pendingEdits the same way any other cell edit does - see
+			// setValue()'s own comment. Without that, a wheel-drag right after picking a tone
+			// here read the OLD, not-yet-refreshed cached value as its starting point, so
+			// incrementing continued from the REPLACED tone's number instead of the one just
+			// picked (Alan's report, 2026-08-06).
+			setValue({ {}, area, index, groupField, 0, 3 }, group);
+			setValue({ {}, area, index, groupField + 1, 0, 63 }, number);
 		});
 }
 
@@ -2224,12 +2409,40 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 		return;
 	}
 
+	if (tab == Tab::Utility && !utilityScrollTrack.isEmpty()) {
+		if (utilityScrollThumb.contains(p)) {
+			draggingUtilityScroll = true;
+			utilityScrollDragStartY = p.y;
+			utilityScrollDragStartOffset = utilityScrollOffset;
+			return;
+		}
+		if (utilityScrollTrack.contains(p)) {
+			// Clicking the track above/below the thumb pages toward that side, the way an
+			// ordinary scrollbar does - not a jump straight to the click point.
+			const float page = contentArea.getHeight() * 0.8f;
+			utilityScrollOffset += (p.y < utilityScrollThumb.getY() ? -page : page);
+			layout();
+			repaint();
+			return;
+		}
+	}
+
 	// Правый клик по группе/номеру тона открывает список всех тонов сразу, вместо того чтобы
 	// перебирать их колесом по одному. Только TONE GROUP/TONE - у остальных полей нет
 	// естественного «имени» на каждое значение, список был бы бессмыслен. Работает и на живой
 	// области партии (Parts), и на записи патча (PARTS OF PATCH внутри Patches), и на DRUM
 	// SOUND ритм-секции (Rhythm) - три разных поля со своим адресом, но один и тот же приём.
 	if (e.mods.isPopupMenu()) {
+		if (tab == Tab::Utility && zoomBounds.contains(p)) {
+			juce::PopupMenu m;
+			static constexpr int kZoomPresets[] = { 50, 75, 100, 125, 150 };
+			const int current = juce::roundToInt(float(getWidth()) / float(D110Panel::kRefW) * 100.0f);
+			for (int pct : kZoomPresets) m.addItem(pct, juce::String(pct) + "%", true, pct == current);
+			m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this](int result) {
+				if (result > 0 && onRequestZoom) onRequestZoom(result);
+			});
+			return;
+		}
 		const int i = cellAt(p);
 		if (i >= 0) {
 			const Cell &c = cells[(size_t)i];
@@ -2311,6 +2524,17 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 }
 
 void D110EditorPane::mouseDrag(const juce::MouseEvent &e) {
+	if (draggingUtilityScroll) {
+		const float maxScroll = juce::jmax(0.0f, utilityContentHeight - contentArea.getHeight());
+		const float trackRange = juce::jmax(1.0f, utilityScrollTrack.getHeight()
+		                                          - utilityScrollThumb.getHeight());
+		const float deltaPx = e.position.y - utilityScrollDragStartY;
+		utilityScrollOffset = juce::jlimit(0.0f, maxScroll,
+		    utilityScrollDragStartOffset + deltaPx * (maxScroll / trackRange));
+		layout();
+		repaint();
+		return;
+	}
 	if (dragging < 0 || dragStartValue < 0) return;
 	// Четыре точки на шаг: достаточно мелко для громкости 0..100 и достаточно крупно, чтобы
 	// поле из двух положений не прыгало от дрожания руки.
@@ -2319,6 +2543,7 @@ void D110EditorPane::mouseDrag(const juce::MouseEvent &e) {
 }
 
 void D110EditorPane::mouseUp(const juce::MouseEvent &) {
+	if (draggingUtilityScroll) { draggingUtilityScroll = false; return; }
 	if (dragging < 0) return;
 	dragging = -1;
 	repaint();
@@ -2352,6 +2577,7 @@ void D110EditorPane::mouseWheelMove(const juce::MouseEvent &e, const juce::Mouse
 	else if (tab == Tab::Timbres) timbreScroll += (w.deltaY > 0 ? -3 : 3);
 	else if (tab == Tab::Patches) patchScroll += (w.deltaY > 0 ? -3 : 3);
 	else if (tab == Tab::Tones) toneScroll += (w.deltaY > 0 ? -3 : 3);
+	else if (tab == Tab::Utility) utilityScrollOffset += (w.deltaY > 0 ? -40.0f : 40.0f);
 	else return;
 	layout();
 	repaint();
@@ -2552,6 +2778,14 @@ const std::vector<D110Keyboard::TrackerKey> &D110Keyboard::trackerKeys() {
 }
 
 D110Keyboard::D110Keyboard(D110AudioProcessor &p) : processor(p) {
+	// Restores whatever config the project/session was last saved with - see
+	// D110AudioProcessor::getKeyboardMidiChannel() and friends for why the processor, not this
+	// component, is the actual source of truth.
+	midiChannel = processor.getKeyboardMidiChannel();
+	omni = processor.getKeyboardOmni();
+	pcKeyboardEnabled = processor.getKeyboardPcInputEnabled();
+	pcLayout = processor.getKeyboardPcLayout() == 1 ? PcLayout::azerty : PcLayout::qwerty;
+
 	pcKeyDown.assign(trackerKeys().size(), false);
 	setWantsKeyboardFocus(true);
 	rebuildKeys();
@@ -2592,16 +2826,33 @@ void D110Keyboard::showContextMenu() {
 	m.addSubMenu("PC keyboard layout", layoutMenu, pcKeyboardEnabled);
 
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this](int result) {
-		if (result >= 1001 && result <= 1016) { midiChannel = result - 1000; return; }
-		if (result == 3000) { omni = !omni; return; }
+		if (result >= 1001 && result <= 1016) {
+			midiChannel = result - 1000;
+			processor.setKeyboardMidiChannel(midiChannel);
+			return;
+		}
+		if (result == 3000) {
+			omni = !omni;
+			processor.setKeyboardOmni(omni);
+			return;
+		}
 		if (result == 4000) {
 			pcKeyboardEnabled = !pcKeyboardEnabled;
+			processor.setKeyboardPcInputEnabled(pcKeyboardEnabled);
 			if (pcKeyboardEnabled) grabKeyboardFocus();
 			else releaseAllPcNotes();
 			return;
 		}
-		if (result == 2001) { pcLayout = PcLayout::qwerty; return; }
-		if (result == 2002) { pcLayout = PcLayout::azerty; return; }
+		if (result == 2001) {
+			pcLayout = PcLayout::qwerty;
+			processor.setKeyboardPcLayout(0);
+			return;
+		}
+		if (result == 2002) {
+			pcLayout = PcLayout::azerty;
+			processor.setKeyboardPcLayout(1);
+			return;
+		}
 	});
 }
 
@@ -2689,12 +2940,13 @@ void D110Keyboard::setHeldNote(int note) {
 }
 
 void D110Keyboard::paint(juce::Graphics &g) {
-	g.fillAll(juce::Colour(0xff141416));
+	const auto &pal = d110ui::palette();
+	g.fillAll(pal.panelBg);
 
 	auto paintButton = [&](juce::Rectangle<float> b, const char *label) {
-		g.setColour(juce::Colour(0xff26262c));
+		g.setColour(pal.keyButtonFill);
 		g.fillRect(b.reduced(3.0f));
-		g.setColour(juce::Colour(0xff8a8a94));
+		g.setColour(pal.keyButtonText);
 		g.setFont(juce::FontOptions(juce::jlimit(12.0f, 22.0f, b.getWidth() * 0.5f)));
 		g.drawText(label, b, juce::Justification::centred);
 	};
@@ -2704,18 +2956,18 @@ void D110Keyboard::paint(juce::Graphics &g) {
 	paintButton(octaveUpBounds, "+");
 
 	for (const auto &k : whiteKeys) {
-		g.setColour(k.note == heldNote ? juce::Colour(0xff6ab81f) : juce::Colour(0xffe8e8ec));
+		g.setColour(k.note == heldNote ? pal.keyWhiteHeld : pal.keyWhite);
 		g.fillRect(k.bounds.reduced(1.0f, 0.0f));
-		g.setColour(juce::Colour(0xff0a0a0c));
+		g.setColour(pal.keyWhiteBorder);
 		g.drawRect(k.bounds, 1.0f);
 	}
 	for (const auto &k : blackKeys) {
-		g.setColour(k.note == heldNote ? juce::Colour(0xff3f7a10) : juce::Colour(0xff1a1a1e));
+		g.setColour(k.note == heldNote ? pal.keyBlackHeld : pal.keyBlack);
 		g.fillRect(k.bounds);
 	}
 
 	// Always shown, not just when shifted: it's the only hint of what -/+ actually do.
-	g.setColour(juce::Colour(0xff6a6a74));
+	g.setColour(pal.keyCaption);
 	g.setFont(juce::FontOptions(11.0f));
 	g.drawText("OCT " + (octaveShift > 0 ? juce::String("+") + juce::String(octaveShift)
 	                                     : juce::String(octaveShift)),
@@ -2760,8 +3012,17 @@ void D110Keyboard::mouseExit(const juce::MouseEvent &) {
 // ---------------------------------------------------------------------------
 
 D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
-	: juce::AudioProcessorEditor(&p), panel(p), editorPane(p), card(p), keyboard(p), sequencerPanel(p)
+	: juce::AudioProcessorEditor(&p), processor(p), panel(p), editorPane(p), card(p), keyboard(p),
+	  sequencerPanel(p)
 {
+	// Synced here, not just read lazily by whichever drawer paints first: a project loaded
+	// with the light theme should look right the moment this editor appears, including on
+	// the very first paint.
+	d110ui::setTheme(p.getUiThemeLight() ? d110ui::Theme::Light : d110ui::Theme::Dark);
+	// Same idea for the editor pane's own height - read before totalRefHeight() is first
+	// called just below, so a project saved with a resized drawer opens already that size.
+	editorPaneRefH = juce::jlimit(kMinPaneRefH, kMaxPaneRefH, p.getEditorPaneRefH());
+
 	addAndMakeVisible(panel);
 	addAndMakeVisible(editorPane);
 	addAndMakeVisible(keyboard);
@@ -2783,17 +3044,34 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 
 	setResizable(true, true);
 	setSize(1500, int(totalRefHeight() * (1500.0f / float(D110Panel::kRefW)) + 0.5f));
+
+	// Zoom presets (Utility tab) call this to resize precisely, the same way a manual
+	// drag-resize already does reliably - see D110EditorPane::onRequestZoom's own comment for
+	// why this exists instead of a maximise button.
+	editorPane.onRequestZoom = [this](int percent) {
+		const int targetW = juce::roundToInt(float(D110Panel::kRefW) * float(percent) / 100.0f);
+		setSize(targetW, int(totalRefHeight() * (float(targetW) / float(D110Panel::kRefW)) + 0.5f));
+	};
+
+	// The THEME toggle flips a process-wide palette (UiTheme.h) - every drawer needs a
+	// fresh paint to pick it up, not just the Utility tab that owns the button.
+	editorPane.onThemeChanged = [this] {
+		editorPane.repaint();
+		keyboard.repaint();
+		sequencerPanel.repaint();
+		repaint();
+	};
 }
 
 float D110AudioProcessorEditor::totalRefHeight() const {
-	return float(D110Panel::kRefH) + kHandleRefH + expansion * kPaneRefH
+	return float(D110Panel::kRefH) + kHandleRefH + expansion * editorPaneRefH
 	     + kKeyboardHandleRefH + keyboardExpansion * D110Keyboard::kRefH
 	     + kSequencerHandleRefH + sequencerExpansion * D110SequencerPanel::kRefH;
 }
 
 void D110AudioProcessorEditor::applySize() {
-	const float s = float(getWidth()) / float(D110Panel::kRefW);
 	constrainer.setFixedAspectRatio(double(D110Panel::kRefW) / double(totalRefHeight()));
+	const float s = float(getWidth()) / float(D110Panel::kRefW);
 	setSize(getWidth(), int(totalRefHeight() * s + 0.5f));
 }
 
@@ -2809,14 +3087,14 @@ juce::Rectangle<float> D110AudioProcessorEditor::handleBand() const {
 // band follows the panel.
 juce::Rectangle<float> D110AudioProcessorEditor::keyboardHandleBand() const {
 	const float s = float(getWidth()) / float(D110Panel::kRefW);
-	const float top = (float(D110Panel::kRefH) + kHandleRefH + expansion * kPaneRefH) * s;
+	const float top = (float(D110Panel::kRefH) + kHandleRefH + expansion * editorPaneRefH) * s;
 	return { 0.0f, top, float(getWidth()), kKeyboardHandleRefH * s };
 }
 
 // Same trick a third time: stacked below wherever the keyboard drawer currently ends.
 juce::Rectangle<float> D110AudioProcessorEditor::sequencerHandleBand() const {
 	const float s = float(getWidth()) / float(D110Panel::kRefW);
-	const float top = (float(D110Panel::kRefH) + kHandleRefH + expansion * kPaneRefH
+	const float top = (float(D110Panel::kRefH) + kHandleRefH + expansion * editorPaneRefH
 	                  + kKeyboardHandleRefH + keyboardExpansion * D110Keyboard::kRefH) * s;
 	return { 0.0f, top, float(getWidth()), kSequencerHandleRefH * s };
 }
@@ -2827,9 +3105,10 @@ namespace {
 // reveal below), up when open.
 void paintDrawerHandle(juce::Graphics &g, juce::Rectangle<float> band, bool open, bool hover,
                        const char *labelWhenClosed) {
-	g.setColour(juce::Colour(0xff141416));
+	const auto &pal = d110ui::palette();
+	g.setColour(pal.handleBg);
 	g.fillRect(band);
-	g.setColour(juce::Colour(hover ? 0xff3a3a42 : 0xff26262c));
+	g.setColour(hover ? pal.handleBarHover : pal.handleBar);
 	g.fillRect(band.reduced(0.0f, band.getHeight() * 0.28f));
 
 	const float cx = band.getCentreX();
@@ -2840,13 +3119,13 @@ void paintDrawerHandle(juce::Graphics &g, juce::Rectangle<float> band, bool open
 	chevron.startNewSubPath(cx - a * 1.6f, cy - a * 0.5f * dir);
 	chevron.lineTo(cx, cy + a * 0.5f * dir);
 	chevron.lineTo(cx + a * 1.6f, cy - a * 0.5f * dir);
-	g.setColour(juce::Colour(hover ? 0xffd0d0d8 : 0xff8a8a94));
+	g.setColour(hover ? pal.handleChevronHover : pal.handleChevron);
 	g.strokePath(chevron, juce::PathStrokeType(juce::jmax(1.5f, a * 0.35f)));
 
 	// Label next to the chevron, but only while closed: open already speaks for itself.
 	if (!open) {
 		g.setFont(juce::FontOptions(juce::jlimit(9.0f, 13.0f, band.getHeight() * 0.55f)));
-		g.setColour(juce::Colour(0xff6a6a74));
+		g.setColour(pal.handleLabel);
 		g.drawText(labelWhenClosed, band.withTrimmedLeft(14.0f), juce::Justification::centredLeft);
 	}
 }
@@ -2854,7 +3133,7 @@ void paintDrawerHandle(juce::Graphics &g, juce::Rectangle<float> band, bool open
 
 void D110AudioProcessorEditor::paint(juce::Graphics &g)
 {
-	g.fillAll(juce::Colours::black);
+	g.fillAll(d110ui::palette().panelBg);
 	paintDrawerHandle(g, handleBand(), expansion > 0.5f, handleHover, "EDITOR");
 	paintDrawerHandle(g, keyboardHandleBand(), keyboardExpansion > 0.5f, keyboardHandleHover, "KEYBOARD");
 	paintDrawerHandle(g, sequencerHandleBand(), sequencerExpansion > 0.5f, sequencerHandleHover, "SEQUENCER");
@@ -2878,9 +3157,16 @@ void D110AudioProcessorEditor::mouseDown(const juce::MouseEvent &e)
 		return;
 	}
 	if (keyboardHandleBand().contains(e.position)) {
-		keyboardExpansionTarget = (keyboardExpansionTarget > 0.5f) ? 0.0f : 1.0f;
-		keyboardExpansion = keyboardExpansionTarget;
-		applySize();
+		// Dual role: this band is also the boundary directly below the editor pane, so
+		// dragging it (rather than just clicking it) resizes that pane instead of toggling
+		// the keyboard drawer - see mouseDrag()'s threshold check, which decides which of
+		// the two this gesture turns out to be. Only meaningful while the editor is open;
+		// while it's closed there's nothing above this band to resize, so it stays a plain
+		// toggle exactly as before.
+		keyboardHandlePressed = true;
+		resizingEditorPane = false;
+		resizeDragStartY = e.position.y;
+		resizeDragStartRefH = editorPaneRefH;
 		return;
 	}
 	if (sequencerHandleBand().contains(e.position)) {
@@ -2889,6 +3175,41 @@ void D110AudioProcessorEditor::mouseDown(const juce::MouseEvent &e)
 		applySize();
 		return;
 	}
+}
+
+void D110AudioProcessorEditor::mouseDrag(const juce::MouseEvent &e)
+{
+	if (!keyboardHandlePressed) return;
+	const float deltaY = e.position.y - resizeDragStartY;
+	// A few pixels of slop before a press-and-hold turns into a resize, so an ordinary click
+	// (which always jitters slightly between down and up) doesn't accidentally nudge the
+	// height - only actually resizes once the editor pane is open, since dragging this band
+	// with nothing above it to resize wouldn't do anything visible.
+	if (!resizingEditorPane) {
+		if (expansion < 0.5f || std::abs(deltaY) < 4.0f) return;
+		resizingEditorPane = true;
+	}
+	const float s = float(getWidth()) / float(D110Panel::kRefW);
+	editorPaneRefH = juce::jlimit(kMinPaneRefH, kMaxPaneRefH, resizeDragStartRefH + deltaY / s);
+	applySize();
+}
+
+void D110AudioProcessorEditor::mouseUp(const juce::MouseEvent &)
+{
+	if (!keyboardHandlePressed) return;
+	keyboardHandlePressed = false;
+	if (resizingEditorPane) {
+		// The drag itself already applied every intermediate height live - this just makes
+		// the final one stick across sessions, the same way WINDOW SIZE/THEME do.
+		processor.setEditorPaneRefH(editorPaneRefH);
+		resizingEditorPane = false;
+		return;
+	}
+	// No real drag happened - an ordinary click, so this band keeps behaving as the
+	// keyboard drawer's toggle, exactly as before this band gained its second role.
+	keyboardExpansionTarget = (keyboardExpansionTarget > 0.5f) ? 0.0f : 1.0f;
+	keyboardExpansion = keyboardExpansionTarget;
+	applySize();
 }
 
 void D110AudioProcessorEditor::mouseMove(const juce::MouseEvent &e)
@@ -2901,8 +3222,13 @@ void D110AudioProcessorEditor::mouseMove(const juce::MouseEvent &e)
 	if (overKeyboard != keyboardHandleHover) { keyboardHandleHover = overKeyboard; changed = true; }
 	if (overSequencer != sequencerHandleHover) { sequencerHandleHover = overSequencer; changed = true; }
 	if (!changed) return;
-	setMouseCursor((over || overKeyboard || overSequencer) ? juce::MouseCursor::PointingHandCursor
-	                                                       : juce::MouseCursor::NormalCursor);
+	// Over the keyboard band specifically, hint at the resize (rather than the plain
+	// pointing-hand the other two bands use) only when there's actually something to
+	// resize - i.e. the editor pane above it is open.
+	juce::MouseCursor cursor = juce::MouseCursor::NormalCursor;
+	if (overKeyboard && expansion > 0.5f) cursor = juce::MouseCursor::UpDownResizeCursor;
+	else if (over || overKeyboard || overSequencer) cursor = juce::MouseCursor::PointingHandCursor;
+	setMouseCursor(cursor);
 	repaint();
 }
 
@@ -2926,7 +3252,7 @@ void D110AudioProcessorEditor::resized()
 	// собственной полосы-ручки клавиатуры. Он рисуется целиком и обрезается собственными
 	// границами - это и создаёт впечатление, что он выезжает из-под прибора.
 	const int paneTop = int((float(D110Panel::kRefH) + kHandleRefH) * s + 0.5f);
-	const int paneH = int(expansion * kPaneRefH * s + 0.5f);
+	const int paneH = int(expansion * editorPaneRefH * s + 0.5f);
 	editorPane.setBounds(0, paneTop, getWidth(), juce::jmax(0, paneH));
 
 	// Клавиатура - тот же приём, второй раз подряд: своя полоса-ручка сразу под ящиком

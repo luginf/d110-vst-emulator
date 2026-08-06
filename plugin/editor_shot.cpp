@@ -9,6 +9,7 @@
 // Вкладка выбирается вторым доводом; "all" снимает все девять подряд.
 #include "Source/PluginEditor.h"
 #include "Source/PluginProcessor.h"
+#include "Source/UiTheme.h"
 
 #include <chrono>
 #include <cstdio>
@@ -72,6 +73,12 @@ int main(int argc, char **argv) {
 	const int width = (argc > 3) ? std::atoi(argv[3]) : 1500;
 	const float scale = float(width) / float(D110Panel::kRefW);
 	const int height = int(D110AudioProcessorEditor::kPaneRefH * scale + 0.5f);
+
+	// Optional 5th argument, "light" - so the THEME toggle (Utility tab) can be checked
+	// headlessly the same way every other bit of this UI is, instead of just by eye.
+	const bool light = (argc > 4) && juce::String(argv[4]) == "light";
+	proc.setUiThemeLight(light);
+	d110ui::setTheme(light ? d110ui::Theme::Light : d110ui::Theme::Dark);
 
 	// Монитор имеет смысл смотреть на звучащем приборе: иначе на нём всегда «свободны все
 	// тридцать два голоса». Аккорд берётся на канале 2 - это партия 1 у заводского D-110.

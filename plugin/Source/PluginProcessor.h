@@ -150,6 +150,40 @@ public:
 	// Safe to call from the message thread; the collector is its own lock.
 	void injectTestNote(int channel, int note, float velocity, bool on);
 
+	// D110Keyboard's own config (MIDI channel/omni, PC-keyboard tracker input, QWERTY/AZERTY
+	// layout) - stored here, not as plain members on the UI component itself, so it survives
+	// getStateInformation/setStateInformation regardless of whether an editor happens to be
+	// open at save/restore time (a host can create/destroy the editor independently of the
+	// processor's own lifetime). D110Keyboard reads these once at construction and writes
+	// back through these setters on every change - see its own constructor/showContextMenu().
+	int getKeyboardMidiChannel() const { return keyboardMidiChannel; }
+	void setKeyboardMidiChannel(int channel) { keyboardMidiChannel = juce::jlimit(1, 16, channel); }
+	bool getKeyboardOmni() const { return keyboardOmni; }
+	void setKeyboardOmni(bool omni) { keyboardOmni = omni; }
+	bool getKeyboardPcInputEnabled() const { return keyboardPcInput; }
+	void setKeyboardPcInputEnabled(bool enabled) { keyboardPcInput = enabled; }
+	// 0 = QWERTY, 1 = AZERTY - a plain int rather than D110Keyboard's own private PcLayout
+	// enum, so this header doesn't need to know that type exists.
+	int getKeyboardPcLayout() const { return keyboardPcLayout; }
+	void setKeyboardPcLayout(int layout) { keyboardPcLayout = juce::jlimit(0, 1, layout); }
+
+	// The custom-drawn part of the interface's light/dark theme (Utility tab -> THEME) -
+	// the photographed panel and its LED-style indicators sit outside this, since those
+	// colours are the hardware's own, not chrome. Stored here rather than as a plain
+	// d110ui::Theme global the editor writes on its own, so it survives project save/load
+	// the same way the keyboard config above does.
+	bool getUiThemeLight() const { return uiThemeLight; }
+	void setUiThemeLight(bool light) { uiThemeLight = light; }
+
+	// The extended editor drawer's own height, in D110AudioProcessorEditor::kPaneRefH's
+	// reference units - user-adjustable by dragging the keyboard drawer's handle band (the
+	// boundary directly below it). Stored here for the same reason as the theme above: it
+	// needs to survive project save/load regardless of the editor's own lifetime. Clamped by
+	// the editor itself (kMinPaneRefH/kMaxPaneRefH) whenever it reads this back; stored
+	// unclamped here in case those bounds are ever loosened later.
+	float getEditorPaneRefH() const { return editorPaneRefH; }
+	void setEditorPaneRefH(float refH) { editorPaneRefH = refH; }
+
 	// The D-20-style sequencer drawer's one way in: it owns its transport, its 9 tracks
 	// and its own MIDI-file/state (de)serialisation, and reads/writes it directly - see
 	// Source/sequencer/D110SequencerEngine.h. processBlock() is the only other reader/
@@ -242,6 +276,14 @@ public:
 	void selectNextPart();
 	void selectPreviousPart();
 	void stepPatch(int direction); // direction: +1 or -1
+
+	// "MIDI Panic" - kills every currently sounding voice immediately, on both the sound
+	// engine and the firmware, for the rare case something leaves notes hung. All Notes Off
+	// (CC 123) plus Hold Pedal Off (CC 64, so sustained notes actually stop too) on all 16
+	// MIDI channels, not just the factory Part 1-8/Rhythm map, since channels can be
+	// reassigned. Safe to call from the message thread (a button click) - queued the same
+	// way stepPatch()'s program changes already are, not sent directly.
+	void midiPanic();
 
 	// --- the extended editor ---------------------------------------------------
 	// Everything the drawer edits goes to the INSTRUMENT, as a Roland DT1 into its own
@@ -450,11 +492,29 @@ private:
 	juce::CriticalSection engineActionLock;
 	std::vector<std::vector<MT32Emu::Bit8u>> pendingSysexImports;
 	std::vector<MT32Emu::Bit32u> pendingShortMessages;
+	// Raw bytes queued for the FIRMWARE's own MIDI input by midiPanic() - separate from
+	// pendingSysexImports because those go through synth->playSysex() too, which expects a
+	// proper F0...F7 sysex frame, not the short channel-voice messages a panic sends.
+	std::vector<juce::uint8> pendingPanicBytes;
 	juce::String lastImportMessage;
 
 	D110CoreType core;
 
 	bool powerBlocked = false;
+
+	// D110Keyboard's own config - see the accessors above for why this lives here rather than
+	// on the UI component itself.
+	int keyboardMidiChannel = 1;
+	bool keyboardOmni = false;
+	bool keyboardPcInput = false;
+	int keyboardPcLayout = 0;
+
+	// See getUiThemeLight()/setUiThemeLight() above.
+	bool uiThemeLight = false;
+	// See getEditorPaneRefH()/setEditorPaneRefH() above. 750.0f mirrors
+	// D110AudioProcessorEditor::kPaneRefH's own default - duplicated rather than shared
+	// because PluginEditor.h isn't (and shouldn't become) a dependency of this header.
+	float editorPaneRefH = 750.0f;
 
 	// --- D-20-style sequencer ---------------------------------------------------
 	d110seq::D110SequencerEngine sequencerEngine;
@@ -464,8 +524,14 @@ private:
 	// core directly (that would mean one getRam() call per note emitted, not per block).
 	// Index kRhythmTrack is never read this way; the rhythm track is fixed on channel 10.
 	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerLiveChannels{};
-	// Reused across blocks so refreshing sequencerLiveChannels doesn't reallocate 32KB every
-	// time - see its use beside sequencerLiveChannels above.
+	// Same idea, for the live tone NUMBER (0-63, or -1 = unknown) each melodic part is
+	// currently set to - what sequencerEngine's program source reads to embed a Program
+	// Change into MIDI exports (see D110SequencerEngine::setProgramSource). Index
+	// kRhythmTrack is never read this way; the rhythm part has no single "current tone" the
+	// way a melodic part does.
+	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerLivePrograms{};
+	// Reused across blocks so refreshing sequencerLiveChannels/sequencerLivePrograms doesn't
+	// reallocate 32KB every time - see their use beside sequencerLiveChannels above.
 	std::vector<juce::uint8> sequencerRamScratch;
 	// Metronome click envelope state, carried across processBlock calls since a click's
 	// short decay can span more than one audio block.

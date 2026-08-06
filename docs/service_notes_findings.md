@@ -1,252 +1,269 @@
-# Что говорят сервисные заметки о звуковой части
+# What the Service Notes Say About the Sound Section
 
-Источник: `docs/manuals/D-110_Service_Notes.pdf`, Roland, июнь 1988, первое издание, 16
-страниц A3. Это скан без текстового слоя, поэтому страницы разбирались как изображения
-(`pdftoppm -r 300` с вырезкой нужной области; текстовый слой пустой - 129 байт на весь
-документ).
+Source: `docs/manuals/D-110_Service_Notes.pdf`, Roland, June 1988, first edition, 16
+A3 pages. This is a scan with no text layer, so the pages were parsed as images
+(`pdftoppm -r 300` with cropping of the needed area; the text layer is empty - 129
+bytes for the entire document).
 
-Прочитаны все 16 страниц. Существенное для эмуляции - на блок-схеме (стр. 5), схеме главной
-платы (стр. 7), плате кнопок (стр. 10), в разделе IC DATA (стр. 11-12), в тестовом режиме
-(стр. 12-13) и в разделах CHANGE INFORMATION и RECOVERING FACTORY DATA (стр. 14-15).
-Страницы 2-4 (сборочный чертёж, список деталей, схема соединений), 8-9 (аналоговая плата и
-питание) и 16 (опечатка в номере литиевой батареи) для эмуляции ничего не дают.
+All 16 pages were read. What matters for emulation is on the block diagram (p. 5), the
+main board schematic (p. 7), the button board (p. 10), the IC DATA section (pp. 11-12),
+the test mode (pp. 12-13), and the CHANGE INFORMATION and RECOVERING FACTORY DATA
+sections (pp. 14-15). Pages 2-4 (assembly drawing, parts list, wiring diagram), 8-9
+(analog board and power supply), and 16 (a typo in the lithium battery part number)
+give nothing for emulation.
 
-Это ДОКУМЕНТАЦИЯ, а не измерение: она объясняет измеренное раньше и подсказывает, где
-мерить, но не отменяет обязанности мерить. Путь типа ревербератора ниже прочитан по схеме и
-всё равно затем подтверждён опытом с контролем.
+This is DOCUMENTATION, not measurement: it explains what was measured earlier and
+suggests where to measure, but it doesn't remove the obligation to measure. The
+reverb-type path below, for instance, was read from the schematic and then still
+confirmed by an experiment with a control.
 
-## Из чего состоит звуковая часть
+## What the sound section consists of
 
-| Позиция | Микросхема | Что это |
+| Position | Chip | What it is |
 | --- | --- | --- |
-| IC9 | **MB87136APF**, в таблице выводов прямо подписана «LA Chip … (LA32)» | синтез |
-| IC7, IC8 | HN62304BPD10, HN62304BPC99 | ПЗУ волновых данных |
-| IC5 | **HG61H20R36F**, «REVERB CUSTOM IC» | ревербератор |
-| IC6 | HN623257PZ20 | ПЗУ микропрограммы ревербератора, 32 КБ |
-| IC1-IC4 | MN4264-12 / MN4256-12 | динамическая память ревербератора - его линия задержки |
-| IC16 | HG61H15B-72F | вентильная матрица: дешифратор адреса, ЖКИ, панель, EXIO |
-| IC18 | 8097BH | процессор |
-| IC116 | PCM54 | ЦАП, 16 бит |
-| IC113 | HD14051BP | восьмиканальный аналоговый демультиплексор |
+| IC9 | **MB87136APF**, labeled right in the pin table as "LA Chip … (LA32)" | synthesis |
+| IC7, IC8 | HN62304BPD10, HN62304BPC99 | wave data ROM |
+| IC5 | **HG61H20R36F**, "REVERB CUSTOM IC" | reverb |
+| IC6 | HN623257PZ20 | reverb microprogram ROM, 32 KB |
+| IC1-IC4 | MN4264-12 / MN4256-12 | reverb dynamic memory - its delay line |
+| IC16 | HG61H15B-72F | gate array: address decoder, LCD, panel, EXIO |
+| IC18 | 8097BH | processor |
+| IC116 | PCM54 | DAC, 16-bit |
+| IC113 | HD14051BP | eight-channel analog demultiplexer |
 
-Тракт звука по блок-схеме: LA32 -> ревербератор -> `SD0-SD15` -> ЦАП -> демультиплексор ->
-восемь выборок-хранений -> восемь ФНЧ -> MIX OUT L/R и MULTI OUT 1-6. То есть
-индивидуальные выходы получаются временным разделением ОДНОГО ЦАПа.
+The signal path per the block diagram: LA32 -> reverb -> `SD0-SD15` -> DAC ->
+demultiplexer -> eight sample-and-holds -> eight low-pass filters -> MIX OUT L/R and
+MULTI OUT 1-6. In other words, the individual outputs are obtained by time-division of
+a SINGLE DAC.
 
-## LA32: интерфейс, который до сих пор восстанавливался по прошивке
+## LA32: the interface that has so far been reconstructed from the firmware
 
-Таблица выводов MB87136APF со стр. 11 (переписана целиком, потому что это ровно тот
-интерфейс, который эмулируется в `docs/la32_interface.md`):
+Pin table of the MB87136APF from p. 11 (transcribed in full, because this is exactly
+the interface emulated in `docs/la32_interface.md`):
 
-| Выводы | Имя | Напр. | Назначение |
+| Pins | Name | Dir. | Function |
 | --- | --- | --- | --- |
-| 1 | **INT** | вых. | **выход прерывания** |
-| 2 | OE | вх. | разрешение выхода |
-| 5 | CS | вх. | выбор кристалла |
-| 6-14 | **A0-A8** | вх. | адресная шина процессора |
-| 17-24 | **D0-D7** | дв. | шина данных процессора |
-| 25, 26, 29-33, 36 | RD0-7 | вх. | шина данных ПЗУ волн |
-| 34, 35, 37, 38, 43-50, 55-60 | RA0-19 | вых. | шина адреса ПЗУ волн |
-| 61-64, 67-76, 79, 80 | O0-15 | вых. | выход цифрового звука |
-| 81-84 | SH0-3 | вых. | **не используются** |
-| 86, 88 | X1, X2 | — | кварц 32.768 МГц |
-| 92, 93 | 16M, 32M | вых. | половина тактовой и тактовая |
-| 94 | CKIN | вх. | вход тактирования |
-| 96 | SYI | вх. | вход синхронизации |
-| 98, 100 | WR, RD | вх. | импульсы записи и чтения |
+| 1 | **INT** | out. | **interrupt output** |
+| 2 | OE | in. | output enable |
+| 5 | CS | in. | chip select |
+| 6-14 | **A0-A8** | in. | processor address bus |
+| 17-24 | **D0-D7** | bidir. | processor data bus |
+| 25, 26, 29-33, 36 | RD0-7 | in. | wave ROM data bus |
+| 34, 35, 37, 38, 43-50, 55-60 | RA0-19 | out. | wave ROM address bus |
+| 61-64, 67-76, 79, 80 | O0-15 | out. | digital audio output |
+| 81-84 | SH0-3 | out. | **not used** |
+| 86, 88 | X1, X2 | — | 32.768 MHz crystal |
+| 92, 93 | 16M, 32M | out. | half-rate clock and full clock |
+| 94 | CKIN | in. | clock input |
+| 96 | SYI | in. | sync input |
+| 98, 100 | WR, RD | in. | write and read strobes |
 
-Что это подтверждает и уточняет:
+What this confirms and clarifies:
 
-- **Прерывание, которого ждёт прошивка на `0x29E9`, - это вывод 1 самой LA32.** Не «что-то
-  на звуковой плате», а именно выход микросхемы синтеза. Вся конструкция
-  `StuckPolicy::La32Stub` опиралась на это как на гипотезу; теперь это написано в
-  документации.
-- **A0-A8 - девять адресных линий, то есть ровно 512 регистров.** Окно `0x0C00`-`0x0DFF`,
-  найденное зондом `la32_probe` по неотображённым обращениям, - это в точности 512 адресов.
-  Совпадение размера не случайно: это и есть весь регистровый файл LA32.
-- Кристалл 32.768 МГц, а не 16, и микросхема сама выдаёт делённые такты наружу.
-- Шина адреса ПЗУ волн 20 линий = 1 МБ адресного пространства волновых данных.
-- Выводы SH0-3 у LA32 не используются - сигналы `SH1-SH3` на аналоговую плату идут не
-  отсюда, а из вентильной матрицы IC16 (см. ниже).
+- **The interrupt the firmware waits for at `0x29E9` is pin 1 of the LA32 itself.**
+  Not "something on the sound board", but specifically the output of the synthesis
+  chip. The whole `StuckPolicy::La32Stub` construction relied on this as a hypothesis;
+  now it's written in the documentation.
+- **A0-A8 are nine address lines, i.e. exactly 512 registers.** The window
+  `0x0C00`-`0x0DFF`, found by the `la32_probe` probe from unmapped accesses, is exactly
+  512 addresses. The size match is not a coincidence: this is the entire LA32 register
+  file.
+- The crystal is 32.768 MHz, not 16, and the chip itself outputs divided clocks
+  externally.
+- The wave ROM address bus has 20 lines = 1 MB of wave-data address space.
+- The LA32's SH0-3 pins are not used - the `SH1-SH3` signals to the analog board don't
+  come from here, but from the IC16 gate array (see below).
 
-## Ревербератор: у него ЕСТЬ регистровый интерфейс, и он не на шине звуковой платы
+## Reverb: it DOES have a register interface, and it's not on the sound board bus
 
-Это меняет вывод, записанный в [[roland-boss-reverb-feasibility]] как «тип должен доходить
-до микросхемы по шине звуковой платы `0x0C00`-`0x0D02`». Схема главной платы (стр. 7)
-показывает у IC5 отдельный вход от процессора:
+This changes the conclusion recorded in [[roland-boss-reverb-feasibility]] as "the type
+must reach the chip via the sound board bus `0x0C00`-`0x0D02`". The main board
+schematic (p. 7) shows a separate input from the processor at IC5:
 
-- **`D1`-`D5`** (выводы 98, 99, 100, 1, 2) идут прямо на шину DATA процессора. Пять бит,
-  и `D0` НЕ подключён.
-- **`STB0`** (вывод 11) и **`STB1`** (вывод 12) - два строба.
-- `RES` (13) - сброс по питанию, `OE` (5), `SYNC` (9), `INSTB` (10), `SH0` (19), `SH1` (18),
-  `SAW0` (97), `NL-C` (96), `NL-D` (95).
-- `ROMA0-12` -> IC6, `ROMD0-7` <- IC6; `RAMA0-7`, `RAMD0-15`, `RAS`, `CAS`, `WE` -> IC1-IC4;
-  `SD0-SD15` -> аналоговая плата; `X1` (16) - такт 8 МГц.
+- **`D1`-`D5`** (pins 98, 99, 100, 1, 2) go straight to the processor's DATA bus. Five
+  bits, and `D0` is NOT connected.
+- **`STB0`** (pin 11) and **`STB1`** (pin 12) - two strobes.
+- `RES` (13) - power-on reset, `OE` (5), `SYNC` (9), `INSTB` (10), `SH0` (19), `SH1`
+  (18), `SAW0` (97), `NL-C` (96), `NL-D` (95).
+- `ROMA0-12` -> IC6, `ROMD0-7` <- IC6; `RAMA0-7`, `RAMD0-15`, `RAS`, `CAS`, `WE` ->
+  IC1-IC4; `SD0-SD15` -> analog board; `X1` (16) - 8 MHz clock.
 
-Стробы формируются двумя элементами И-НЕ из выходов вентильной матрицы IC16:
+The strobes are formed by two NAND gates from the outputs of the IC16 gate array:
 
 ```
-STB0 = НЕ(EXIO1 · WL)          IC16 вывод 40 = EXIO1, вывод 65 = WL
-STB1 = НЕ(EXIO2 · WL)          IC16 вывод 41 = EXIO2
+STB0 = NOT(EXIO1 · WL)          IC16 pin 40 = EXIO1, pin 65 = WL
+STB1 = NOT(EXIO2 · WL)          IC16 pin 41 = EXIO2
 ```
 
-`WL` - это «write low», строб записи младшего байта. Значит **процессор пишет в
-ревербератор пятибитные слова по двум адресам, которые дешифрует IC16**. У матрицы есть и
-третий такой выход, `EXIO3` (вывод 42).
+`WL` is "write low", the strobe for writing the low byte. This means **the processor
+writes five-bit words to the reverb at two addresses decoded by IC16**. The array also
+has a third such output, `EXIO3` (pin 42).
 
-Адреса внутри матрицы, и схема их не называет. Но карта памяти D-110 в MAME
-(`roland_d10.cpp`) занимает только `0x0100` (банк), `0x0200` (защёлка SO), `0x021A`-`0x021D`
-(опрос панели), `0x0300`/`0x0380` (ЖКИ), а зонд `so_trace_probe` видел неотображённые
-обращения ровно по трём адресам: `0x0280` (это, как уже установлено, псевдоним защёлки SO),
-**`0x0400` и `0x0800`**. Два необъяснённых адреса на два строба - это гипотеза, которую
-можно проверить прямо, и она проверяется зондом, а не рассуждением.
+The addresses are inside the array, and the schematic doesn't name them. But the D-110
+memory map in MAME (`roland_d10.cpp`) only occupies `0x0100` (bank), `0x0200` (SO
+latch), `0x021A`-`0x021D` (panel scan), `0x0300`/`0x0380` (LCD), while the
+`so_trace_probe` probe saw unmapped accesses at exactly three addresses: `0x0280`
+(already established to be an alias of the SO latch), **`0x0400` and `0x0800`**. Two
+unexplained addresses for two strobes is a hypothesis that can be checked directly, and
+it is checked by a probe, not by reasoning.
 
-Ещё раз, потому что это меняет план: у самой LA32 выводы `A0-A8` и `CS` - её собственный
-регистровый файл, а у ревербератора отдельный вход `D1-D5` + `STB0/STB1`. **Это два разных
-интерфейса**, и раньше они были свалены в один.
+Once again, because this changes the plan: the LA32 itself has `A0-A8` and `CS` pins -
+its own register file - while the reverb has a separate input `D1-D5` + `STB0/STB1`.
+**These are two different interfaces**, and previously they had been lumped into one.
 
-## Вентильная матрица IC16, выводы
+## IC16 gate array, pins
 
-Со стр. 11, то, что относится к делу: `SI0-SI7` (1-8), `AUXB2` (9), `AUXB3` (10), `CLK`
-(11), `SC0`/`SC1` (13, 14), `AD0-AD15` (21-40 с чередованием), **`EXIO1` (40), `EXIO2`
-(41), `EXIO3` (42)**, `A0-A16` (43-61), `BANK0` (62), `BANK1` (63), **`WR H` (64), `WR L`
-(65)**, `SO0-SO7` (66-71, 74), `LCD0-LCD3` (75-78), `LCDE` (79), `LCDRS` (80). Там же
-приведена внутренняя блок-схема матрицы: адресная защёлка, **адресный дешифратор**, восьми-
-битные защёлки и буферы, последовательный буфер, управление ЖКИ, контроль прерываний,
-программируемый делитель и генератор тактов.
+From p. 11, the relevant part: `SI0-SI7` (1-8), `AUXB2` (9), `AUXB3` (10), `CLK` (11),
+`SC0`/`SC1` (13, 14), `AD0-AD15` (21-40, interleaved), **`EXIO1` (40), `EXIO2` (41),
+`EXIO3` (42)**, `A0-A16` (43-61), `BANK0` (62), `BANK1` (63), **`WR H` (64), `WR L`
+(65)**, `SO0-SO7` (66-71, 74), `LCD0-LCD3` (75-78), `LCDE` (79), `LCDRS` (80). The same
+page gives the array's internal block diagram: address latch, **address decoder**,
+eight-bit latches and buffers, serial buffer, LCD control, interrupt control, a
+programmable divider and clock generator.
 
-Отсюда же видно, почему прошивка никогда не пишет в порты 1 и 2 процессора: всё, что на
-других синтезаторах делают порты, здесь делает матрица - и панель, и ЖКИ, и защёлка SO.
+This also shows why the firmware never writes to processor ports 1 and 2: everything
+that ports do on other synthesizers is done here by the gate array - the panel, the
+LCD, and the SO latch alike.
 
-## Матрица панели - подтверждена схемой платы кнопок (стр. 10)
+## Panel matrix - confirmed by the button board schematic (p. 10)
 
-Плата кнопок (ASSY 79454430) разведена ровно так, как её описывает `INPUT_PORTS_START(d110)`
-в MAME, и это стоит записать, потому что раскладка бралась оттуда без независимой проверки.
-Разъём CN7 несёт **десять** линий: два строба столбцов `SC0`, `SC1` и восемь линий опроса
-`SI0`-`SI7`. Один строб обслуживает столбец EXIT / PATCH / TIMBRE / PART▲ / GROUP△ / BANK▲ /
-NUMBER▲ / WRITE-COPY, второй - EDIT / PART / SYSTEM / PART▼ / GROUP▽ / BANK▼ / NUMBER▼ /
-ENTER, а `SI7`..`SI0` идут сверху вниз, то есть EXIT и EDIT - старший бит, WRITE/COPY и
-ENTER - младший. Это в точности маски из `docs/panel_reference_notes.md`.
+The button board (ASSY 79454430) is wired exactly the way `INPUT_PORTS_START(d110)` in
+MAME describes it, and that's worth recording because the layout was taken from there
+without independent verification. Connector CN7 carries **ten** lines: two column
+strobes `SC0`, `SC1` and eight scan lines `SI0`-`SI7`. One strobe serves the column
+EXIT / PATCH / TIMBRE / PART▲ / GROUP△ / BANK▲ / NUMBER▲ / WRITE-COPY, the other -
+EDIT / PART / SYSTEM / PART▼ / GROUP▽ / BANK▼ / NUMBER▼ / ENTER, and `SI7`..`SI0` run
+top to bottom, i.e. EXIT and EDIT are the most significant bit, WRITE/COPY and ENTER
+the least significant. This matches exactly the masks in
+`docs/panel_reference_notes.md`.
 
-У каждой кнопки последовательный диод (все 1SS-133, все кнопки EVQ-QVT 05G) - поэтому
-одновременное нажатие нескольких кнопок не даёт ложных срабатываний, и опыты вроде
-«EDIT+ENTER вместе» законны на этом железе, а не только в эмуляторе.
+Each button has a series diode (all 1SS-133, all buttons EVQ-QVT 05G) - so pressing
+several buttons at once doesn't produce false triggers, and experiments like
+"EDIT+ENTER together" are legitimate on this hardware, not just in the emulator.
 
-## Заводской тестовый режим (стр. 12-13)
+## Factory test mode (pp. 12-13)
 
-Целиком в прошивке, так что доступен и в эмуляторе. Вход: удерживать две крайние правые
-нижние кнопки при включении. Дальше по шагам: `Acou Piano Right analog out test`, проверка
-всех 16 кнопок (`all switch ok`, когда нажаты все), проверка тембров (восемь нижних кнопок
-играют ноты), проверка ревербератора, MULTI OUT, регулировка ЦАП, самопроверка MIDI, тест
-карты памяти и внутреннего ОЗУ.
+Entirely in the firmware, so it's available in the emulator too. Entry: hold the two
+rightmost bottom buttons at power-on. Then, step by step: `Acou Piano Right analog out
+test`, a check of all 16 buttons (`all switch ok` when all are pressed), a timbre
+check (the eight bottom buttons play notes), a reverb check, MULTI OUT, DAC
+adjustment, a MIDI self-test, and a memory card and internal RAM test.
 
-**И там же - независимое подтверждение того, как устроена лампа MIDI MESSAGE.** Подготовка к
-тесту (стр. 12) требует **соединить MIDI OUT с MIDI IN кабелем**, а шаг «проверка
-ревербератора» говорит: нажми клавишу, послушай том с ревербератором и *«check that the MIDI
-MESSAGE LED is lit»*. Прошивка при этом ничего в лампу не пишет - она пишет в MIDI OUT, а
-лампу зажигает то, что вернулось по петле во вход. Это ровно та схема, которую мы вывели
-измерением и заложили в `D110Core::midiLampOn()`, только сказанная самим Roland.
+**And right there - independent confirmation of how the MIDI MESSAGE LED works.** The
+test setup (p. 12) requires **connecting MIDI OUT to MIDI IN with a cable**, and the
+"reverb check" step says: press a key, listen to the volume with reverb, and *"check
+that the MIDI MESSAGE LED is lit"*. The firmware doesn't write anything to the LED
+itself here - it writes to MIDI OUT, and what lights the LED is what came back through
+the loop into the input. This is exactly the scheme we derived by measurement and
+implemented in `D110Core::midiLampOn()`, only stated by Roland itself.
 
-Отдельно полезно: **версию прошивки показывает сама прошивка** - три кнопки при включении, и
-на экране `D-110 ver 1.06 / Apr. 5, 1988`. Готовая независимая проверка того, какой образ
-ПЗУ на самом деле загружен.
+Separately useful: **the firmware version is shown by the firmware itself** - three
+buttons at power-on, and the screen shows `D-110 ver 1.06 / Apr. 5, 1988`. A
+ready-made independent check of which ROM image is actually loaded.
 
-## Что делает заводской сброс, и чего он НЕ делает (стр. 15)
+## What the factory reset does, and what it does NOT do (p. 15)
 
-Процедура записана дословно так, как её и повторяет `D110Core::factoryReset()`: удерживая
-WRITE/COPY, включить питание и нажать ENTER. Но восстанавливает она, по тексту Roland,
-**только Timbre memory и Rhythm Setup**.
+The procedure is written down verbatim the same way `D110Core::factoryReset()`
+replicates it: hold WRITE/COPY, power on, and press ENTER. But according to Roland's
+text, it restores **only Timbre memory and Rhythm Setup**.
 
-**Tone memory и Patch memory заводской сброс не трогает.** Их Roland предлагает восстанавливать
-с фирменной карты памяти «D-110 FACTORY PRESET CARD» через Load from Card / All. Карты у нас
-нет, и это объясняет, почему после сброса тембры и патчи остаются такими, какими их оставил
-предыдущий сеанс, а не «заводскими».
+**The factory reset doesn't touch Tone memory or Patch memory.** Roland's suggested
+way to restore those is from the official "D-110 FACTORY PRESET CARD" memory card via
+Load from Card / All. We don't have the card, which explains why after a reset the
+tones and patches stay however the previous session left them, rather than becoming
+"factory".
 
-## История версий прошивки (стр. 14), и одно давнее недоумение
+## Firmware version history (p. 14), and one long-standing puzzle
 
-Таблица идёт с 1.01; наш образ - 1.10. Оттуда относящееся к делу:
+The table starts at 1.01; our image is 1.10. From it, what's relevant:
 
-- **После проигрывания демо прошивка ПРИНУДИТЕЛЬНО ставит `Master Tune = 442`,
-  `Control ch = OFF`, `Exclu Unit# = 17`** (перечислено как исправляемая ошибка версии 1.01).
-  Это снимает вопрос, который стоял в `sysex_address_map.md`: панель показывает 442, а
-  роландовская таблица 0-127 даёт для байта `0x4A` около 447. 442 - не пересчёт шкалы, а
-  константа, которую прошивка сама записывает.
-- Там же, про ту же версию: «Turning the power off in ROM play mode might result in that the
-  former tone color remains keeping» и «The setting (Patch + Rhythm Setup) at power-off might
-  not be kept holding» - то есть у ROM Play есть задокументированные побочные эффекты на
-  сохраняемое состояние.
-- Микросхема пресетов IC15 менялась с `LH5310-97` на `LH5310-DJ` ради «improvement on ROM
-  play data», и примечание требует: **если поставлен DJ, прошивка должна быть не ниже 1.07**.
+- **After playing the demo, the firmware FORCIBLY sets `Master Tune = 442`,
+  `Control ch = OFF`, `Exclu Unit# = 17`** (listed as a bug fixed in version 1.01).
+  This resolves the question that stood open in `sysex_address_map.md`: the panel
+  shows 442, while Roland's 0-127 table gives about 447 for byte `0x4A`. 442 is not a
+  scale recalculation, but a constant the firmware writes itself.
+- In the same place, about the same version: "Turning the power off in ROM play mode
+  might result in that the former tone color remains keeping" and "The setting (Patch
+  + Rhythm Setup) at power-off might not be kept holding" - i.e. ROM Play has
+  documented side effects on the saved state.
+- The preset chip IC15 was changed from `LH5310-97` to `LH5310-DJ` for "improvement on
+  ROM play data", and the note requires: **if DJ is fitted, the firmware must be 1.07
+  or newer**.
 
-  Здесь легко запутаться, потому что речь о ДВУХ РАЗНЫХ микросхемах. Прошивка - это IC19
-  (ЭППЗУ `µPD27C256AD-20`), а пресеты и данные демо - это отдельное масочное ПЗУ IC15 (у
-  D-110 на плате обозначено IC12). Менялись они независимо.
+  It's easy to get confused here, because this concerns TWO DIFFERENT chips. The
+  firmware is IC19 (EPROM `µPD27C256AD-20`), while the presets and demo data are a
+  separate mask ROM, IC15 (labeled IC12 on the D-110 board). They were changed
+  independently.
 
-  **Наша прошивка 1.10 это требование перекрывает** - 1.10 новее 1.07, а не старше.
-  Ограничение одностороннее и нашего сочетания не касается. Более ранний у нас именно ПЗУ
-  пресетов: в наборе `r15179873-lh5310-97.ic12.bin`, то есть «-97». Выбора тут и нет -
-  **дампа «-DJ» в MAME не существует вовсе**, в романсете `d110` присутствует только «-97»,
-  а из прошивок предлагаются 1.06 и 1.10, причём 1.10 стоит по умолчанию
+  **Our 1.10 firmware satisfies this requirement** - 1.10 is newer than 1.07, not
+  older. The restriction is one-directional and doesn't concern our combination.
+  What's earlier for us is specifically the preset ROM: in the set,
+  `r15179873-lh5310-97.ic12.bin`, i.e. "-97". There's no choice here anyway - **a
+  "-DJ" dump doesn't exist in MAME at all**, the `d110` romset only has "-97", and of
+  the firmware versions offered, 1.06 and 1.10, 1.10 is the default
   (`ROM_DEFAULT_BIOS("110")`).
 
-  Единственное практическое следствие: демо-песни звучат в более ранней редакции данных,
-  ведь улучшали при переходе на «-DJ» именно их.
+  The only practical consequence: the demo songs play using the earlier revision of
+  the data, since it was precisely the demo data that was improved in the move to
+  "-DJ".
 
-## Куда на самом деле уходит ТИП ревербератора - найдено и измерено
+## Where the reverb TYPE actually goes - found and measured
 
-Схема сказала, где искать; ответ дали дизассемблер и зонд
-`plugin/reverb_reg_probe.cpp` (цель `d110_reverb_reg`).
+The schematic said where to look; the disassembler and the
+`plugin/reverb_reg_probe.cpp` probe (target `d110_reverb_reg`) gave the answer.
 
-Вся настройка ревербератора - одна непрерывная подпрограмма ПЗУ `0x4C7B`-`0x4CC5`, и она
-раскладывает четыре параметра по трём портам:
+The entire reverb setup is a single continuous ROM subroutine `0x4C7B`-`0x4CC5`, and
+it distributes four parameters across three ports:
 
 ```
-4C7B: ld   70, ed94        ; ОЗУ 0x2D94 - Master Tune, пересчёт для другого потребителя
+4C7B: ld   70, ed94        ; RAM 0x2D94 - Master Tune, recomputed for a different consumer
 4C80: mulub 70, #ab        ;   ×171
 4C83: sub  70, #2ac0
 4C87: shra 70, #06         ;   >>6
-4C8A: st   70, f4a0        ;   -> ОЗУ 0x34A0
-4C8F: scall 4d04           ; ВРЕМЯ:  0x0400 биты 0-2 <- ОЗУ 0x2D96 & 7
-4C91: scall 4cc6           ; УРОВЕНЬ: 0x0800 биты 0-1 <- (ОЗУ 0x2D97 & 6) >> 1
-4C93: ldb  70, ed95        ; ОЗУ 0x2D95 - ТИП
-4C98: andb 75, 70, #0e     ;   биты 1-3 типа
+4C8A: st   70, f4a0        ;   -> RAM 0x34A0
+4C8F: scall 4d04           ; TIME: 0x0400 bits 0-2 <- RAM 0x2D96 & 7
+4C91: scall 4cc6           ; LEVEL: 0x0800 bits 0-1 <- (RAM 0x2D97 & 6) >> 1
+4C93: ldb  70, ed95        ; RAM 0x2D95 - TYPE
+4C98: andb 75, 70, #0e     ;   type bits 1-3
 4C9C: di
-4C9D: andb c8, #f1         ;   очистить эти биты в теневом байте
-4CA0: orb  c8, 75          ;   вставить
+4C9D: andb c8, #f1         ;   clear these bits in the shadow byte
+4CA0: orb  c8, 75          ;   insert
 4CA3: ei
-4CA4: stb  c8, 021a        ;   -> ПОРТ 0x021A
-4CA9: ...                  ; ТИП, бит 0 -> 0x0800 бит 2
+4CA4: stb  c8, 021a        ;   -> PORT 0x021A
+4CA9: ...                  ; TYPE, bit 0 -> 0x0800 bit 2
 4CC0: stb  75, 0800
 4CC5: ret
 ```
 
-Есть и второй вход, `0x4C93` (`lcall` из `0x2E54`): он пропускает время и уровень и
-обновляет только тип - это путь правки с панели.
+There is also a second entry point, `0x4C93` (`lcall` from `0x2E54`): it skips time
+and level and updates only the type - this is the path for editing from the panel.
 
-**Итоговая раскладка:**
+**Final layout:**
 
-| Параметр | ОЗУ | Куда уходит | Ширина |
+| Parameter | RAM | Where it goes | Width |
 | --- | --- | --- | --- |
-| Reverb Type | `0x2D95` (0-8, где 8 = OFF) | **биты 1-3 в порт `0x021A`**, **бит 0 в бит 2 порта `0x0800`** | 4 бита, разложены по двум портам |
-| Reverb Time | `0x2D96` (0-7) | порт `0x0400`, биты 0-2 | 3 бита |
-| Reverb Level | `0x2D97` (0-7) | порт `0x0800`, биты 0-1 | **2 бита**: берётся `(уровень & 6) >> 1` |
+| Reverb Type | `0x2D95` (0-8, where 8 = OFF) | **bits 1-3 in port `0x021A`**, **bit 0 in bit 2 of port `0x0800`** | 4 bits, split across two ports |
+| Reverb Time | `0x2D96` (0-7) | port `0x0400`, bits 0-2 | 3 bits |
+| Reverb Level | `0x2D97` (0-7) | port `0x0800`, bits 0-1 | **2 bits**: taken as `(level & 6) >> 1` |
 
-Оба порта имеют ещё по одному однобитному полю, которое ставится тем же приёмом из
-регистра `r70` (`0x0800` бит 2 - это и есть младший бит типа; `0x0400` бит 3 - подпрограмма
-`0x4CE7`, чем она вызывается, пока не выяснено).
+Both ports also have one more one-bit field, set by the same technique from register
+`r70` (`0x0800` bit 2 is the low bit of the type; `0x0400` bit 3 - subroutine
+`0x4CE7`, what calls it hasn't been determined yet).
 
-Замечание, которое стоит держать в голове: **уровень доходит до микросхемы только двумя
-старшими битами из трёх.** На экране он 0-7, а в ревербератор уходит 0-3.
+A note worth keeping in mind: **the level only reaches the chip as the two
+most-significant bits out of three.** On screen it's 0-7, but what goes to the reverb
+chip is 0-3.
 
-### Измерение
+### Measurement
 
-Развёртка восьми типов с панели, перехват записи на `0x021A` и на `0x0400`-`0x0BFF`,
-значения разделены по адресу вызывающей подпрограммы (по `0x021A` параллельно идёт опрос
-панели из `0x5B35` - тысяча-четыре тысячи записей за окно; без разделения там ничего не
-разобрать, и первая редакция этого зонда сваливала их в одну строку). На каждую смену типа
-приходится **ровно одна** запись из `0x4CA9` и **ровно одна** из `0x4CC5`:
+A sweep of the eight types from the panel, intercepting writes to `0x021A` and to
+`0x0400`-`0x0BFF`, with the values separated by the calling subroutine's address (the
+panel scan from `0x5B35` writes to `0x021A` in parallel - one thousand to four
+thousand writes per window; without separating them nothing can be made out, and the
+first version of this probe lumped them into a single row). Each type change produces
+**exactly one** write from `0x4CA9` and **exactly one** from `0x4CC5`:
 
-| ОЗУ `0x2D95` | тип на экране | `0x021A` из `0x4CA9` | `0x0800` из `0x4CC5` |
+| RAM `0x2D95` | type on screen | `0x021A` from `0x4CA9` | `0x0800` from `0x4CC5` |
 | --- | --- | --- | --- |
 | 1 | 2 | `00` | `06` |
 | 2 | 3 | `02` | `02` |
@@ -257,49 +274,54 @@ WRITE/COPY, включить питание и нажать ENTER. Но восс
 | 7 | 8 | `06` | `06` |
 | 8 | OFF | `08` | `02` |
 
-То есть `0x021A` несёт ровно `тип & 0x0E`, а бит 2 в `0x0800` - ровно `тип & 1`.
+In other words, `0x021A` carries exactly `type & 0x0E`, and bit 2 in `0x0800` is
+exactly `type & 1`.
 
-**Подтверждение из независимого места того же прогона.** По `0x021A` параллельно пишет
-опрос панели (ПЗУ `0x5B35`), и его значения в тех же окнах идут парами: `00 01` при типе 1,
-`02 03` при типе 3, `04 05`, `06 07`, `08 09` при OFF. Это тот же байт: **бит 0 - строб
-столбца панели, биты 1-3 - тип ревербератора**, один общий теневой регистр `c8`, что и
-объясняет маску `andb c8, #f1` (сохранить бит 0 и биты 4-7, переписать 1-3). Две
-совершенно разные подпрограммы кладут в один байт свои поля и обе дают одну и ту же
-зависимость от типа - это и есть подтверждение, которого одна подпрограмма дать не может.
+**Confirmation from an independent spot in the same run.** The panel scan (ROM
+`0x5B35`) writes to `0x021A` in parallel, and its values in the same windows come in
+pairs: `00 01` for type 1, `02 03` for type 3, `04 05`, `06 07`, `08 09` for OFF. It's
+the same byte: **bit 0 is the panel column strobe, bits 1-3 are the reverb type**, one
+shared shadow register `c8`, which is exactly what explains the mask `andb c8, #f1`
+(keep bit 0 and bits 4-7, overwrite 1-3). Two completely different subroutines place
+their own fields into the same byte, and both show the same dependency on type -
+that's the kind of confirmation a single subroutine cannot provide.
 
-**Контроль**: те же нажатия и та же нота, но без смены типа - по `0x0800` из `0x4CC5` и по
-`0x021A` из `0x4CA9` **ни одной записи**. Значит записи вызывает именно смена типа, а не
-нажатия, не нота и не время.
+**Control**: the same button presses and the same note, but without changing the type
+- **not a single write** to `0x0800` from `0x4CC5` or to `0x021A` from `0x4CA9`. So
+it's specifically the type change that triggers the writes, not the presses, the note,
+or the time.
 
-### И это ВТОРОЙ настоящий пробел в драйвере MAME - исправлен, патч лежит в репозитории
+### And this is the SECOND real gap in the MAME driver - fixed, the patch is in the repository
 
-`roland_d10.cpp` объявляет `map(0x021a, 0x021b).portr("SC0").nopw()` - адрес занят только
-на чтение, а **записи туда выбрасываются молча**. Прошивка же пишет по нему настоящие
-данные: биты 1-3 типа ревербератора. Ровно того же рода, что и потеря записей по `0x0280`,
-и оба - кандидаты в апстрим, как исправления делителя таймера MCS-96 и ARELR у TMP68301.
+`roland_d10.cpp` declares `map(0x021a, 0x021b).portr("SC0").nopw()` - the address is
+claimed read-only, and **writes to it are silently dropped**. But the firmware writes
+real data there: bits 1-3 of the reverb type. Exactly the same kind of issue as the
+dropped writes at `0x0280`, and both are upstream candidates, like the MCS-96 timer
+divider fix and the TMP68301 ARELR fix.
 
-Обе правки сделаны и лежат в [`../patches/`](../patches/) -
-`mame_roland_d10_dropped_writes.patch`, с оговорками о том, что в них измерено, а что
-выведено. Плагину они не нужны: он по-прежнему собирается против неизменённого дерева, а
-данные видит своими перехватами. Проверено после применения - прибор загружается, развёртка
-восьми типов даёт те же значения до последней строки, демо-песня играет 75 секунд с живой
-панелью на 100% реального времени.
+Both fixes have been made and are in [`../patches/`](../patches/) -
+`mame_roland_d10_dropped_writes.patch`, with notes on what in them is measured versus
+inferred. The plugin doesn't need them: it still builds against the unmodified tree
+and sees the data through its own intercepts. Verified after applying it - the unit
+boots, the eight-type sweep gives the same values down to the last row, and the demo
+song plays for 75 seconds with a live panel at 100% real time.
 
-### Что это меняет, а что нет
+### What this changes, and what it doesn't
 
-Меняет: вопрос «куда уходит тип» закрыт, и прежний вывод «тип должен идти по шине звуковой
-платы `0x0C00`-`0x0D02`» **опровергнут** - шина звуковой платы к ревербератору вообще не
-подключена, это регистры LA32.
+Changes: the question of "where the type goes" is closed, and the earlier conclusion
+"the type must travel over the sound board bus `0x0C00`-`0x0D02`" is **disproved** -
+the sound board bus isn't connected to the reverb at all, those are LA32 registers.
 
-Не меняет: звучать от этого ревербератор D-110 не начинает. Микросхему по-прежнему никто не
-эмулирует, а восемь типов на четыре режима движка честно не ложатся - см.
-[[no-proxy-emulation-rule]]. Зато теперь известно, ЧТО именно пришлось бы подать на вход
-модели, если она когда-нибудь появится: 4 бита типа, 3 бита времени, 2 бита уровня, плюс
-два бита выбора банка микропрограммы и R.SW из защёлки SO.
+Doesn't change: the D-110's reverb still doesn't produce sound because of this. Nobody
+emulates the chip yet, and the eight types honestly don't map onto four engine modes -
+see [[no-proxy-emulation-rule]]. But now it's known exactly WHAT would have to be fed
+into a model's input, if one is ever built: 4 bits of type, 3 bits of time, 2 bits of
+level, plus two bits selecting the microprogram bank and R.SW from the SO latch.
 
-## Чего в заметках НЕТ
+## What's NOT in the notes
 
-Таблицы выводов ревербератора HG61H20R36F - только очертания корпуса на стр. 11 и связи на
-схеме. Значения задержек, коэффициентов и режимов - тем более: они в микропрограмме IC6 и,
-как уже измерено, не лежат в ПЗУ числами (см. [[roland-boss-reverb-feasibility]]: искали
-все 21 опубликованную munt длину, нашли 0).
+A pin table for the HG61H20R36F reverb chip - only the package outline on p. 11 and
+the connections on the schematic. The delay, coefficient, and mode values, even less
+so: they're in the IC6 microprogram and, as already measured, are not present in the
+ROM as plain numbers (see [[roland-boss-reverb-feasibility]]: all 21 published munt
+lengths were searched for, zero were found).

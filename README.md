@@ -193,7 +193,7 @@ content scan, **not** by the control board's fixed-filename lookup above - extra
 want to use `D110EmulatorNative` (or `D110Emulator` built without MAME's own separate romset
 search). Whatever you have, drop it in loose and let the plugin sort out what it recognises.
 
-Right-click the panel to see what was recognised. A `mame_nvram` file that shows up in this
+Right-click the panel to see what was recognised. An `nvram` folder that shows up in this
 same folder afterwards is not a ROM you need to supply - it is the instrument's own battery
 RAM, created and updated automatically as you use the plugin (see below).
 
