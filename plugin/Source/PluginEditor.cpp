@@ -2760,16 +2760,20 @@ void D110Keyboard::mouseExit(const juce::MouseEvent &) {
 // ---------------------------------------------------------------------------
 
 D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
-	: juce::AudioProcessorEditor(&p), panel(p), editorPane(p), card(p), keyboard(p)
+	: juce::AudioProcessorEditor(&p), panel(p), editorPane(p), card(p), keyboard(p), sequencerPanel(p)
 {
 	addAndMakeVisible(panel);
 	addAndMakeVisible(editorPane);
 	addAndMakeVisible(keyboard);
+	addAndMakeVisible(sequencerPanel);
 	// Карта добавляется последней и потому лежит поверх обоих - и прибора, и ящика.
 	addAndMakeVisible(card);
 
 	panel.onCardSlotClicked = [this] { card.toggle(); };
-	card.onEjectNeedsDrawer = [this] { expansionTarget = 1.0f; };
+	card.onEjectNeedsDrawer = [this] {
+		expansion = expansionTarget = 1.0f;
+		applySize();
+	};
 
 	// Ящик закрыт при открытии окна: плагин - это прибор, а редактор к нему добавлен, и до
 	// тех пор, пока его не попросили, он не занимает места.
@@ -2779,12 +2783,12 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 
 	setResizable(true, true);
 	setSize(1500, int(totalRefHeight() * (1500.0f / float(D110Panel::kRefW)) + 0.5f));
-	startTimerHz(60);
 }
 
 float D110AudioProcessorEditor::totalRefHeight() const {
 	return float(D110Panel::kRefH) + kHandleRefH + expansion * kPaneRefH
-	     + kKeyboardHandleRefH + keyboardExpansion * D110Keyboard::kRefH;
+	     + kKeyboardHandleRefH + keyboardExpansion * D110Keyboard::kRefH
+	     + kSequencerHandleRefH + sequencerExpansion * D110SequencerPanel::kRefH;
 }
 
 void D110AudioProcessorEditor::applySize() {
@@ -2809,27 +2813,12 @@ juce::Rectangle<float> D110AudioProcessorEditor::keyboardHandleBand() const {
 	return { 0.0f, top, float(getWidth()), kKeyboardHandleRefH * s };
 }
 
-void D110AudioProcessorEditor::timerCallback() {
-	// Ход ящика. Сглажен к цели, поэтому он приходит на место, а не останавливается вкопанно,
-	// и защёлкивается, когда разница мала, - иначе окно меняло бы размер вечно. 0.13 за кадр
-	// при 60 кадрах в секунду - это около 360 мс: медленно настолько, чтобы прочитаться
-	// выдвижением, и быстро настолько, чтобы не мешать.
-	bool changed = false;
-	if (std::abs(expansionTarget - expansion) > 0.0015f) {
-		expansion += (expansionTarget - expansion) * 0.13f;
-		changed = true;
-	} else if (expansion != expansionTarget) {
-		expansion = expansionTarget;
-		changed = true;
-	}
-	if (std::abs(keyboardExpansionTarget - keyboardExpansion) > 0.0015f) {
-		keyboardExpansion += (keyboardExpansionTarget - keyboardExpansion) * 0.13f;
-		changed = true;
-	} else if (keyboardExpansion != keyboardExpansionTarget) {
-		keyboardExpansion = keyboardExpansionTarget;
-		changed = true;
-	}
-	if (changed) applySize();
+// Same trick a third time: stacked below wherever the keyboard drawer currently ends.
+juce::Rectangle<float> D110AudioProcessorEditor::sequencerHandleBand() const {
+	const float s = float(getWidth()) / float(D110Panel::kRefW);
+	const float top = (float(D110Panel::kRefH) + kHandleRefH + expansion * kPaneRefH
+	                  + kKeyboardHandleRefH + keyboardExpansion * D110Keyboard::kRefH) * s;
+	return { 0.0f, top, float(getWidth()), kSequencerHandleRefH * s };
 }
 
 namespace {
@@ -2868,20 +2857,36 @@ void D110AudioProcessorEditor::paint(juce::Graphics &g)
 	g.fillAll(juce::Colours::black);
 	paintDrawerHandle(g, handleBand(), expansion > 0.5f, handleHover, "EDITOR");
 	paintDrawerHandle(g, keyboardHandleBand(), keyboardExpansion > 0.5f, keyboardHandleHover, "KEYBOARD");
+	paintDrawerHandle(g, sequencerHandleBand(), sequencerExpansion > 0.5f, sequencerHandleHover, "SEQUENCER");
 }
 
 void D110AudioProcessorEditor::mouseDown(const juce::MouseEvent &e)
 {
+	// Drawers snap open/closed instantly rather than easing - see timerCallback()'s own
+	// comment. A resize driven by a live window drag (host or window manager) can overlap
+	// a drawer click, and while the easing was still catching up it kept calling
+	// applySize()/setSize() for several more frames after the drag's own mouse-up - which
+	// read as the window continuing to resize on its own.
 	if (handleBand().contains(e.position)) {
 		expansionTarget = (expansionTarget > 0.5f) ? 0.0f : 1.0f;
+		expansion = expansionTarget;
 		// Ящик закрывают - карте негде лежать, и она возвращается в гнездо. Оставить её висеть
 		// за нижним краем окна значило бы потерять её из виду, не сказав об этом; а «не даём
 		// закрыть ящик, пока карта снаружи» - это запрет там, где хватает движения.
 		if (expansionTarget < 0.5f && card.isOut()) card.insert();
+		applySize();
 		return;
 	}
 	if (keyboardHandleBand().contains(e.position)) {
 		keyboardExpansionTarget = (keyboardExpansionTarget > 0.5f) ? 0.0f : 1.0f;
+		keyboardExpansion = keyboardExpansionTarget;
+		applySize();
+		return;
+	}
+	if (sequencerHandleBand().contains(e.position)) {
+		sequencerExpansionTarget = (sequencerExpansionTarget > 0.5f) ? 0.0f : 1.0f;
+		sequencerExpansion = sequencerExpansionTarget;
+		applySize();
 		return;
 	}
 }
@@ -2890,20 +2895,23 @@ void D110AudioProcessorEditor::mouseMove(const juce::MouseEvent &e)
 {
 	const bool over = handleBand().contains(e.position);
 	const bool overKeyboard = keyboardHandleBand().contains(e.position);
+	const bool overSequencer = sequencerHandleBand().contains(e.position);
 	bool changed = false;
 	if (over != handleHover) { handleHover = over; changed = true; }
 	if (overKeyboard != keyboardHandleHover) { keyboardHandleHover = overKeyboard; changed = true; }
+	if (overSequencer != sequencerHandleHover) { sequencerHandleHover = overSequencer; changed = true; }
 	if (!changed) return;
-	setMouseCursor((over || overKeyboard) ? juce::MouseCursor::PointingHandCursor
-	                                      : juce::MouseCursor::NormalCursor);
+	setMouseCursor((over || overKeyboard || overSequencer) ? juce::MouseCursor::PointingHandCursor
+	                                                       : juce::MouseCursor::NormalCursor);
 	repaint();
 }
 
 void D110AudioProcessorEditor::mouseExit(const juce::MouseEvent &)
 {
-	if (!handleHover && !keyboardHandleHover) return;
+	if (!handleHover && !keyboardHandleHover && !sequencerHandleHover) return;
 	handleHover = false;
 	keyboardHandleHover = false;
+	sequencerHandleHover = false;
 	repaint();
 }
 
@@ -2926,6 +2934,11 @@ void D110AudioProcessorEditor::resized()
 	const int kbTop = paneTop + paneH + int(kKeyboardHandleRefH * s + 0.5f);
 	const int kbH = int(keyboardExpansion * D110Keyboard::kRefH * s + 0.5f);
 	keyboard.setBounds(0, kbTop, getWidth(), juce::jmax(0, kbH));
+
+	// Third time: sequencer's own handle band right below the keyboard, drawer under that.
+	const int seqTop = kbTop + kbH + int(kSequencerHandleRefH * s + 0.5f);
+	const int seqH = int(sequencerExpansion * D110SequencerPanel::kRefH * s + 0.5f);
+	sequencerPanel.setBounds(0, seqTop, getWidth(), juce::jmax(0, seqH));
 
 	// Карта живёт в тех же опорных точках, что и панель, поэтому ей нужен только масштаб и
 	// то, докуда сейчас доходит окно: по ним она сама поставит себе границы.

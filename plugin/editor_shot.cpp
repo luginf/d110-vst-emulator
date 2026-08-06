@@ -118,13 +118,19 @@ int main(int argc, char **argv) {
 			// Ящик открывается прямо здесь: в плагине он выезжает по щелчку за треть
 			// секунды, а снимку показывать надо конечное положение.
 			whole->setExpanded(true);
+			// Also opened here, purely so the snapshot shows what it looks like open - in
+			// normal use this drawer defaults to closed, unlike the keyboard below.
+			whole->setSequencerExpanded(true);
 			// The test keyboard is open by default, so its own handle band and strip
-			// (D110Keyboard::kRefH) count towards the window height same as the drawer's.
+			// (D110Keyboard::kRefH) count towards the window height same as the drawer's -
+			// and the sequencer drawer, forced open just above, the same way again.
 			whole->setSize(width, int((float(D110Panel::kRefH)
 			                           + D110AudioProcessorEditor::kHandleRefH
 			                           + D110AudioProcessorEditor::kPaneRefH
 			                           + D110AudioProcessorEditor::kKeyboardHandleRefH
-			                           + D110Keyboard::kRefH) * scale + 0.5f));
+			                           + D110Keyboard::kRefH
+			                           + D110AudioProcessorEditor::kSequencerHandleRefH
+			                           + D110SequencerPanel::kRefH) * scale + 0.5f));
 			whole->resized();
 			// Обе половины забирают состояние прибора своими таймерами, а очереди сообщений
 			// здесь нет. Без этого снимок вышел бы с погашенным индикатором и надписью

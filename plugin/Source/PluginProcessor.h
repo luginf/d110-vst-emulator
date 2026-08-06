@@ -18,6 +18,7 @@ using D110CoreType = D110CoreNative;
 #include "D110Core.h"
 using D110CoreType = D110Core;
 #endif
+#include "sequencer/D110SequencerEngine.h"
 #include <array>
 #include <memory>
 #include <thread>
@@ -148,6 +149,13 @@ public:
 	// by the identical route a real keyboard would - nothing here talks to the synth directly.
 	// Safe to call from the message thread; the collector is its own lock.
 	void injectTestNote(int channel, int note, float velocity, bool on);
+
+	// The D-20-style sequencer drawer's one way in: it owns its transport, its 9 tracks
+	// and its own MIDI-file/state (de)serialisation, and reads/writes it directly - see
+	// Source/sequencer/D110SequencerEngine.h. processBlock() is the only other reader/
+	// writer, on the audio thread; the UI's own access is safe as long as it stays to the
+	// plain getters/setters (no long-held references across a block boundary).
+	d110seq::D110SequencerEngine &getSequencer() { return sequencerEngine; }
 
 	// The plugin opens powered OFF, and clicking POWER boots the real Roland firmware live,
 	// in real time, exactly as the hardware does - the D110Core machine is started here and
@@ -447,6 +455,23 @@ private:
 	D110CoreType core;
 
 	bool powerBlocked = false;
+
+	// --- D-20-style sequencer ---------------------------------------------------
+	d110seq::D110SequencerEngine sequencerEngine;
+	// Live MIDI channel (1-16, or -1 = unknown/off) for tracks 0-7, refreshed from the
+	// firmware's own System-area channel map once per processBlock - see the constructor,
+	// which wires sequencerEngine's channel source to read this array rather than hit the
+	// core directly (that would mean one getRam() call per note emitted, not per block).
+	// Index kRhythmTrack is never read this way; the rhythm track is fixed on channel 10.
+	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerLiveChannels{};
+	// Reused across blocks so refreshing sequencerLiveChannels doesn't reallocate 32KB every
+	// time - see its use beside sequencerLiveChannels above.
+	std::vector<juce::uint8> sequencerRamScratch;
+	// Metronome click envelope state, carried across processBlock calls since a click's
+	// short decay can span more than one audio block.
+	int metronomeSamplesRemaining = 0;
+	double metronomePhase = 0.0;
+	double metronomeFreq = 1000.0;
 
 	// Writes the saved firmware memory into this instance's folder, ready for the machine
 	// to pick up next time it starts, and reads it back out again.

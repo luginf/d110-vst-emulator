@@ -2,6 +2,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "PluginProcessor.h"
+#include "sequencer/D110SequencerPanel.h"
 
 #include <array>
 #include <vector>
@@ -484,7 +485,7 @@ private:
 // целым, а редактор выезжает из-под него. Ручка - во всю ширину, чтобы читалась ящиком, а
 // не кнопкой, и стоит НИЖЕ фотографии, а не на ней: на лицевой стороне прибора нет и не
 // может быть органов управления, которых нет у железа.
-class D110AudioProcessorEditor : public juce::AudioProcessorEditor, private juce::Timer {
+class D110AudioProcessorEditor : public juce::AudioProcessorEditor {
 public:
 	explicit D110AudioProcessorEditor(D110AudioProcessor &);
 
@@ -502,6 +503,9 @@ public:
 	}
 	// Открыть ящик без мыши - тем же снимком.
 	void setExpanded(bool open) { expansion = expansionTarget = open ? 1.0f : 0.0f; }
+	// Same, for the sequencer drawer - closed by default in normal use, but editor_shot's
+	// whole-editor snapshot wants to show it open, the way it already does for the others.
+	void setSequencerExpanded(bool open) { sequencerExpansion = sequencerExpansionTarget = open ? 1.0f : 0.0f; }
 
 	// Высота полосы-ручки в опорных точках панели.
 	static constexpr float kHandleRefH = 34.0f;
@@ -512,13 +516,15 @@ public:
 	// Handle band above the test keyboard - slimmer than the editor's own, in keeping with
 	// the keyboard being the minimal add-on rather than the main drawer.
 	static constexpr float kKeyboardHandleRefH = 26.0f;
+	// Handle band above the sequencer drawer - same slim treatment as the keyboard's.
+	static constexpr float kSequencerHandleRefH = 26.0f;
 
 private:
-	void timerCallback() override;
 	float totalRefHeight() const;
 	void applySize();
 	juce::Rectangle<float> handleBand() const;
 	juce::Rectangle<float> keyboardHandleBand() const;
+	juce::Rectangle<float> sequencerHandleBand() const;
 
 	D110Panel panel;
 	D110EditorPane editorPane;
@@ -528,6 +534,8 @@ private:
 	// Stacked below the extended editor's own drawer, with its own independent fold state -
 	// see D110Keyboard's header comment for why.
 	D110Keyboard keyboard;
+	// Stacked below the keyboard, third drawer down, same independent-fold treatment.
+	D110SequencerPanel sequencerPanel;
 	juce::ComponentBoundsConstrainer constrainer;
 
 	float expansion = 0.0f;        // сглаженное 0..1
@@ -537,6 +545,12 @@ private:
 	float keyboardExpansion = 1.0f;       // eased 0..1, open by default
 	float keyboardExpansionTarget = 1.0f;
 	bool keyboardHandleHover = false;
+
+	// Closed by default, unlike the keyboard: a bigger, more specialised drawer, better as
+	// an opt-in reveal than something that greets every session already open.
+	float sequencerExpansion = 0.0f;
+	float sequencerExpansionTarget = 0.0f;
+	bool sequencerHandleHover = false;
 
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D110AudioProcessorEditor)
 };

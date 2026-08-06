@@ -2,6 +2,7 @@
 #include "PluginEditor.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -108,6 +109,14 @@ D110AudioProcessor::D110AudioProcessor()
 	masterVolumeParam = parameters.getRawParameterValue("masterVolume");
 	reverbEnabledParam = parameters.getRawParameterValue("reverbEnabled");
 	superModeParam = parameters.getRawParameterValue("superMode");
+
+	// Reads sequencerLiveChannels rather than the core directly - see that array's own
+	// comment. Set once here rather than per-block: the callback itself never changes,
+	// only the array it closes over, which processBlock refreshes each block.
+	sequencerLiveChannels.fill(-1);
+	sequencerLiveChannels[d110seq::D110SequencerEngine::kRhythmTrack] = 10;
+	sequencerEngine.setChannelSource(
+		[this](int track) { return sequencerLiveChannels[static_cast<size_t>(track)]; });
 
 	tryAutoLoadRoms();
 }
@@ -660,6 +669,51 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 			midiMessages.addEvent(meta.getMessage(), meta.samplePosition);
 	}
 
+	// --- D-20-style sequencer: capture into the armed track, then layer in playback -----
+	// Done here, ahead of the synth/power guard just below, so the transport's own clock
+	// keeps ticking regardless of power state - matching real hardware, where a sequencer
+	// isn't gated by anything else. Recorded and played-back notes are added straight into
+	// midiMessages, so the streaming loop further down (and the firmware it feeds) cannot
+	// tell them apart from host MIDI - same reasoning as the osMidiCollector merge above.
+	// sequencerClicks is filled here but mixed into the OUTPUT buffer much further down,
+	// after the synth has actually rendered into it.
+	std::vector<d110seq::D110SequencerEngine::MetronomeClick> sequencerClicks;
+	{
+		// Refreshed once per block, not once per note - see sequencerLiveChannels' comment.
+		if (core.isRunning()) {
+			if (sequencerRamScratch.size() != static_cast<size_t>(D110CoreType::kRamSize))
+				sequencerRamScratch.resize(static_cast<size_t>(D110CoreType::kRamSize));
+			if (core.getRam(sequencerRamScratch.data())) {
+				for (int t = 0; t < d110seq::D110SequencerEngine::kRhythmTrack; ++t) {
+					const size_t addr = static_cast<size_t>(D110CoreType::kRamSystem + 13 + t);
+					const int raw = addr < sequencerRamScratch.size()
+					                    ? static_cast<int>(sequencerRamScratch[addr])
+					                    : -1;
+					// 0..15 = channel 1..16; 16 = the part is OFF, and anything else means
+					// the read didn't land where expected - both fall back to the engine's
+					// own default (channelForTrack) by staying -1.
+					sequencerLiveChannels[static_cast<size_t>(t)] = (raw >= 0 && raw <= 15) ? raw + 1 : -1;
+				}
+			}
+		}
+
+		const double beatsPerSample = (sequencerEngine.getTempo() / 60.0) / currentSampleRate;
+		const double windowStartBeats = sequencerEngine.getPositionBeats();
+		const int armed = sequencerEngine.isRecording() ? sequencerEngine.getArmedTrack() : -1;
+		if (armed >= 0) {
+			const int armedChannel = sequencerEngine.channelForTrack(armed);
+			for (const auto meta : midiMessages) {
+				const auto &msg = meta.getMessage();
+				if (msg.isNoteOnOrOff() && msg.getChannel() == armedChannel)
+					sequencerEngine.captureEvent(
+						msg, windowStartBeats + static_cast<double>(meta.samplePosition) * beatsPerSample);
+			}
+		}
+
+		sequencerEngine.renderInto(midiMessages, numSamples, currentSampleRate,
+		                            sequencerEngine.getMetronomeEnabled() ? &sequencerClicks : nullptr);
+	}
+
 	// Held for the rest of this block: openSynthIfReady() (below) can run concurrently on the
 	// message thread and swaps `synth`/`sampleRateConverter` out from under us when Super
 	// Mode is toggled live. It only ever costs this an O(1) pointer handover, never the
@@ -840,6 +894,35 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 	while (midiIterator != midiEnd) {
 		handleIncomingMidiMessage((*midiIterator).getMessage());
 		++midiIterator;
+	}
+
+	// Sequencer metronome: mixed straight into the output rather than routed through the
+	// firmware/LA32 engine, since it's a transport aid and not part of the instrument's own
+	// sound - deliberately outside the DAC-saturation/VOLUME-knob scaling above. State
+	// (phase, remaining samples) is carried in member variables because a click's short
+	// decay can outlast the block it started in.
+	if (!sequencerClicks.empty()) {
+		constexpr double kClickSeconds = 0.03;
+		const int clickTotalSamples = juce::jmax(1, static_cast<int>(currentSampleRate * kClickSeconds));
+		int cursor = 0;
+		auto ringUpTo = [&](int endSample) {
+			for (int i = cursor; i < endSample; ++i) {
+				if (metronomeSamplesRemaining <= 0) continue;
+				const float amp = static_cast<float>(metronomeSamplesRemaining) / static_cast<float>(clickTotalSamples);
+				const float s = std::sin(metronomePhase) * amp * 0.25f;
+				metronomePhase += juce::MathConstants<double>::twoPi * metronomeFreq / currentSampleRate;
+				for (int ch = 0; ch < numOutChannels; ++ch) buffer.addSample(ch, i, s);
+				--metronomeSamplesRemaining;
+			}
+		};
+		for (const auto &click : sequencerClicks) {
+			ringUpTo(click.samplePosition);
+			cursor = click.samplePosition;
+			metronomeSamplesRemaining = clickTotalSamples;
+			metronomeFreq = click.downbeat ? 1500.0 : 1000.0;
+			metronomePhase = 0.0;
+		}
+		ringUpTo(numSamples);
 	}
 
 #ifdef D110_NATIVE_CORE
@@ -1627,6 +1710,25 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	xml->setAttribute("cardInserted", core.cardInserted() ? 1 : 0);
 	xml->setAttribute("cardWriteProtect", core.cardWriteProtect() ? 1 : 0);
 
+	// The D-20-style sequencer's own tracks and transport settings, packed the same way
+	// the firmware NVRAM is above - so a project brings the whole sequencer back exactly
+	// as left, not just the instrument. The playhead position and armed/record/play state
+	// are deliberately NOT saved: like most sequencers, a reopened project starts stopped
+	// at bar 1 rather than mid-transport.
+	xml->setAttribute("seqTempo", sequencerEngine.getTempo());
+	xml->setAttribute("seqTimeSigNum", sequencerEngine.getTimeSigNumerator());
+	xml->setAttribute("seqTimeSigDen", sequencerEngine.getTimeSigDenominator());
+	xml->setAttribute("seqMetronome", sequencerEngine.getMetronomeEnabled() ? 1 : 0);
+	xml->setAttribute("seqPrecountBars", sequencerEngine.getPrecountBars());
+	xml->setAttribute("seqRecordMode", static_cast<int>(sequencerEngine.getRecordMode()));
+	for (int t = 0; t < d110seq::D110SequencerEngine::kNumTracks; ++t) {
+		const juce::String suffix(t);
+		xml->setAttribute("seqMute" + suffix, sequencerEngine.isTrackMuted(t) ? 1 : 0);
+		xml->setAttribute("seqSolo" + suffix, sequencerEngine.isTrackSoloed(t) ? 1 : 0);
+		xml->setAttribute("seqQuantize" + suffix, static_cast<int>(sequencerEngine.getTrackQuantize(t)));
+		xml->setAttribute("seqTrack" + suffix, packBlock(sequencerEngine.trackToBytes(t)));
+	}
+
 	copyXmlToBinary(*xml, destData);
 }
 
@@ -1674,6 +1776,37 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 	// с вынутой картой - см. D110CoreType::osdApplyCard.
 	core.setCardInserted(xml->getIntAttribute("cardInserted", 1) != 0);
 	core.setCardWriteProtect(xml->getIntAttribute("cardWriteProtect", 0) != 0);
+
+	// The sequencer's own tracks and transport settings - see the matching comment in
+	// getStateInformation. A project saved before this existed simply has none of these
+	// attributes, and every getAttribute call below already has the engine's own default
+	// as its fallback, so an old project loads with a fresh, empty sequencer rather than
+	// an error.
+	sequencerEngine.setTempo(xml->getDoubleAttribute("seqTempo", sequencerEngine.getTempo()));
+	sequencerEngine.setTimeSignature(xml->getIntAttribute("seqTimeSigNum", sequencerEngine.getTimeSigNumerator()),
+	                                  xml->getIntAttribute("seqTimeSigDen", sequencerEngine.getTimeSigDenominator()));
+	sequencerEngine.setMetronomeEnabled(xml->getIntAttribute("seqMetronome", 1) != 0);
+	// "seqPrecountBars" is the current attribute; "seqPrecount" (a plain 0/1 toggle) is
+	// what an older project saved before precount became a 0/1/2-bar cycle - read as 1
+	// bar when it was on, matching that toggle's old meaning.
+	if (xml->hasAttribute("seqPrecountBars"))
+		sequencerEngine.setPrecountBars(xml->getIntAttribute("seqPrecountBars", 1));
+	else
+		sequencerEngine.setPrecountBars(xml->getIntAttribute("seqPrecount", 1) != 0 ? 1 : 0);
+	sequencerEngine.setRecordMode(static_cast<d110seq::RecordMode>(
+		xml->getIntAttribute("seqRecordMode", static_cast<int>(d110seq::RecordMode::replaceRange))));
+	for (int t = 0; t < d110seq::D110SequencerEngine::kNumTracks; ++t) {
+		const juce::String suffix(t);
+		const auto trackBytes = unpackBlock(xml->getStringAttribute("seqTrack" + suffix));
+		sequencerEngine.trackFromBytes(t, trackBytes.getData(), trackBytes.getSize());
+		sequencerEngine.setTrackMuted(t, xml->getIntAttribute("seqMute" + suffix, 0) != 0);
+		sequencerEngine.setTrackSoloed(t, xml->getIntAttribute("seqSolo" + suffix, 0) != 0);
+		// quantizeTrack() re-snaps to the grid it's given, but the events restored above are
+		// already on that grid (they were saved post-quantize), so this is idempotent - it
+		// only actually needs to run to restore the stored preference for the drawer's menu.
+		sequencerEngine.quantizeTrack(
+			t, static_cast<d110seq::QuantizeGrid>(xml->getIntAttribute("seqQuantize" + suffix, 0)));
+	}
 }
 
 juce::AudioProcessor *JUCE_CALLTYPE createPluginFilter() {

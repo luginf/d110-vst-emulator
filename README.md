@@ -8,6 +8,8 @@
 
 A VST3 plugin that emulates the Roland D-110 multi-timbral sound module.
 
+[!](docs/D-110_vst01.jpg)
+
 **It runs the D-110's real Roland firmware.** The menus, the display, the patch and timbre
 editors and all sixteen front-panel buttons are the hardware's own - nothing about them is a
 reimplementation. That half comes from [MAME](https://github.com/mamedev/mame)'s `roland_d10`
