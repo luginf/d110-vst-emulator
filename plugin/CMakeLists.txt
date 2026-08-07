@@ -99,8 +99,13 @@ juce_add_plugin(D110Emulator
     PLUGIN_MANUFACTURER_CODE Manu
     PLUGIN_CODE Dvst
     FORMATS ${D110_FORMATS}
-    PRODUCT_NAME "D-110_Emulator"
-    PLUGIN_NAME "D-110 Emulator"
+    # Distinct from D110EmulatorNative's own "D-110 Emulator" below so the two can never
+    # collide on disk (same .vst3 bundle name, same Standalone binary name) if this dormant,
+    # opt-in backend is ever built alongside the shipping one - see this target's own header
+    # comment for why it's the one that carries the qualifier now that MAME is the fallback,
+    # not the default (2026-08-07).
+    PRODUCT_NAME "D-110 Emulator MAME"
+    PLUGIN_NAME "D-110 Emulator MAME"
 )
 
 # On Apple, MAME_DRIVLIST is built as its own tiny static lib instead of going straight into
@@ -193,11 +198,14 @@ endif() # D110_BUILD_MAME_BACKEND
 # so D110CoreType resolves to D110CoreNative instead of the MAME-backed D110Core - see the
 # "Native D-110 CPU core port" plan and PluginProcessor.h's own comment on D110CoreType.
 # Deliberately links none of MAME_LIBS/MAME_INCLUDES/D110Core.cpp/MAME_DRIVLIST - that
-# absence is the whole point of this target, not an optimisation. A separate plugin (own
-# product name, own plugin code, own install dir) so it can sit beside the real, proven
-# D110Emulator in a DAW's plugin list rather than replacing it, exactly as the plan's
-# "Backend switch design" calls for: the MAME-backed plugin stays the shipping default
-# until this one has passed the full probe suite pairwise against it.
+# absence is the whole point of this target, not an optimisation. This is THE shipping
+# product now (Alan's call, 2026-08-05 - see feedback_native_only_releases memory); the
+# MAME-backed D110Emulator above is a dormant, opt-in fallback, not built by default. The
+# CMake target keeps the "Native" name (an internal identifier only, invisible to users and
+# threaded through ~60 probe executables' target_link_libraries calls), but the PRODUCT_NAME
+# below - what actually shows up as the .vst3 bundle name, the Standalone binary, and the
+# app's own settings file name - dropped it as of 2026-08-07: which CPU core runs underneath
+# is an implementation detail, not something worth surfacing in the product's own name.
 juce_add_plugin(D110EmulatorNative
     VERSION ${PROJECT_VERSION}
     COMPANY_NAME "DIY"
@@ -211,11 +219,12 @@ juce_add_plugin(D110EmulatorNative
     PLUGIN_MANUFACTURER_CODE Manu
     PLUGIN_CODE Dvsn
     FORMATS ${D110_FORMATS}
-    # Not "D-110 Emulator (Native)": parentheses in the product name end up in the .vst3
-    # bundle's own path, and CMake's Unix Makefiles generator doesn't shell-escape them in
-    # the generated copy/remove recipes - `(` reaches /bin/sh unquoted and breaks the build.
-    # Spaces are escaped there; parens are not, on Linux. Windows never hit this.
-    PRODUCT_NAME "D-110 Emulator Native"
+    # Not "D-110 Emulator (Native)" and not parenthesised in general: parentheses in the
+    # product name end up in the .vst3 bundle's own path, and CMake's Unix Makefiles
+    # generator doesn't shell-escape them in the generated copy/remove recipes - `(` reaches
+    # /bin/sh unquoted and breaks the build. Spaces are escaped there; parens are not, on
+    # Linux. Windows never hit this.
+    PRODUCT_NAME "D-110 Emulator"
 )
 
 target_sources(D110EmulatorNative PRIVATE
@@ -1388,6 +1397,240 @@ target_compile_definitions(d110_native_single_part_stuck PRIVATE
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
     JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(d110_native_single_part_stuck PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
+# Reproduces Alan's 2026-08-06 JACK/Focusrite report: retriggering a note (same or a
+# different pitch) while the previous one's firmware voice slot is still busy produces no
+# audible sound - see the probe's own header comment for why this checks actual rendered
+# audio, not just firmware bookkeeping the way native_single_part_stuck_probe does.
+add_executable(d110_native_retrigger_silence native_retrigger_silence_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp)
+target_include_directories(d110_native_retrigger_silence PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_retrigger_silence PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_native_retrigger_silence PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
+# Longer, randomised companion to d110_native_retrigger_silence: thousands of notes over a
+# simulated session, watching for state that drifts into occasional silence rather than
+# testing one fixed retrigger shape - see the probe's own header comment.
+add_executable(d110_native_long_session_stress native_long_session_stress_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp)
+target_include_directories(d110_native_long_session_stress PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_long_session_stress PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_native_long_session_stress PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
+# Isolates whether notes going silent over a long session is tied to a specific tone's attack
+# time (ruled out for part 8/Strings 3 by native_retrigger_silence_probe's tone-swap test) or
+# a genuine cumulative drift - one part, one fast-attack tone, thousands of notes, watching for
+# exactly when (if ever) it starts failing. See the probe's own header comment.
+add_executable(d110_native_cumulative_drift native_cumulative_drift_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp)
+target_include_directories(d110_native_cumulative_drift PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_cumulative_drift PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_native_cumulative_drift PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
+# Alan's decisive clue: the cutout only follows interacting with the Editor drawer (tone/
+# patch selection) while playing, and clears up when reselecting from the native panel
+# instead - checks the documented parameter-vs-note race for the Editor's own direct
+# TimbreTemp write specifically, landing while notes are actively streaming. See the probe's
+# own header comment.
+add_executable(d110_native_editor_race native_editor_race_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp)
+target_include_directories(d110_native_editor_race PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_editor_race PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_native_editor_race PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
+# Follow-up to d110_native_editor_race, this time for the PATCHES tab's selectPatch() - a
+# queued, juce::Timer-driven sequence of simulated button presses, properly pumped via
+# runDispatchLoopUntil this time (earlier probes calling selectPatch() never did, so its
+# timer likely never fired in them at all). See the probe's own header comment.
+add_executable(d110_native_patch_select_race native_patch_select_race_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp)
+target_include_directories(d110_native_patch_select_race PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_patch_select_race PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(d110_native_patch_select_race PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
+# Alan's screenshot: patch I-11 selected, then a chord played - Monitor showed the engine
+# holding 0 partials/no parts sounding while the firmware's own voice-slot table showed 12
+# busy. See the probe's own header comment.
+add_executable(d110_native_chord_patch native_chord_patch_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp)
+target_include_directories(d110_native_chord_patch PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_chord_patch PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(d110_native_chord_patch PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
+# Loads Alan's own saved snapshot (confirmed to reproduce the cutout on this machine too, not
+# just his JACK/Focusrite one) and hammers notes/chords on it. See the probe's own header
+# comment.
+add_executable(d110_native_snapshot_repro native_snapshot_repro_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp)
+target_include_directories(d110_native_snapshot_repro PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_snapshot_repro PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(d110_native_snapshot_repro PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
+# Isolates the duplicate-channel-mapping detail found in Alan's reproducing snapshot (parts 3
+# and 4 both on MIDI channel 3) on an otherwise fresh/default instance. See the probe's own
+# header comment.
+add_executable(d110_native_duplicate_channel native_duplicate_channel_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp)
+target_include_directories(d110_native_duplicate_channel PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_duplicate_channel PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(d110_native_duplicate_channel PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
+# Alan's fully deterministic repro: load his snapshot, select patch 01, change Part 1's tone
+# to AcouPiano1 via the Editor's own direct-write mechanism (not the native panel) - notes go
+# silent every time. See the probe's own header comment.
+add_executable(d110_native_editor_tone_repro native_editor_tone_repro_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp)
+target_include_directories(d110_native_editor_tone_repro PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_editor_tone_repro PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(d110_native_editor_tone_repro PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
+# The one path no earlier probe in this investigation tested: real MIDI input via
+# osMidiCollector (injectTestNote), driven at genuine real-time cadence (Thread::sleep, not
+# fast-forwarded rendering) - see the probe's own header comment for why this, not direct
+# processBlock() buffer injection, is what Alan's actual keyboard/on-screen-keyboard usage
+# goes through.
+add_executable(d110_native_realtime_collector native_realtime_collector_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp)
+target_include_directories(d110_native_realtime_collector PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_realtime_collector PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_native_realtime_collector PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
+# Confirms the root cause found by diffing Alan's own "broken"/"fixed" snapshots: TimbreTemp
+# field 5 (ASSIGN), never touched by the Parts tab's tone-picker. See the probe's own header
+# comment.
+add_executable(d110_native_assign_mode native_assign_mode_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp)
+target_include_directories(d110_native_assign_mode PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_assign_mode PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_native_assign_mode PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
+# Verifies the 2026-08-07 fix mirroring masterTune to the sound engine. See the probe's own
+# header comment.
+add_executable(d110_native_master_tune native_master_tune_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp)
+target_include_directories(d110_native_master_tune PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_master_tune PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_native_master_tune PRIVATE
     D110PanelData MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
 

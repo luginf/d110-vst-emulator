@@ -8,7 +8,7 @@
 
 A VST3 plugin that emulates the Roland D-110 multi-timbral sound module.
 
-[!](docs/D-110_vst01.jpg)
+![screenshot](docs/D-110_vst01.jpg)
 
 **It runs the D-110's real Roland firmware.** The menus, the display, the patch and timbre
 editors and all sixteen front-panel buttons are the hardware's own - nothing about them is a
@@ -111,6 +111,23 @@ The firmware's memory is **one file beside the ROMs**, as the instrument has one
 and it is written when the plugin is switched off - so close the host and reopen it and your
 patches are where you left them. Your project saves a copy too, so reloading a session brings
 back the sounds it was saved with rather than whatever the file has since become.
+
+**Moving to a different machine also means copying a second, separate file.** The battery RAM
+above only holds the firmware's own memory - patches, timbres, system settings, the memory
+card. Everything belonging to the *plugin itself* instead - the light/dark theme, the editor
+drawer's height, and the D-20-style sequencer's 4 song slots - lives in the Standalone build's
+own settings file, which the NVRAM folder does not include:
+
+- Linux: `~/.config/D-110 Emulator.settings`
+- macOS: `~/Library/Application Support/D-110 Emulator.settings`
+- Windows: `%APPDATA%\D-110 Emulator.settings`
+
+(In a DAW host instead of the Standalone app, this same data is saved inside the DAW's own
+project file, so this only matters for the Standalone.) If a song written on one machine isn't
+showing up on another after copying the NVRAM folder over, this file is almost certainly why -
+copy it too, or use the sequencer's own right-click **LOAD**/**SAVE** on the transport strip to
+export/import all 4 song slots as a single portable `.d110songs` file instead (a plain click
+there still saves/loads just the current song as a standard `.mid`).
 
 **The memory card slot works.** A seated card shows its edge in the slot, so an occupied socket
 looks different from an empty one at a glance. Click the slot and the M-256D slides down and

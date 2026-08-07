@@ -43,6 +43,19 @@ void D110SequencerEngine::stop() {
 	// skipping the fold here used to silently discard whatever had just been recorded.
 	if (recording) stopRecording();
 	playing = false;
+
+	// Snap back to the start of whatever bar the transport was in - "remettre le compteur à
+	// zéro" (Alan, 2026-08-07). Without this, positionBeats stays at wherever STOP happened
+	// (renderInto() only ever moves it forward, or gotoBar() jumps it, nothing else touches
+	// it), so resuming later - REC with no precount, in particular - would start the
+	// metronome mid-bar (e.g. beat 4, if the previous take happened to end on beat 3) instead
+	// of a clean beat 1, even though every visual/audible cue always renders as if a take
+	// starts fresh on the downbeat. This only clears the beat-WITHIN-the-bar remainder, not
+	// the bar itself - getCurrentBar() and the bar-navigation buttons land on the same bar
+	// before and after, so a stopped position is still exactly where the bar-prev/next UI
+	// says it is.
+	const double bar = barLengthBeats();
+	if (bar > 0.0) positionBeats = std::floor(positionBeats / bar + 1.0e-9) * bar;
 }
 
 bool D110SequencerEngine::isPrecounting() const {
@@ -83,6 +96,14 @@ int D110SequencerEngine::currentClickInBar() const {
 	if (beatInBar < 0.0) beatInBar += bar;
 	const int idx = static_cast<int>(std::floor(beatInBar / clickGrid + 1.0e-9));
 	return juce::jlimit(0, clicksPerBar() - 1, idx);
+}
+
+int D110SequencerEngine::precountBeatsElapsed() const {
+	const double clickGrid = 4.0 / static_cast<double>(timeSigDen);
+	if (clickGrid <= 0.0) return 0;
+	const double totalPrecountBeats = double(precountBars) * barLengthBeats();
+	const double elapsed = juce::jmax(0.0, totalPrecountBeats - precountRemainingBeats);
+	return static_cast<int>(std::floor(elapsed / clickGrid + 1.0e-9));
 }
 
 void D110SequencerEngine::setPunchIn(int bar) {
@@ -325,6 +346,23 @@ void D110SequencerEngine::renderInto(juce::MidiBuffer &midiMessages, int numSamp
 	const double beatsPerSample = (tempoBpm / 60.0) / sampleRate;
 	int samplesRendered = 0;
 
+	// Shared by both click-emission sites below (precount and normal playback) - records the
+	// click for the visual/audio-domain path (clicksOut) and, when enabled, also fires a real
+	// note on the rhythm channel so the metronome can be heard through an actual percussion
+	// patch instead of only the internal synthesized beep.
+	auto emitClick = [&](int sampleOffset, bool downbeat) {
+		if (clicksOut != nullptr) clicksOut->push_back({sampleOffset, downbeat});
+		if (metronomeUseChannel10) {
+			const int channel = channelForTrack(kRhythmTrack);
+			const int note = downbeat ? kMetronomeBellNote : kMetronomeClickNote;
+			const juce::uint8 velocity = static_cast<juce::uint8>(
+			    juce::jlimit(1, 127, juce::roundToInt(100.0f * metronomeVolume)));
+			midiMessages.addEvent(juce::MidiMessage::noteOn(channel, note, velocity), sampleOffset);
+			const int offOffset = juce::jlimit(sampleOffset, numSamples - 1, sampleOffset + 512);
+			midiMessages.addEvent(juce::MidiMessage::noteOff(channel, note), offOffset);
+		}
+	};
+
 	// Precount: a fictitious count-in, not a real position on the timeline - it plays the
 	// metronome without positionBeats moving and without any track content sounding, so the
 	// take that follows starts exactly on the bar the transport was already on, not however
@@ -337,7 +375,8 @@ void D110SequencerEngine::renderInto(juce::MidiBuffer &midiMessages, int numSamp
 		const int precountSamples =
 		    juce::jlimit(0, numSamples, juce::roundToInt(precountRemainingBeats / beatsPerSample));
 
-		if (clicksOut != nullptr && metronomeEnabled && precountSamples > 0) {
+		if (clicksOut != nullptr && metronomeEnabled && metronomeMode != MetronomeMode::visualOnly
+		    && precountSamples > 0) {
 			const double clickGrid = 4.0 / static_cast<double>(timeSigDen);
 			const int clicksPerBarCount =
 			    clickGrid > 0.0 ? juce::roundToInt(barLengthBeats() / clickGrid) : 0;
@@ -351,13 +390,25 @@ void D110SequencerEngine::renderInto(juce::MidiBuffer &midiMessages, int numSamp
 					const int clickIndex = clicksPerBarCount > 0
 					                            ? juce::roundToInt(nextClickBeat / clickGrid) % clicksPerBarCount
 					                            : 0;
-					clicksOut->push_back({sampleOffset, clickIndex == 0});
+					emitClick(sampleOffset, clickIndex == 0);
 				}
 				nextClickBeat += clickGrid;
 			}
 		}
 
-		precountRemainingBeats = juce::jmax(0.0, precountRemainingBeats - beatsPerSample * precountSamples);
+		// precountSamples < numSamples means it was NOT clamped by numSamples above - i.e. it's
+		// exactly how many samples were left in the count-in, by construction, and the count-in
+		// ends inside this block. Force the remainder to exactly 0.0 in that case rather than
+		// subtracting: precountRemainingBeats is continuous but precountSamples is a rounded
+		// sample count, so the subtraction can leave a tiny nonzero residual - which, converted
+		// back to samples next block, can itself round down to 0 and never shrink further,
+		// stalling precountRemainingBeats just above zero forever. That leaves isPrecounting()
+		// stuck true long after the count-in has actually finished and positionBeats has
+		// already resumed advancing below - confirmed by testPrecountEndsPromptly() failing
+		// under a realistic (non-beat-aligned) block size before this fix.
+		precountRemainingBeats = precountSamples < numSamples
+		                              ? 0.0
+		                              : juce::jmax(0.0, precountRemainingBeats - beatsPerSample * precountSamples);
 		samplesRendered = precountSamples;
 		if (samplesRendered >= numSamples) return; // the whole block was still count-in
 	}
@@ -416,7 +467,10 @@ void D110SequencerEngine::renderInto(juce::MidiBuffer &midiMessages, int numSamp
 			}
 		}
 
-		if (clicksOut != nullptr && metronomeEnabled) {
+		// metronomeRecordOnly (most DAWs' "click only when recording") is a no-op during the
+		// precount block above - that one only ever runs while recording is already true.
+		if (clicksOut != nullptr && metronomeEnabled && metronomeMode != MetronomeMode::visualOnly
+		    && (!metronomeRecordOnly || recording)) {
 			// Metronome clicks on the meter's own reporting subdivision (a quarter in 4/4,
 			// an eighth in 6/8, ...), not on the quarter-note beat unit events are stored in.
 			const double clickGrid = 4.0 / static_cast<double>(timeSigDen);
@@ -430,7 +484,7 @@ void D110SequencerEngine::renderInto(juce::MidiBuffer &midiMessages, int numSamp
 					sampleOffset = juce::jlimit(0, numSamples - 1, sampleOffset);
 					const int clickIndex =
 					    clicksPerBar > 0 ? juce::roundToInt(nextClickBeat / clickGrid) % clicksPerBar : 0;
-					clicksOut->push_back({sampleOffset, clickIndex == 0});
+					emitClick(sampleOffset, clickIndex == 0);
 				}
 				nextClickBeat += clickGrid;
 			}

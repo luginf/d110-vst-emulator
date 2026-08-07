@@ -1527,6 +1527,18 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 	}
 	area.removeFromTop(18.0f);
 
+	labels.push_back({ area.removeFromTop(15.0f), "DEBUG", true });
+	{
+		auto row = area.removeFromTop(28.0f);
+		buttons.push_back({ row.removeFromLeft(150.0f),
+		                    processor.getDebugModeEnabled() ? "LOGGING ON" : "LOGGING OFF", 12 });
+		labels.push_back({ row.reduced(12.0f, 0.0f),
+		                   "when on, writes a running note-attempt tally to "
+		                   "~/d110_diagnostic_log.txt every few seconds - off by default, only "
+		                   "useful while chasing a real playback issue", false });
+	}
+	area.removeFromTop(18.0f);
+
 	labels.push_back({ area.removeFromTop(15.0f), "MESSAGE ON THE INSTRUMENT'S OWN DISPLAY",
 	                   true });
 	{
@@ -1714,7 +1726,24 @@ void D110EditorPane::setValue(const Cell &c, int value) {
 	case Area::Timbres:  processor.sendTimbreMemoryParam(c.index, c.field, uint8_t(v)); break;
 	case Area::Patches:  processor.editPatchField(c.index, c.field, uint8_t(v)); break;
 	case Area::Tones:    break;   // тон целиком, а не по байту - см. вкладку TONES
-	default:             processor.sendTimbreTempParam(c.index, c.field, uint8_t(v)); break;
+	default:
+		processor.sendTimbreTempParam(c.index, c.field, uint8_t(v));
+		// Picking a tone (group or number, fields 0/1) here only ever writes those two
+		// bytes - unlike the real panel's own tone selection, which (found by diffing two
+		// of Alan's own memory snapshots, 2026-08-07) leaves the part in normal polyphonic
+		// assign whatever it picks. Left alone, a part previously set to POLY 1/2 (single
+		// assign - deliberate for whatever tone was there before, e.g. a mono bass patch)
+		// silently carries that setting onto the NEW tone too, and mt32emu's own single-assign
+		// handling then intermittently drops retriggered notes/chords under nothing more than
+		// ordinary fast playing (Part::playPoly() aborts the same key's still-active poly and
+		// bails out for the new one if that abort hasn't finished yet - a genuine timing race,
+		// not a hang, so it shows up as the note dying maybe half the time rather than always).
+		// Resetting to POLY 3 here matches what reselecting the same tone from the panel was
+		// observed to do; ASSIGN has its own directly editable field in this same tab if a
+		// user wants POLY 1/2 back for a tone picked this way.
+		if (c.area == Area::TimbreTemp && (c.field == 0 || c.field == 1))
+			processor.sendTimbreTempParam(c.index, 5, 2);
+		break;
 	}
 	// Значение показывается сразу, не дожидаясь, пока прошивка его примет и таймер это
 	// увидит: иначе поле под курсором отставало бы на десятую долю секунды.
@@ -1728,6 +1757,19 @@ void D110EditorPane::setValue(const Cell &c, int value) {
 	for (auto &p : pendingEdits)
 		if (p.address == at) { p.value = uint8_t(v); p.sentMs = now; replaced = true; break; }
 	if (!replaced) pendingEdits.push_back({at, uint8_t(v), now});
+
+	// Mirrors the ASSIGN reset above into the same optimistic cache/pending-edit tracking the
+	// changed cell itself just got, so the ASSIGN column (if shown) updates immediately too
+	// instead of waiting for the next refreshFromInstrument() tick.
+	if (c.area == Area::TimbreTemp && (c.field == 0 || c.field == 1)) {
+		const size_t assignAt = size_t(D110CoreType::kRamTimbreTemp)
+		                       + size_t(c.index) * D110CoreType::kTimbreTempRecord + 5;
+		if (ramValid && assignAt < ram.size()) ram[assignAt] = 2;
+		bool assignReplaced = false;
+		for (auto &p : pendingEdits)
+			if (p.address == assignAt) { p.value = 2; p.sentMs = now; assignReplaced = true; break; }
+		if (!assignReplaced) pendingEdits.push_back({ assignAt, 2, now });
+	}
 
 	repaint();
 }
@@ -2208,6 +2250,12 @@ void D110EditorPane::buttonPressed(int id) {
 		d110ui::setTheme(light ? d110ui::Theme::Light : d110ui::Theme::Dark);
 		processor.setUiThemeLight(light);
 		if (onThemeChanged) onThemeChanged();
+		return;
+	}
+	if (id == 12) {
+		processor.setDebugModeEnabled(!processor.getDebugModeEnabled());
+		layout();
+		repaint();
 		return;
 	}
 	if (id == 10) {

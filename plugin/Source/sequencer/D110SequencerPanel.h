@@ -40,7 +40,12 @@ private:
 	void cycleRecordMode();
 	void showRecordModeMenu();
 	void showQuantizeMenu(int track);
+	void showMetronomeModeMenu();
 	void confirmClearTrack(int track);
+	// Right-click LOAD/SAVE: all 4 song slots at once (.d110songs), as opposed to the plain
+	// click's single current song (.mid) - see D110AudioProcessor::exportSequencerSongs().
+	void showLoadMenu();
+	void showSaveMenu();
 	void cycleLoopMode();
 	void showBarMenu();
 	void promptForBar();
@@ -68,6 +73,13 @@ private:
 		juce::Rectangle<float> label, channelReadout, muteBounds, soloBounds, armBounds, activityBounds;
 	};
 	std::array<TrackRow, d110seq::D110SequencerEngine::kNumTracks> rows;
+
+	// Precount's downbeat-LED flash (see paint()'s own comment) - edge-detected in
+	// timerCallback() against D110SequencerEngine::precountBeatsElapsed(), since positionBeats
+	// itself is frozen throughout precount and can't be used to time this the way the normal
+	// scrolling LED strip is.
+	int lastPrecountBeatsElapsed = -1;
+	juce::int64 precountFlashUntilMs = 0;
 
 	bool draggingTempo = false;
 	float tempoDragStartY = 0.0f;

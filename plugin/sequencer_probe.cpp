@@ -9,6 +9,8 @@
 
 #include "Source/sequencer/D110SequencerEngine.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <vector>
 
@@ -118,6 +120,172 @@ void testMetronome() {
 	}
 	check(counts[0] == 1 && counts[1] == 1 && counts[2] == 1 && counts[3] == 1, "one click per beat");
 	check(downbeats[0] && !downbeats[1] && !downbeats[2] && !downbeats[3], "only beat 0 is a downbeat");
+}
+
+// ---- 2c. isPrecounting() correctly drops back to false, promptly, once the count-in has
+// consumed exactly precountBars worth of beats - and positionBeats (frozen throughout the
+// count-in, see startRecording()'s comment) starts advancing normally again right away.
+// D110SequencerPanel's LED strip relies on exactly this transition: a static downbeat-only
+// LED while isPrecounting(), the normal scrolling currentClickInBar() the instant it isn't.
+void testPrecountEndsPromptly() {
+	std::printf("-- precount ends promptly --\n");
+	D110SequencerEngine engine;
+	engine.setChannelSource(defaultChannelForTrack);
+	engine.setTempo(120.0);
+	engine.setTimeSignature(4, 4);
+	engine.armTrack(0);
+	engine.setPrecountBars(1); // 1 bar = 4 beats = 2s at 120bpm
+	engine.startRecording();
+	engine.gotoBar(1);
+
+	// Deliberately NOT beat-aligned (real host buffer size), unlike testMetronome()'s neat
+	// exact-beat blocks - the kind of block size a real transition bug would hide from.
+	constexpr double sr = 48000.0;
+	constexpr int blockSamples = 512;
+	const double startingPosition = engine.getPositionBeats();
+	bool sawPrecountEnd = false;
+	bool stayedFrozenWhilePrecounting = true;
+	for (int i = 0; i < 500 && !sawPrecountEnd; ++i) {
+		const bool wasPrecountingBefore = engine.isPrecounting();
+		renderBlock(engine, blockSamples, sr);
+		// The block where precount actually ends legitimately advances positionBeats partway
+		// through - it falls through to normal rendering for whatever's left of that same
+		// block once the count-in is used up (see renderInto()'s own comment) - so only blocks
+		// that were STILL precounting before AND after this call need to have stayed frozen.
+		if (wasPrecountingBefore && engine.isPrecounting() && engine.getPositionBeats() != startingPosition)
+			stayedFrozenWhilePrecounting = false;
+		if (!engine.isPrecounting()) sawPrecountEnd = true;
+	}
+	check(sawPrecountEnd, "isPrecounting() drops to false within a couple of seconds, not stuck");
+	check(stayedFrozenWhilePrecounting, "positionBeats was frozen for every block still fully inside precount");
+	renderBlock(engine, blockSamples, sr);
+	check(engine.getPositionBeats() > startingPosition, "positionBeats resumes advancing right after precount");
+}
+
+// ---- 2d. precountBeatsElapsed() - what D110SequencerPanel edge-detects to flash the
+// downbeat LED once per precount beat (2026-08-07, so the count-in can be followed visually
+// without audio) - ticks 0,1,2,3 in order, once per beat, over a 1-bar/4-beat count-in at
+// 120bpm, under the same realistic non-beat-aligned block size as the test above.
+void testPrecountBeatsElapsed() {
+	std::printf("-- precount beats elapsed --\n");
+	D110SequencerEngine engine;
+	engine.setChannelSource(defaultChannelForTrack);
+	engine.setTempo(120.0);
+	engine.setTimeSignature(4, 4);
+	engine.armTrack(0);
+	engine.setPrecountBars(1);
+	engine.startRecording();
+	engine.gotoBar(1);
+
+	constexpr double sr = 48000.0;
+	constexpr int blockSamples = 512;
+	std::vector<int> seen;
+	for (int i = 0; i < 500 && engine.isPrecounting(); ++i) {
+		const int elapsed = engine.precountBeatsElapsed();
+		if (seen.empty() || seen.back() != elapsed) seen.push_back(elapsed);
+		renderBlock(engine, blockSamples, sr);
+	}
+	check(seen.size() == 4 && seen[0] == 0 && seen[1] == 1 && seen[2] == 2 && seen[3] == 3,
+	      "precountBeatsElapsed() ticks 0,1,2,3 in order, once per beat");
+}
+
+// ---- 2e. stop() resets the beat-within-bar counter to zero (Alan, 2026-08-07): recording
+// used to leave positionBeats wherever STOP happened, so resuming without a precount picked
+// the metronome back up mid-bar (e.g. beat 4, if the previous take ended on beat 3) instead
+// of a clean beat 1. Records into bar 2, stops partway through beat 3, and checks the
+// metronome reads beat 0 again immediately - while still reporting the SAME bar, since only
+// the beat-within-bar remainder should reset, not the whole timeline position.
+void testStopResetsBeatCounter() {
+	std::printf("-- stop resets beat counter --\n");
+	D110SequencerEngine engine;
+	engine.setChannelSource(defaultChannelForTrack);
+	engine.setTempo(120.0);
+	engine.setTimeSignature(4, 4);
+	engine.setPrecountBars(0);
+	engine.armTrack(0);
+	engine.gotoBar(2);
+	engine.startRecording();
+
+	constexpr double sr = 48000.0;
+	// 2.25 beats in - partway through beat 3 (0-indexed beat 2), well short of beat 4.
+	renderBlock(engine, static_cast<int>(2.25 * 0.5 * sr), sr);
+	check(engine.currentClickInBar() == 2, "sanity: stopped partway through beat 3 (index 2)");
+	const int barBeforeStop = engine.getCurrentBar();
+
+	engine.stop();
+	check(engine.currentClickInBar() == 0, "beat counter reads 0 again immediately after stop");
+	check(engine.getCurrentBar() == barBeforeStop, "still the same bar - only the beat remainder reset");
+
+	engine.armTrack(0);
+	engine.startRecording(); // no precount
+	check(engine.currentClickInBar() == 0, "resuming without a precount starts the metronome on beat 1");
+}
+
+// ---- 2b. metronome clicks under REAL-SIZED, tempo-misaligned blocks (Alan reported the
+// downbeat sound sometimes landing on beat 2 as well as beat 1) - testMetronome() above uses
+// a block size that lands exactly on a beat boundary every time, which is nothing like a real
+// processBlock() callback (512 samples or so, essentially never beat-aligned) and would hide
+// any off-by-one at a block boundary. This renders several bars in small blocks across a few
+// tempo/time-signature combinations and checks each click against the beat grid directly:
+// exactly one click per beat, no two clicks closer together than half a beat, and the
+// downbeat flag true on exactly the bar's first beat and nowhere else.
+void testMetronomeRealBlocks() {
+	std::printf("-- metronome (real block size) --\n");
+	struct Config { double bpm; int num, den; int blockSamples; };
+	const Config configs[] = {
+		{ 120.0, 4, 4, 512 }, { 96.5, 3, 4, 256 }, { 173.0, 6, 8, 128 }, { 140.0, 4, 4, 480 },
+	};
+	constexpr double sr = 48000.0;
+	constexpr int kBars = 8;
+
+	for (const auto &cfg : configs) {
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setTempo(cfg.bpm);
+		engine.setTimeSignature(cfg.num, cfg.den);
+		engine.armTrack(0);
+		engine.setPrecountBars(0);
+		engine.startRecording();
+		engine.gotoBar(1);
+
+		const double clickGrid = 4.0 / double(cfg.den);
+		const double barBeats = double(cfg.num) * (4.0 / double(cfg.den));
+		const int clicksPerBar = juce::roundToInt(barBeats / clickGrid);
+		const double beatsPerSample = (cfg.bpm / 60.0) / sr;
+		const double totalBeats = barBeats * double(kBars);
+		const int totalSamples = int(totalBeats / beatsPerSample) + cfg.blockSamples;
+
+		double lastClickBeat = -1.0;
+		int clickCount = 0;
+		bool anyDoubled = false, anyMisplacedDownbeat = false, anyTooClose = false;
+		double elapsedBeats = 0.0;
+		for (int rendered = 0; rendered < totalSamples; rendered += cfg.blockSamples) {
+			std::vector<D110SequencerEngine::MetronomeClick> clicks;
+			const int n = std::min(cfg.blockSamples, totalSamples - rendered);
+			renderBlock(engine, n, sr, &clicks);
+			for (const auto &c : clicks) {
+				const double clickBeat = elapsedBeats + double(c.samplePosition) * beatsPerSample;
+				if (lastClickBeat >= 0.0) {
+					const double delta = clickBeat - lastClickBeat;
+					if (delta < clickGrid * 0.5) anyTooClose = true;
+					if (std::abs(delta - clickGrid) > clickGrid * 0.25) anyDoubled = true;
+				}
+				const int idxInBar = juce::roundToInt(std::fmod(clickBeat, barBeats) / clickGrid) % clicksPerBar;
+				const bool shouldBeDownbeat = idxInBar == 0;
+				if (c.downbeat != shouldBeDownbeat) anyMisplacedDownbeat = true;
+				lastClickBeat = clickBeat;
+				++clickCount;
+			}
+			elapsedBeats += double(n) * beatsPerSample;
+		}
+
+		juce::String label = juce::String(cfg.bpm, 1) + " bpm " + juce::String(cfg.num) + "/"
+		                    + juce::String(cfg.den) + " block=" + juce::String(cfg.blockSamples);
+		check(clickCount > 0, (label + ": clicks were emitted at all").toRawUTF8());
+		check(!anyTooClose, (label + ": no two clicks closer than half a beat").toRawUTF8());
+		check(!anyDoubled, (label + ": every click is one grid step after the last").toRawUTF8());
+		check(!anyMisplacedDownbeat, (label + ": downbeat flag matches beat 0 of the bar, and only beat 0").toRawUTF8());
+	}
 }
 
 // ---- 3. mute / solo gating -------------------------------------------------------
@@ -646,6 +814,10 @@ int main() {
 
 	testPlaybackTiming();
 	testMetronome();
+	testMetronomeRealBlocks();
+	testPrecountEndsPromptly();
+	testPrecountBeatsElapsed();
+	testStopResetsBeatCounter();
 	testMuteSolo();
 	testQuantize();
 	testClearTrack();

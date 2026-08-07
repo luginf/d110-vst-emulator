@@ -175,6 +175,13 @@ public:
 	bool getUiThemeLight() const { return uiThemeLight; }
 	void setUiThemeLight(bool light) { uiThemeLight = light; }
 
+	// Utility tab -> DEBUG. Gates the note-dropout diagnostic instrumentation in
+	// processBlock() - off by default so nothing writes to disk on the audio thread unless a
+	// user actually turns it on to help chase a real issue. See that instrumentation's own
+	// comment for what it measures.
+	bool getDebugModeEnabled() const { return debugModeEnabled; }
+	void setDebugModeEnabled(bool enabled) { debugModeEnabled = enabled; }
+
 	// The extended editor drawer's own height, in D110AudioProcessorEditor::kPaneRefH's
 	// reference units - user-adjustable by dragging the keyboard drawer's handle band (the
 	// boundary directly below it). Stored here for the same reason as the theme above: it
@@ -257,6 +264,16 @@ public:
 	// its memory), then powers it back on with the snapshot's memory loaded - so the change is
 	// felt immediately rather than only on the next manual power cycle.
 	void importMemorySnapshot(const juce::File &file);
+
+	// The sequencer's 4 song slots, as one standalone file - tempo, time signature and all 9
+	// tracks per slot, the same "song content" getStateInformation already carries (not the
+	// workspace prefs like metronome/record mode/loop, which stay local). Redundant with the
+	// per-song "SAVE/LOAD .mid" already on the sequencer panel when you only care about one
+	// song, but this is what actually survives a move to a different machine's Standalone -
+	// unlike a DAW project, the Standalone's own state lives in a local settings file
+	// (~/.config on Linux) that copying the shared NVRAM folder does not carry along.
+	void exportSequencerSongs(const juce::File &file);
+	void importSequencerSongs(const juce::File &file);
 
 	// The same memory, but as a real Roland "Data set 1" SysEx bank instead of this plugin's
 	// own snapshot format - built directly from the current RAM image rather than captured by
@@ -511,6 +528,7 @@ private:
 
 	// See getUiThemeLight()/setUiThemeLight() above.
 	bool uiThemeLight = false;
+	bool debugModeEnabled = false;
 	// See getEditorPaneRefH()/setEditorPaneRefH() above. 750.0f mirrors
 	// D110AudioProcessorEditor::kPaneRefH's own default - duplicated rather than shared
 	// because PluginEditor.h isn't (and shouldn't become) a dependency of this header.
@@ -533,6 +551,14 @@ private:
 	// Reused across blocks so refreshing sequencerLiveChannels/sequencerLivePrograms doesn't
 	// reallocate 32KB every time - see their use beside sequencerLiveChannels above.
 	std::vector<juce::uint8> sequencerRamScratch;
+	// Only active when debugModeEnabled (Utility tab -> DEBUG) - see processBlock()'s own
+	// diagnostic instrumentation comment. Tracks the hit/miss rate of individual per-part
+	// note-on attempts vs that SAME part actually showing up in the engine's own
+	// enginePartStates() a few blocks later.
+	struct DiagPendingCheck { int part; int checksLeft; };
+	std::vector<DiagPendingCheck> diagPendingChecks;
+	int diagAttempts = 0, diagHits = 0, diagMisses = 0;
+	juce::int64 diagLastFlushMs = 0;
 	// Metronome click envelope state, carried across processBlock calls since a click's
 	// short decay can span more than one audio block.
 	int metronomeSamplesRemaining = 0;
@@ -543,6 +569,14 @@ private:
 	// to pick up next time it starts, and reads it back out again.
 	void writeNvramFiles(const juce::MemoryBlock &rams, const juce::MemoryBlock &memcs) const;
 	juce::MemoryBlock readNvramFile(const juce::String &name) const;
+
+	// The sequencer's 4-slot song content (tempo/timesig/tracks/mute/solo/quantize, NOT the
+	// workspace prefs) as XML attributes on whatever element is passed in - shared by
+	// getStateInformation/setStateInformation (which write onto the whole-plugin state
+	// element) and exportSequencerSongs/importSequencerSongs (which use a small standalone
+	// element of their own), so the two paths can't drift apart.
+	void writeSequencerSongsXml(juce::XmlElement &xml) const;
+	void readSequencerSongsXml(const juce::XmlElement &xml);
 
 	// Where MAME keeps `rams` and `memcs` - one folder, shared, persistent.
 	static juce::File getMachineNvramFolder();

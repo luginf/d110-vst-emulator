@@ -36,6 +36,10 @@ enum class RecordMode {
 // punch-in/out recording, per Alan's own framing of the request.
 enum class LoopMode { off, bar, punch };
 
+// What an enabled metronome actually shows - the LED strip, the audible click, or both. See
+// D110SequencerEngine::setMetronomeMode().
+enum class MetronomeMode { visualOnly, audioOnly, both };
+
 class D110SequencerEngine {
 public:
 	static constexpr int kNumTracks = 9;      // 0-7 = D-110 parts 1-8, 8 = rhythm
@@ -86,11 +90,51 @@ public:
 	void setMetronomeEnabled(bool enabled) { metronomeEnabled = enabled; }
 	bool getMetronomeEnabled() const { return metronomeEnabled; }
 
+	// Whether an enabled metronome shows as the LED strip, the audible click, or both -
+	// independent of the METRO button's own on/off (that stays a single click enabling
+	// whichever of these is currently selected). Right-click on the METRO button to change
+	// this - see D110SequencerPanel::showMetronomeModeMenu().
+	void setMetronomeMode(MetronomeMode mode) { metronomeMode = mode; }
+	MetronomeMode getMetronomeMode() const { return metronomeMode; }
+
+	// Most DAWs' "click only when recording": when on, an enabled metronome still shows/
+	// sounds normally while recording, but stays silent and its LED strip stays dark during
+	// plain playback. Right-click the METRO button to change this.
+	void setMetronomeRecordOnly(bool enabled) { metronomeRecordOnly = enabled; }
+	bool getMetronomeRecordOnly() const { return metronomeRecordOnly; }
+
+	// GM2's own dedicated percussion-channel notes for exactly this purpose (regular beat /
+	// downbeat), rather than anything D-110-specific - so a metronome routed through
+	// channelForTrack(kRhythmTrack) still makes sense on a GM2-compatible synth later, not
+	// just this plugin's own rhythm map.
+	static constexpr int kMetronomeClickNote = 33; // GM2: Metronome Click
+	static constexpr int kMetronomeBellNote = 34;   // GM2: Metronome Bell (downbeat)
+
+	// When on, metronome clicks are ALSO (in place of, not in addition to - see
+	// PluginProcessor's own click mixing) sent as real note on/off pairs on the rhythm
+	// channel, instead of only the internal synthesized click - useful for hearing the
+	// metronome through an actual percussion patch, D-110 or otherwise.
+	void setMetronomeUseChannel10(bool enabled) { metronomeUseChannel10 = enabled; }
+	bool getMetronomeUseChannel10() const { return metronomeUseChannel10; }
+
+	// Scales both the internal click's amplitude and the channel-10 notes' velocity. 1.0 is
+	// the level the click always used before this existed.
+	void setMetronomeVolume(float volume) { metronomeVolume = juce::jlimit(0.0f, 1.5f, volume); }
+	float getMetronomeVolume() const { return metronomeVolume; }
+
 	// Click-grid geometry shared with renderInto()'s own metronome-audio math (a quarter in
 	// 4/4, an eighth in 6/8, ...) - exposed so a visual metronome (an LED-per-click strip)
 	// can stay in lockstep with the audible clicks without duplicating the grid logic.
 	int clicksPerBar() const;
 	int currentClickInBar() const;
+
+	// How many click-grid units have elapsed since the precount started (0, 1, 2, ... - NOT
+	// wrapped to the bar, unlike currentClickInBar(), since a precount visual only needs to
+	// detect "a new beat just happened" to flash on it, not which beat of the bar it is).
+	// positionBeats itself is frozen throughout precount (see startRecording()'s own comment),
+	// so this is what a caller like D110SequencerPanel polls instead, watching for it to
+	// increase, to flash the downbeat LED once per precount beat even without audio.
+	int precountBeatsElapsed() const;
 
 	// Relocates the playhead to the start of a (1-indexed) bar without changing
 	// play/record state - "démarrer sur la mesure qu'on veut". Also updates the bar-loop
@@ -262,6 +306,10 @@ private:
 	bool recording = false;
 	int precountBars = 1;
 	bool metronomeEnabled = true;
+	MetronomeMode metronomeMode = MetronomeMode::both;
+	bool metronomeRecordOnly = false;
+	bool metronomeUseChannel10 = false;
+	float metronomeVolume = 1.0f;
 	int armedTrack = -1;
 	RecordMode recordMode = RecordMode::replaceRange;
 

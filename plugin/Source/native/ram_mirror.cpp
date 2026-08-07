@@ -28,10 +28,20 @@ const RamMirror::Region RamMirror::kRegions[] = {
 	D110_TONE(0), D110_TONE(1), D110_TONE(2), D110_TONE(3),
 	D110_TONE(4), D110_TONE(5), D110_TONE(6), D110_TONE(7),
 
-	// System Area middle slice only - reverb type/time/level and reserve/channel-assign.
-	// See D110Core.cpp's kMirrorRegions comment for exactly why the bytes on either side
-	// (masterVol, reverbMode, masterTune) are deliberately excluded.
-	{ 0x2D95, 0x100001, 3, "System (reverb type+time+level)" },
+	// System Area: master tune, then reverb type/time/level. masterVol is still excluded -
+	// the D-110's volume is a physical knob, so the firmware never fills that byte in, and
+	// mirroring it zeroed the engine's master volume (see docs/sysex_address_map.md).
+	//
+	// masterTune was excluded for the same reason reverb type used to be (see D110Core.cpp's
+	// history) - "no honest mapping" - but that reasoning doesn't actually hold for this
+	// byte: mt32emu's own MASTER TUNE field (Structures.h) uses the IDENTICAL 0-127 scale and
+	// the IDENTICAL default (0x4A, "confirmed on CM-64" per its own source) as the D-110's -
+	// the only mismatch on record is between the D-110's own LCD label ("442") and what
+	// Roland's documented byte-to-Hz FORMULA predicts for that byte (~447) - a display-label
+	// quirk, not a functional scale disagreement between the two machines. Forwarding the
+	// raw byte, unchanged, exactly like reverb type already does, is the correct fix - see
+	// 2026-08-07's investigation notes.
+	{ 0x2D94, 0x100000, 4, "System (master tune+reverb type+time+level)" },
 	{ 0x2D98, 0x100004, 18, "System (reserve + channels)" },
 };
 #undef D110_TONE

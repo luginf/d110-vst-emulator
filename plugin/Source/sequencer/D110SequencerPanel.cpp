@@ -1,5 +1,7 @@
 #include "D110SequencerPanel.h"
 
+#include <cmath>
+
 #include "../PluginProcessor.h"
 #include "../UiTheme.h"
 
@@ -52,9 +54,24 @@ D110SequencerPanel::~D110SequencerPanel() { stopTimer(); }
 d110seq::D110SequencerEngine &D110SequencerPanel::engine() { return processor.getSequencer(); }
 
 void D110SequencerPanel::timerCallback() {
-	// The only thing that changes on its own, without a click, is the bar readout (and the
-	// transport buttons' own on/off look) while the transport is rolling.
-	if (engine().isPlaying()) repaint();
+	auto &eng = engine();
+	if (eng.isPrecounting()) {
+		// Edge-detect a new precount beat (positionBeats itself is frozen throughout precount,
+		// so it can't drive this the way the normal scrolling LED does) and light the downbeat
+		// LED for a short, fixed window - a flash on every beat of the count-in, audio or not,
+		// per Alan's own ask (2026-08-07): something to follow along with even without sound.
+		const int elapsed = eng.precountBeatsElapsed();
+		if (elapsed != lastPrecountBeatsElapsed) {
+			lastPrecountBeatsElapsed = elapsed;
+			constexpr int kFlashMs = 120;
+			precountFlashUntilMs = juce::Time::getMillisecondCounter() + kFlashMs;
+		}
+	} else {
+		lastPrecountBeatsElapsed = -1;
+	}
+	// The only other thing that changes on its own, without a click, is the bar readout (and
+	// the transport buttons' own on/off look) while the transport is rolling.
+	if (eng.isPlaying()) repaint();
 }
 
 void D110SequencerPanel::cycleTimeSignature() {
@@ -122,6 +139,81 @@ void D110SequencerPanel::showRecordModeMenu() {
 		}
 		repaint();
 	});
+}
+
+void D110SequencerPanel::showMetronomeModeMenu() {
+	using d110seq::MetronomeMode;
+	auto &eng = engine();
+	const auto current = eng.getMetronomeMode();
+
+	juce::PopupMenu m;
+	m.addItem(1, "Visual only - LED strip, no click", true, current == MetronomeMode::visualOnly);
+	m.addItem(2, "Audio only - click, no LED strip", true, current == MetronomeMode::audioOnly);
+	m.addItem(3, "Both", true, current == MetronomeMode::both);
+	m.addSeparator();
+	m.addItem(4, "Use rhythm channel (MIDI ch. 10) instead of the click sound", true,
+	          eng.getMetronomeUseChannel10());
+	m.addItem(5, "Only while recording, not during plain playback", true,
+	          eng.getMetronomeRecordOnly());
+
+	// Result codes 10-15 index into this same array on the way back out.
+	static constexpr float kVolumePresets[] = { 0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f };
+	static constexpr const char *kVolumeLabels[] = { "25%", "50%", "75%", "100%", "125%", "150%" };
+	const float currentVolume = eng.getMetronomeVolume();
+	juce::PopupMenu volumeMenu;
+	for (int i = 0; i < 6; ++i)
+		volumeMenu.addItem(10 + i, kVolumeLabels[i], true,
+		                    std::abs(currentVolume - kVolumePresets[i]) < 0.01f);
+	m.addSubMenu("Volume", volumeMenu);
+
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this](int result) {
+		using d110seq::MetronomeMode;
+		auto &eng = engine();
+		if (result >= 10 && result < 16) {
+			eng.setMetronomeVolume(kVolumePresets[result - 10]);
+			repaint();
+			return;
+		}
+		switch (result) {
+			case 1: eng.setMetronomeMode(MetronomeMode::visualOnly); break;
+			case 2: eng.setMetronomeMode(MetronomeMode::audioOnly); break;
+			case 3: eng.setMetronomeMode(MetronomeMode::both); break;
+			case 4: eng.setMetronomeUseChannel10(!eng.getMetronomeUseChannel10()); break;
+			case 5: eng.setMetronomeRecordOnly(!eng.getMetronomeRecordOnly()); break;
+			default: return;
+		}
+		repaint();
+	});
+}
+
+// Plain click loads/saves just the current song (.mid) - see mouseDown(). Right-click is the
+// shortcut for all 4 slots at once (.d110songs), so there's exactly one action per gesture
+// rather than a one-item menu restating what the plain click already does.
+void D110SequencerPanel::showLoadMenu() {
+	auto *chooser = new juce::FileChooser("Load all 4 sequencer songs", juce::File(), "*.d110songs");
+	chooser->launchAsync(
+		juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+		[this, chooser](const juce::FileChooser &fc) {
+			const auto file = fc.getResult();
+			if (file != juce::File()) processor.importSequencerSongs(file);
+			delete chooser;
+			repaint();
+		});
+}
+
+void D110SequencerPanel::showSaveMenu() {
+	auto *chooser = new juce::FileChooser("Save all 4 sequencer songs", juce::File(), "*.d110songs");
+	chooser->launchAsync(
+		juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+			| juce::FileBrowserComponent::warnAboutOverwriting,
+		[this, chooser](const juce::FileChooser &fc) {
+			auto file = fc.getResult();
+			if (file != juce::File()) {
+				if (!file.hasFileExtension("d110songs")) file = file.withFileExtension("d110songs");
+				processor.exportSequencerSongs(file);
+			}
+			delete chooser;
+		});
 }
 
 void D110SequencerPanel::showQuantizeMenu(int track) {
@@ -359,9 +451,17 @@ void D110SequencerPanel::paint(juce::Graphics &g) {
 	                   "BAR " + juce::String(eng.getCurrentBar()) + "/" + juce::String(eng.getBarCount()),
 	                   eng.isPrecounting());
 
-	if (eng.getMetronomeEnabled() && metroLedBounds.getWidth() > 0.0f) {
+	if (eng.getMetronomeEnabled() && eng.getMetronomeMode() != d110seq::MetronomeMode::audioOnly
+	    && (!eng.getMetronomeRecordOnly() || eng.isRecording()) && metroLedBounds.getWidth() > 0.0f) {
 		const int total = juce::jmax(1, eng.clicksPerBar());
-		const int active = eng.currentClickInBar();
+		// Precounting: only the downbeat LED is ever used, but it FLASHES once per beat of the
+		// count-in (timerCallback() edge-detects each beat and opens a short window here) -
+		// deliberately not scrolling through the strip the way normal recording does below, so
+		// it still reads at a glance as "counting in, not recording yet", but each beat is
+		// visible even without audio, per Alan's own ask.
+		const bool precountFlashOn =
+			eng.isPrecounting() && juce::Time::getMillisecondCounter() < precountFlashUntilMs;
+		const int active = eng.isPrecounting() ? (precountFlashOn ? 0 : -1) : eng.currentClickInBar();
 		const float ledW = metroLedBounds.getWidth() / float(total);
 		for (int i = 0; i < total; ++i) {
 			juce::Rectangle<float> led(metroLedBounds.getX() + ledW * float(i), metroLedBounds.getY(),
@@ -416,6 +516,9 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 	if (e.mods.isPopupMenu()) {
 		if (timeSigBounds.contains(p)) { showTimeSignatureMenu(); return; }
 		if (recModeBounds.contains(p)) { showRecordModeMenu(); return; }
+		if (metronomeBounds.contains(p)) { showMetronomeModeMenu(); return; }
+		if (loadBounds.contains(p)) { showLoadMenu(); return; }
+		if (saveBounds.contains(p)) { showSaveMenu(); return; }
 		if (barReadoutBounds.contains(p)) { showBarMenu(); return; }
 		if (barPrevBounds.contains(p)) { eng.gotoBar(1); repaint(); return; }
 		if (barNextBounds.contains(p)) { eng.gotoBar(eng.getBarCount()); repaint(); return; }
