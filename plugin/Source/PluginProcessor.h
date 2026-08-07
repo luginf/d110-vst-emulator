@@ -463,6 +463,12 @@ private:
 	bool tryAssembleRomsFromChipDumps(const juce::File &folder);
 	// Reads `file` and hands it to mt32emu, returning its ROMInfo type via `typeOut`.
 	bool identifyRomData(const juce::MemoryBlock &data, MT32Emu::ROMInfo::Type &typeOut) const;
+	// D110CoreNative::start() (unlike the content-based loading above) looks up its firmware
+	// and presets files by exact, hardcoded name - see setPoweredOn(). Writes those two exact
+	// filenames, derived from controlRomData (already identified/assembled above, in whatever
+	// shape/name it was actually supplied under), if they aren't already present as their own
+	// files. No-op if controlRomData isn't populated yet.
+	void materializeNativeRomFiles();
 
 	juce::MemoryBlock controlRomData, pcmRomData;
 	// The BOSS reverb chip's own 32 KiB program ROM (IC6). Optional: absent, the engine

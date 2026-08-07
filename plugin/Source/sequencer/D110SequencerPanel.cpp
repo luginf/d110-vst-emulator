@@ -522,6 +522,7 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 		if (barReadoutBounds.contains(p)) { showBarMenu(); return; }
 		if (barPrevBounds.contains(p)) { eng.gotoBar(1); repaint(); return; }
 		if (barNextBounds.contains(p)) { eng.gotoBar(eng.getBarCount()); repaint(); return; }
+		if (stopBounds.contains(p)) { processor.midiPanic(); return; }
 		for (int t = 0; t < kNumTracks; ++t)
 			if (rows[static_cast<size_t>(t)].rowBounds.contains(p)) { showQuantizeMenu(t); return; }
 		return;

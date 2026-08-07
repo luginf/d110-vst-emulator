@@ -183,6 +183,9 @@ instrument's battery RAM, and travels with your project the same way. See
 ## Requirements
 
 You need your own **D-110 ROM dumps** - copyrighted Roland firmware, **not included** here.
+
+You can get them there: https://mdk.cab/download/standalone/d110.7z
+
 Put the files loose (not zipped - see below) into:
 
 - Windows: `C:\Program Files\Common Files\VST3\D-110 Data\`
@@ -229,6 +232,8 @@ listed above):
 | `253105885d590332a802157a0e609e59` | `r15179879.ic6.bin` (BOSS reverb, optional) |
 | `169a6657650c3c5d861c67689dcf73cc` | `ctrl_d110_v1.10.bin` / `D-110_Control.bin` (pre-assembled Control image) |
 | `f5e9349493b13d0d13313afc10803a98` | `pcm_d110.bin` / `D-110_PCM.bin` (pre-assembled PCM image) |
+
+In the case you get D-110_PCM.bin and D-110_Control.bin, you'll only need msm6222b-01.bin in addition to make it work.
 
 > **Note:** by factory default **nothing plays on MIDI channel 1**. Part 1 listens on channel
 > **2**, part 2 on 3, and so on to part 8 on channel 9, with rhythm on 10. That is how the

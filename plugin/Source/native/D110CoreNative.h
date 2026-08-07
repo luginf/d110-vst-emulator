@@ -113,6 +113,12 @@ public:
 	void stop();
 	bool isRunning() const { return running_; }
 
+	// Which of the three required files start() couldn't read (missing or wrong size), set
+	// only when start() just returned false. Unlike D110Core (MAME-backed), there is no
+	// process-wide "only one machine" lock here - each instance is fully independent - so a
+	// false return can only ever mean a ROM problem, never another instance already running.
+	const std::string &lastStartError() const { return lastStartError_; }
+
 	// Advances the emulated machine by `seconds` of its own 12MHz-crystal time - deterministic
 	// wall-clock-free stepping, unlike D110Core::start()'s real-time MAME thread. A host would
 	// call this with exactly one audio block's worth of time per processBlock(), the same
@@ -230,6 +236,7 @@ private:
 	bool running_ = false;
 	uint32_t buttonMask_ = 0;
 	std::string nvramDir_;
+	std::string lastStartError_;
 
 	static constexpr double kCpuClockHz = 12'000'000.0;
 	double cycleAccum_ = 0.0;

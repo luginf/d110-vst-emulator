@@ -186,16 +186,28 @@ void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
 		// MAME-shaped romset directory first. Two different search conventions for the same
 		// underlying files, not two different ROM sets.
 #ifdef D110_NATIVE_CORE
+		materializeNativeRomFiles();
 		const auto romArg = getAutoRomFolder().getFullPathName().toStdString();
 #else
 		const auto romArg = getMameRomPath().toStdString();
 #endif
 		if (!core.start(romArg, nvram.getFullPathName().toStdString())) {
-			// Another instance already holds the emulated control board. Stay off rather
-			// than start a second machine, which crashes the host outright.
 			powerBlocked = true;
+#ifdef D110_NATIVE_CORE
+			// Unlike the MAME-backed core, D110CoreNative has no process-wide "only one
+			// machine" lock - every instance is fully independent, so several can run at
+			// once. A false return here can only mean one thing: it couldn't read one of
+			// the three ROM files it needs from romArg.
+			lastError = "Could not start the emulator: " + core.lastStartError()
+			            + ". Check that the Control ROM, PCM ROM and character-generator ROM "
+			              "are present in the data folder shown on the Utility tab.";
+#else
+			// The MAME-backed core does hold a single process-wide machine slot (see
+			// D110Core::sMachineLive) - a second D110Emulator instance really can't run
+			// alongside a first.
 			lastError = "Another D-110 Emulator instance is already switched on. "
 			            "Only one can run at a time - switch that one off first.";
+#endif
 			return;
 		}
 		powerBlocked = false;
@@ -247,13 +259,21 @@ void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
 
 // Accepts both the underscore and space spellings of a plugin data folder name - some
 // platforms/older builds used one or the other (see getAutoRomFolder() below) - so neither
-// convention silently gets ignored. Prefers whichever already exists on disk; if neither
-// does, returns the space variant to create, matching this project's own established
-// naming (D-110 Emulator, D-110 Data).
+// convention silently gets ignored. Prefers whichever actually has something in it - an
+// empty folder under the "wrong" spelling (e.g. left behind by an older install, or created
+// by hand while guessing at the name) must not shadow a populated one under the other
+// spelling. Among two empty (or two populated) candidates, prefers the space variant; if
+// neither exists at all, also returns the space variant, to create, matching this project's
+// own established naming (D-110 Emulator, D-110 Data).
 static juce::File resolveNamedFolder(const juce::File &parent, const juce::String &spaceName) {
 	const auto spaced = parent.getChildFile(spaceName);
-	if (spaced.isDirectory()) return spaced;
 	const auto underscored = parent.getChildFile(spaceName.replaceCharacter(' ', '_'));
+	const auto isPopulated = [](const juce::File &f) {
+		return f.isDirectory() && f.getNumberOfChildFiles(juce::File::findFilesAndDirectories) > 0;
+	};
+	if (isPopulated(spaced)) return spaced;
+	if (isPopulated(underscored)) return underscored;
+	if (spaced.isDirectory()) return spaced;
 	if (underscored.isDirectory()) return underscored;
 	return spaced;
 }
@@ -465,6 +485,31 @@ bool D110AudioProcessor::tryAssembleRomsFromChipDumps(const juce::File &folder) 
 		take(kBoss, bossRomData);
 	};
 
+	// Some ROM sets distribute two adjacent chips already concatenated into a single file -
+	// most commonly the two PCM wave chips as one ~1MB dump, since that is the standard shape
+	// PCM ROM images circulate in for MT-32/CM-32L (same physical chips this D-110 uses), quite
+	// unlike MAME's own romsets, which always keep chips separate. Such a file matches neither
+	// a whole-image checksum (identifyRomData(), above in tryAutoLoadRoms) nor a single chip's
+	// size/SHA1 (consider(), above), so it silently went unrecognised. Splitting at every
+	// boundary where the two halves' sizes match two known chips and re-running consider() on
+	// each half recognises it exactly like MAME's separate dumps would - whichever order the
+	// two chips were joined in, since consider() itself checks a half against every known chip
+	// rather than assuming which one it must be.
+	static const Chip *const kAllChips[] = {&kFirmwareV110, &kFirmwareV106, &kPresets,
+	                                         &kWaveIc7,      &kWaveIc8,      &kBoss};
+	auto considerConcatenated = [&](const juce::MemoryBlock &data) {
+		for (const Chip *first : kAllChips) {
+			if (first->size >= data.getSize()) continue;
+			const size_t remainder = data.getSize() - first->size;
+			for (const Chip *second : kAllChips) {
+				if (second->size != remainder) continue;
+				consider(juce::MemoryBlock(data.getData(), first->size));
+				consider(juce::MemoryBlock(static_cast<const char *>(data.getData()) + first->size, remainder));
+				return;
+			}
+		}
+	};
+
 	for (const auto &entry : juce::RangedDirectoryIterator(folder, true, "*", juce::File::findFiles)) {
 		const auto file = entry.getFile();
 
@@ -476,12 +521,16 @@ bool D110AudioProcessor::tryAssembleRomsFromChipDumps(const juce::File &folder) 
 				juce::MemoryBlock data;
 				stream->readIntoMemoryBlock(data);
 				consider(data);
+				considerConcatenated(data);
 			}
 			continue;
 		}
 
 		juce::MemoryBlock data;
-		if (file.loadFileAsData(data)) consider(data);
+		if (file.loadFileAsData(data)) {
+			consider(data);
+			considerConcatenated(data);
+		}
 	}
 
 	// v1.10 is the later firmware, so prefer it when both are present.
@@ -508,6 +557,20 @@ bool D110AudioProcessor::tryAssembleRomsFromChipDumps(const juce::File &folder) 
 	}
 
 	return controlRomData.getSize() != 0 && pcmRomData.getSize() != 0;
+}
+
+void D110AudioProcessor::materializeNativeRomFiles() {
+	// controlRomData is always firmware (32768 bytes) followed by presets (131072 bytes) in
+	// that order, whichever of the two paths above put it there - see the "Control = firmware
+	// ++ presets" comment on tryAssembleRomsFromChipDumps.
+	if (controlRomData.getSize() != 32768 + 131072) return;
+
+	const auto folder = getAutoRomFolder();
+	const auto firmwareFile = folder.getChildFile("d-110.v1.10.ic19.bin");
+	const auto presetsFile = folder.getChildFile("r15179873-lh5310-97.ic12.bin");
+	const auto *bytes = static_cast<const char *>(controlRomData.getData());
+	if (!firmwareFile.existsAsFile()) firmwareFile.replaceWithData(bytes, 32768);
+	if (!presetsFile.existsAsFile()) presetsFile.replaceWithData(bytes + 32768, 131072);
 }
 
 bool D110AudioProcessor::openSynthIfReady() {
@@ -668,6 +731,30 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 	juce::ScopedNoDenormals noDenormals;
 	const int numSamples = buffer.getNumSamples();
 	buffer.clear();
+
+	// Rechannelize host-fed external MIDI (a DAW routing a real controller to this plugin's
+	// MIDI input, in VST3) onto the on-screen keyboard's own selected channel - Alan's own USB
+	// keyboard is hardwired to channel 1, so this is what lets him record other sequencer
+	// tracks/parts just by changing the on-screen keyboard's channel, without a controller
+	// that can actually transmit on other channels. Omni intentionally passes this through
+	// unchanged - there is no single target channel to remap to. Only channel-voice messages
+	// (getChannel() > 0) are touched, matching the same idiom the sequencer's own
+	// channelForTrack rechannelling already uses. This has to run before anything below adds
+	// the on-screen keyboard's OWN notes (injectTestNote, merged in from osMidiCollector just
+	// below) into midiMessages - those are already explicitly channelized (or looped across
+	// all 16 channels for Omni) at the point of injection and must not be touched here. The
+	// Standalone app's own directly-opened MIDI port is handled the same way, but earlier -
+	// see handleIncomingMidiMessage(), which rechannelizes before a message ever reaches
+	// osMidiCollector in the first place.
+	if (!keyboardOmni) {
+		juce::MidiBuffer rechannelized;
+		for (const auto meta : midiMessages) {
+			auto msg = meta.getMessage();
+			if (msg.getChannel() > 0) msg.setChannel(keyboardMidiChannel);
+			rechannelized.addEvent(msg, meta.samplePosition);
+		}
+		midiMessages.swapWith(rechannelized);
+	}
 
 	// Anything that arrived on the directly-opened port joins the host's own stream here,
 	// so from this point on there is one queue and the rest of the method cannot tell the
@@ -1097,6 +1184,17 @@ void D110AudioProcessor::handleIncomingMidiMessage(juce::MidiInput *, const juce
 	// Handed to the collector rather than acted on here: this runs on the OS MIDI thread,
 	// and everything downstream - the engine's single-writer queue and the control board's
 	// serial input - is fed from processBlock.
+	//
+	// Rechannelized onto the on-screen keyboard's own selected channel first - see
+	// processBlock()'s own comment (the equivalent rechannelling for a DAW-hosted external
+	// controller) for why. This is the Standalone app's directly-opened MIDI port, the other
+	// place real external MIDI enters.
+	if (!keyboardOmni && m.getChannel() > 0) {
+		auto msg = m;
+		msg.setChannel(keyboardMidiChannel);
+		osMidiCollector.addMessageToQueue(msg);
+		return;
+	}
 	osMidiCollector.addMessageToQueue(m);
 }
 

@@ -29,9 +29,19 @@ constexpr int kRenderStride = 16;
 
 bool D110CoreNative::start(const std::string &romFolder, const std::string &nvramDir) {
 	std::vector<uint8_t> firmware, presets, cgrom;
-	if (!loadFile(romFolder + "/d-110.v1.10.ic19.bin", firmware, 0x8000)) return false;
-	if (!loadFile(romFolder + "/r15179873-lh5310-97.ic12.bin", presets, 0x20000)) return false;
-	if (!loadFile(romFolder + "/msm6222b-01.bin", cgrom, 0x1000)) return false;
+	if (!loadFile(romFolder + "/d-110.v1.10.ic19.bin", firmware, 0x8000)) {
+		lastStartError_ = "d-110.v1.10.ic19.bin missing or wrong size (expected 32768 bytes) in " + romFolder;
+		return false;
+	}
+	if (!loadFile(romFolder + "/r15179873-lh5310-97.ic12.bin", presets, 0x20000)) {
+		lastStartError_ = "r15179873-lh5310-97.ic12.bin missing or wrong size (expected 131072 bytes) in " + romFolder;
+		return false;
+	}
+	if (!loadFile(romFolder + "/msm6222b-01.bin", cgrom, 0x1000)) {
+		lastStartError_ = "msm6222b-01.bin missing or wrong size (expected 4096 bytes) in " + romFolder;
+		return false;
+	}
+	lastStartError_.clear();
 
 	bus_.setFirmwareRom(firmware.data(), firmware.size());
 	bus_.setPresetsRom(presets.data(), presets.size());
