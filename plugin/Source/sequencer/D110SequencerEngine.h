@@ -20,7 +20,10 @@
 
 namespace d110seq {
 
-enum class QuantizeGrid { off, quarter, eighth, sixteenth, eighthTriplet, sixteenthTriplet };
+// Appended after sixteenthTriplet, not alphabetised/reordered - the enum's integer value is
+// what gets persisted (state XML, .d110songs), so inserting anywhere else would silently
+// reinterpret every existing save's quantize setting as the wrong grid.
+enum class QuantizeGrid { off, quarter, eighth, sixteenth, eighthTriplet, sixteenthTriplet, thirtySecond };
 
 // How a take is folded into the armed track's existing content when it stops - see
 // stopRecording()'s own comment for exactly where each one erases from/to.
@@ -194,6 +197,26 @@ public:
 	// undo, same as quantizeTrack() and newSong() - the UI is expected to confirm first.
 	void clearTrack(int index);
 
+	// Removes [fromBar, toBarInclusive] (1-indexed, inclusive) from one track (trackIndex >= 0)
+	// or every track at once (trackIndex < 0), closing the gap by shifting everything after the
+	// range earlier by its length. Ripples independently per track: deleting on a single track
+	// only shifts that track's own later content - it will then read a different bar number
+	// than the other tracks from that point on, by design (Alan's own call). No undo, same as
+	// clearTrack()/newSong() - the UI is expected to confirm first.
+	void deleteBars(int trackIndex, int fromBar, int toBarInclusive);
+
+	// Copies [fromBar, toBarInclusive] (1-indexed, inclusive) from srcTrack, inserting it at
+	// destBar on destTrack: destBar and everything already at/after it on destTrack is pushed
+	// later first, by the copied range's length, so nothing already there is overwritten - the
+	// destination track (or every track, see below) grows by that many bars. srcTrack ==
+	// destTrack == -1 copies every track's own [fromBar, toBarInclusive] to the same destBar,
+	// applied independently per track, which is what keeps them aligned with each other for a
+	// whole-song copy. Copying onto a different track only ever carries the notes across, never
+	// the source track's channel - see channelForTrack(), always re-applied at render time from
+	// whichever track index the notes end up living on, regardless of what they were recorded
+	// with. No undo, same as clearTrack()/newSong() - the UI is expected to confirm first.
+	void copyBars(int srcTrack, int destTrack, int fromBar, int toBarInclusive, int destBar);
+
 	// Clears every track in the CURRENT slot (events, mute/solo/quantize all reset) and
 	// stops/rewinds/disarms - "new song" within the currently selected slot. Transport
 	// preferences (tempo, time signature, loop/punch, precount, metronome) are left alone,
@@ -208,6 +231,15 @@ public:
 	void selectSongSlot(int slot);
 	int getCurrentSongSlot() const { return currentSlot; }
 	bool songSlotHasContent(int slot) const;
+
+	// Copies the CURRENT slot's tempo, time signature and every track into destSlot,
+	// overwriting whatever was stored there - a shortcut for starting the next song from a
+	// copy of this one instead of rebuilding matching tracks by hand or round-tripping through
+	// a .mid export/import. The current slot itself, and what's currently playing, are left
+	// untouched either way - only destSlot's stored data changes. No-op if destSlot is already
+	// the current slot. No undo, same as clearTrack()/newSong() - the UI is expected to confirm
+	// first.
+	void copyCurrentSongTo(int destSlot);
 
 	// Per-slot accessors that read/write ANY slot's data without switching which one is
 	// live - used only by the plugin's own state persistence (see PluginProcessor's

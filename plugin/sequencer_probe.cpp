@@ -560,6 +560,44 @@ void testPunchReplacePreservesSurroundings() {
 	check(onNotes == expected, "bars 1-3 and 6-8 survived; only bars 4-5 were replaced");
 }
 
+// ---- 7b. a replace mode goes silent on the armed track's own existing content mid-take -----
+// Alan's report: overdub hearing the track underneath makes sense, but a replace take
+// shouldn't play back what it's about to erase.
+void testReplaceModeSilentDuringTake() {
+	std::printf("-- replace mode is silent on the armed track while recording --\n");
+	D110SequencerEngine engine;
+	engine.setChannelSource(defaultChannelForTrack);
+	engine.setTempo(120.0);
+	engine.setTimeSignature(4, 4);
+	engine.setPrecountBars(0);
+
+	// Track 0: existing note, about to be replaced. Track 1: existing note, untouched.
+	engine.armTrack(0);
+	engine.startRecording();
+	engine.captureEvent(juce::MidiMessage::noteOn(1, 60, (juce::uint8)100), 0.0);
+	engine.captureEvent(juce::MidiMessage::noteOff(1, 60), 1.0);
+	engine.stopRecording();
+	engine.armTrack(1);
+	engine.startRecording();
+	engine.captureEvent(juce::MidiMessage::noteOn(1, 61, (juce::uint8)100), 0.0);
+	engine.captureEvent(juce::MidiMessage::noteOff(1, 61), 1.0);
+	engine.stopRecording();
+
+	engine.setRecordMode(RecordMode::replaceRange);
+	engine.gotoBar(1);
+	engine.armTrack(0);
+	engine.startRecording();
+	auto midTake = renderBlock(engine, 24000, 48000.0); // beat [0,1)
+	bool saw60 = false, saw61 = false;
+	for (const auto &e : midTake) {
+		if (e.message.isNoteOn() && e.message.getNoteNumber() == 60) saw60 = true;
+		if (e.message.isNoteOn() && e.message.getNoteNumber() == 61) saw61 = true;
+	}
+	check(!saw60, "replace mode: the armed track's own existing note is NOT heard mid-take");
+	check(saw61, "replace mode: an untouched track still plays normally");
+	engine.stopRecording();
+}
+
 // ---- 8. overdub adds without erasing, and the earlier take is heard while recording ----
 void testOverdubMode() {
 	std::printf("-- overdub mode --\n");
@@ -759,6 +797,44 @@ void testSongSlots() {
 	check(std::abs(engine.getTempo() - 100.0) < 0.01, "setSlotTempo(other) is visible after switching to it");
 }
 
+// ---- 12b. copyCurrentSongTo() duplicates the current slot's content into another slot ----
+void testCopySongSlot() {
+	std::printf("-- copyCurrentSongTo --\n");
+	D110SequencerEngine engine;
+	engine.setChannelSource(defaultChannelForTrack);
+	engine.setPrecountBars(0);
+	engine.setTempo(100.0);
+	engine.setTimeSignature(6, 8);
+	engine.armTrack(0);
+	engine.startRecording();
+	engine.captureEvent(juce::MidiMessage::noteOn(1, 60, (juce::uint8)100), 0.0);
+	engine.captureEvent(juce::MidiMessage::noteOff(1, 60), 1.0);
+	engine.stopRecording();
+	engine.quantizeTrack(0, QuantizeGrid::eighth);
+
+	check(!engine.songSlotHasContent(2), "slot 2 starts empty");
+	engine.copyCurrentSongTo(2);
+	check(engine.songSlotHasContent(2), "slot 2 has content after copy");
+	check(std::abs(engine.slotTempo(2) - 100.0) < 0.01, "copy carried the tempo over");
+	check(engine.slotTimeSigNumerator(2) == 6 && engine.slotTimeSigDenominator(2) == 8,
+	      "copy carried the time signature over");
+	check(engine.slotTrackQuantize(2, 0) == QuantizeGrid::eighth, "copy carried per-track quantize over");
+
+	// Switching to slot 2 should show the same recorded note as slot 0.
+	engine.selectSongSlot(2);
+	check(engine.trackHasEvents(0), "slot 2's copied track actually has the note");
+	check(engine.getCurrentSongSlot() == 2, "still on slot 2 after switching");
+
+	// The source slot itself is untouched by the copy.
+	engine.selectSongSlot(0);
+	check(engine.trackHasEvents(0), "slot 0 (the source) still has its own note");
+	check(std::abs(engine.getTempo() - 100.0) < 0.01, "slot 0's tempo unaffected");
+
+	// Copying onto the current slot itself is a no-op, not an accidental self-wipe.
+	engine.copyCurrentSongTo(0);
+	check(engine.trackHasEvents(0), "copying a slot onto itself is a no-op");
+}
+
 // ---- 13. precount is fictitious: it doesn't move the bar the take starts on ------
 // Alan's report (2026-08-06): with precount on, the take started 1-2 bars later than the bar
 // he was actually on when he pressed record - precount was advancing positionBeats instead of
@@ -807,6 +883,165 @@ void testPrecountIsFictitious() {
 	check(!saw40, "the note played during the count-in was never captured");
 }
 
+// ---- 14. deleteBars() ripples per track, closes the gap on just the one deleted from -----
+void testDeleteBars() {
+	std::printf("-- deleteBars --\n");
+	constexpr double sr = 48000.0;
+	constexpr int barSamples = 96000; // 2s at 48kHz = 1 bar at 120bpm/4-4
+
+	auto seed = [&](D110SequencerEngine &engine, int track, std::initializer_list<int> bars) {
+		engine.armTrack(track);
+		engine.startRecording();
+		for (int bar : bars) {
+			const double b = double(bar - 1) * 4.0;
+			engine.captureEvent(juce::MidiMessage::noteOn(1, 60, (juce::uint8)100), b);
+			engine.captureEvent(juce::MidiMessage::noteOff(1, 60), b + 0.5);
+		}
+		engine.stopRecording();
+	};
+	auto onOffsets = [&](std::vector<CapturedEvent> &notes, int channel) {
+		std::vector<int> offs;
+		for (const auto &e : notes)
+			if (e.message.isNoteOn() && e.message.getChannel() == channel) offs.push_back(e.sampleOffset);
+		return offs;
+	};
+
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setTempo(120.0);
+		engine.setTimeSignature(4, 4);
+		engine.setPrecountBars(0);
+		seed(engine, 0, {1, 2, 3, 4});
+		seed(engine, 1, {1, 2, 3, 4});
+
+		engine.deleteBars(0, 2, 2); // delete just bar 2, track 0 only
+
+		engine.gotoBar(1);
+		engine.play();
+		auto notes = renderBlock(engine, barSamples * 4, sr);
+		auto t0 = onOffsets(notes, 2);
+		auto t1 = onOffsets(notes, 3);
+		check(t0.size() == 3, "single-track delete: track 0 has 3 notes left (was 4)");
+		if (t0.size() == 3)
+			check(t0[0] == 0 && t0[1] == barSamples && t0[2] == barSamples * 2,
+			      "single-track delete: bar 1 kept, old bar 3/4 close the gap into bar 2/3");
+		check(t1.size() == 4, "single-track delete: track 1 untouched, still all 4 bars");
+	}
+
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setTempo(120.0);
+		engine.setTimeSignature(4, 4);
+		engine.setPrecountBars(0);
+		seed(engine, 0, {1, 2, 3});
+		seed(engine, 1, {1, 2, 3});
+
+		engine.deleteBars(-1, 1, 1); // delete bar 1 from every track
+
+		engine.gotoBar(1);
+		engine.play();
+		auto notes = renderBlock(engine, barSamples * 3, sr);
+		auto t0 = onOffsets(notes, 2);
+		auto t1 = onOffsets(notes, 3);
+		check(t0.size() == 2 && t1.size() == 2, "all-track delete: both tracks lost bar 1");
+		if (t0.size() == 2 && t1.size() == 2)
+			check(t0[0] == 0 && t0[1] == barSamples && t1[0] == 0 && t1[1] == barSamples,
+			      "all-track delete: both tracks' old bar 2/3 shift to bar 1/2, staying aligned");
+	}
+}
+
+// ---- 15. copyBars() inserts, and only ever carries notes across tracks, not the channel --
+void testCopyBars() {
+	std::printf("-- copyBars --\n");
+	constexpr double sr = 48000.0;
+	constexpr int barSamples = 96000; // 2s at 48kHz = 1 bar at 120bpm/4-4
+
+	auto seed = [&](D110SequencerEngine &engine, int track, std::initializer_list<int> bars) {
+		engine.armTrack(track);
+		engine.startRecording();
+		for (int bar : bars) {
+			const double b = double(bar - 1) * 4.0;
+			engine.captureEvent(juce::MidiMessage::noteOn(1, 60, (juce::uint8)100), b);
+			engine.captureEvent(juce::MidiMessage::noteOff(1, 60), b + 0.5);
+		}
+		engine.stopRecording();
+	};
+	auto onOffsets = [&](std::vector<CapturedEvent> &notes, int channel) {
+		std::vector<int> offs;
+		for (const auto &e : notes)
+			if (e.message.isNoteOn() && e.message.getChannel() == channel) offs.push_back(e.sampleOffset);
+		return offs;
+	};
+
+	// Same-track insert: copying bar 1 to bar 2 pushes the existing bar 2/3 later.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setTempo(120.0);
+		engine.setTimeSignature(4, 4);
+		engine.setPrecountBars(0);
+		seed(engine, 0, {1, 2, 3});
+
+		engine.copyBars(0, 0, 1, 1, 2);
+
+		engine.gotoBar(1);
+		engine.play();
+		auto notes = renderBlock(engine, barSamples * 4, sr);
+		auto offs = onOffsets(notes, 2);
+		check(offs.size() == 4, "same-track insert: 4 notes now (was 3, +1 inserted copy)");
+		if (offs.size() == 4)
+			check(offs[0] == 0 && offs[1] == barSamples && offs[2] == barSamples * 2 &&
+			          offs[3] == barSamples * 3,
+			      "same-track insert: bar 1 kept, copy inserted as new bar 2, old bar 2/3 pushed to bar 3/4");
+	}
+
+	// Cross-track copy: only the notes travel - the copy plays on the destination track's own
+	// live channel, never the source track's.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setTempo(120.0);
+		engine.setTimeSignature(4, 4);
+		engine.setPrecountBars(0);
+		seed(engine, 0, {1});
+
+		engine.copyBars(0, 1, 1, 1, 1); // track 0 bar 1 -> track 1 bar 1
+
+		engine.gotoBar(1);
+		engine.play();
+		auto notes = renderBlock(engine, barSamples, sr);
+		bool onDestChannel = false;
+		for (const auto &e : notes)
+			if (e.message.isNoteOn() && e.message.getChannel() == 3) onDestChannel = true;
+		check(onDestChannel, "cross-track copy: the note plays on track 1's own channel (3), not track 0's (2)");
+	}
+
+	// "All tracks" copy: applied independently per track, so they stay aligned with each other.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setTempo(120.0);
+		engine.setTimeSignature(4, 4);
+		engine.setPrecountBars(0);
+		seed(engine, 0, {1});
+		seed(engine, 1, {1});
+
+		engine.copyBars(-1, -1, 1, 1, 3); // bar 1 -> bar 3, every track
+
+		engine.gotoBar(1);
+		engine.play();
+		auto notes = renderBlock(engine, barSamples * 3, sr);
+		auto offs0 = onOffsets(notes, 2);
+		auto offs1 = onOffsets(notes, 3);
+		check(offs0.size() == 2 && offs1.size() == 2, "all-tracks copy: both tracks got the inserted copy");
+		if (offs0.size() == 2 && offs1.size() == 2)
+			check(offs0[0] == 0 && offs0[1] == barSamples * 2 && offs1[0] == 0 && offs1[1] == barSamples * 2,
+			      "all-tracks copy: both tracks land the copy at bar 3, staying aligned with each other");
+	}
+}
+
 } // namespace
 
 int main() {
@@ -825,12 +1060,16 @@ int main() {
 	testProgramChangeExport();
 	testByteRoundTrip();
 	testPunchReplacePreservesSurroundings();
+	testReplaceModeSilentDuringTake();
 	testOverdubMode();
 	testLoopBar();
 	testLoopPunchRestrictsRecording();
 	testNewSong();
 	testSongSlots();
+	testCopySongSlot();
 	testPrecountIsFictitious();
+	testDeleteBars();
+	testCopyBars();
 
 	if (failures == 0) {
 		std::printf("\nALL PASSED\n");

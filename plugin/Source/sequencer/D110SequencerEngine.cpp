@@ -207,6 +207,7 @@ double D110SequencerEngine::gridBeats(QuantizeGrid grid) const {
 		case QuantizeGrid::sixteenth: return 0.25;
 		case QuantizeGrid::eighthTriplet: return 1.0 / 3.0;
 		case QuantizeGrid::sixteenthTriplet: return 1.0 / 6.0;
+		case QuantizeGrid::thirtySecond: return 0.125;
 		case QuantizeGrid::off:
 		default: return 0.0;
 	}
@@ -244,6 +245,101 @@ QuantizeGrid D110SequencerEngine::getTrackQuantize(int index) const { return tra
 void D110SequencerEngine::clearTrack(int index) {
 	jassert(index >= 0 && index < kNumTracks);
 	trackAt(index).events.clear();
+}
+
+// Shared by deleteBars()/copyBars() below: rebuilds a track's events, keeping a note (both its
+// on and off, wherever the off actually lands) whenever its on-time satisfies `keep`, and
+// shifting a kept note's on/off times together by whatever `shiftFor` returns for its on-time -
+// so a held note's duration always survives, even one that starts before a boundary and ends
+// after it.
+template <typename KeepFn, typename ShiftFn>
+static void rebuildTrackEvents(juce::MidiMessageSequence &events, KeepFn keep, ShiftFn shiftFor) {
+	events.updateMatchedPairs();
+	juce::MidiMessageSequence rebuilt;
+	for (int i = 0; i < events.getNumEvents(); ++i) {
+		const auto *ev = events.getEventPointer(i);
+		if (ev->message.isNoteOff()) continue; // carried along with its note-on below
+		const double onBeat = ev->message.getTimeStamp();
+		if (!keep(onBeat)) continue;
+		const double shift = shiftFor(onBeat);
+		auto onMsg = ev->message;
+		onMsg.setTimeStamp(onBeat + shift);
+		rebuilt.addEvent(onMsg);
+		if (ev->noteOffObject != nullptr) {
+			auto offMsg = ev->noteOffObject->message;
+			offMsg.setTimeStamp(offMsg.getTimeStamp() + shift);
+			rebuilt.addEvent(offMsg);
+		}
+	}
+	rebuilt.sort();
+	rebuilt.updateMatchedPairs();
+	events = std::move(rebuilt);
+}
+
+void D110SequencerEngine::deleteBars(int trackIndex, int fromBar, int toBarInclusive) {
+	jassert(trackIndex == -1 || (trackIndex >= 0 && trackIndex < kNumTracks));
+	const double bar = barLengthBeats();
+	const double fromBeats = double(juce::jmax(1, fromBar) - 1) * bar;
+	const double toBeats = double(juce::jmax(fromBar, toBarInclusive)) * bar; // exclusive
+	const double rangeLen = toBeats - fromBeats;
+	if (rangeLen <= 0.0) return;
+
+	auto apply = [&](Track &track) {
+		rebuildTrackEvents(
+			track.events, [&](double onBeat) { return onBeat < fromBeats || onBeat >= toBeats; },
+			[&](double onBeat) { return onBeat >= toBeats ? -rangeLen : 0.0; });
+	};
+	if (trackIndex < 0)
+		for (auto &t : tracks) apply(t);
+	else
+		apply(trackAt(trackIndex));
+}
+
+void D110SequencerEngine::copyBars(int srcTrack, int destTrack, int fromBar, int toBarInclusive,
+                                    int destBar) {
+	jassert((srcTrack == -1 && destTrack == -1) ||
+	        (srcTrack >= 0 && srcTrack < kNumTracks && destTrack >= 0 && destTrack < kNumTracks));
+	const double bar = barLengthBeats();
+	const double fromBeats = double(juce::jmax(1, fromBar) - 1) * bar;
+	const double toBeats = double(juce::jmax(fromBar, toBarInclusive)) * bar; // exclusive
+	const double rangeLen = toBeats - fromBeats;
+	const double destBeats = double(juce::jmax(1, destBar) - 1) * bar;
+	if (rangeLen <= 0.0) return;
+
+	auto apply = [&](Track &src, Track &dst) {
+		// Snapshot the bars being copied from their ORIGINAL positions first - src and dst may
+		// be the same track, and the destination rebuild below mutates dst.events in place.
+		juce::MidiMessageSequence snippet;
+		src.events.updateMatchedPairs();
+		for (int i = 0; i < src.events.getNumEvents(); ++i) {
+			const auto *ev = src.events.getEventPointer(i);
+			if (ev->message.isNoteOff()) continue;
+			const double onBeat = ev->message.getTimeStamp();
+			if (onBeat < fromBeats || onBeat >= toBeats) continue;
+			auto onMsg = ev->message;
+			onMsg.setTimeStamp(onBeat - fromBeats + destBeats);
+			snippet.addEvent(onMsg);
+			if (ev->noteOffObject != nullptr) {
+				auto offMsg = ev->noteOffObject->message;
+				offMsg.setTimeStamp(offMsg.getTimeStamp() - fromBeats + destBeats);
+				snippet.addEvent(offMsg);
+			}
+		}
+
+		// Make room: push everything already at/after destBeats on the destination track later
+		// by rangeLen, then drop the snippet in.
+		rebuildTrackEvents(
+			dst.events, [](double) { return true; },
+			[&](double onBeat) { return onBeat >= destBeats ? rangeLen : 0.0; });
+		for (int i = 0; i < snippet.getNumEvents(); ++i) dst.events.addEvent(snippet.getEventPointer(i)->message);
+		dst.events.sort();
+		dst.events.updateMatchedPairs();
+	};
+
+	if (srcTrack < 0)
+		for (auto &t : tracks) apply(t, t);
+	else
+		apply(trackAt(srcTrack), trackAt(destTrack));
 }
 
 D110SequencerEngine::Track &D110SequencerEngine::songTrackAt(int slot, int track) {
@@ -290,6 +386,16 @@ void D110SequencerEngine::selectSongSlot(int slot) {
 	playing = false;
 	armedTrack = -1;
 	positionBeats = 0.0;
+}
+
+void D110SequencerEngine::copyCurrentSongTo(int destSlot) {
+	jassert(destSlot >= 0 && destSlot < kNumSongSlots);
+	if (destSlot == currentSlot) return;
+	auto &dest = songs[static_cast<size_t>(destSlot)];
+	dest.tempoBpm = tempoBpm;
+	dest.timeSigNum = timeSigNum;
+	dest.timeSigDen = timeSigDen;
+	dest.tracks = tracks;
 }
 
 bool D110SequencerEngine::songSlotHasContent(int slot) const {
@@ -445,13 +551,22 @@ void D110SequencerEngine::renderInto(juce::MidiBuffer &midiMessages, int numSamp
 		}
 
 		for (int t = 0; t < kNumTracks; ++t) {
-			// Even the armed track, mid-take, plays back its own already-committed content
-			// normally here - new captures go to recordBuffer (a separate sequence this loop
-			// never touches), not into the track itself, until stopRecording() folds them in.
-			// That's what makes overdub's existing material actually audible while recording.
+			// The armed track, mid-take, plays back its own already-committed content normally
+			// here - new captures go to recordBuffer (a separate sequence this loop never
+			// touches), not into the track itself, until stopRecording() folds them in. That's
+			// what makes overdub's existing material actually audible while recording.
+			//
+			// A replace mode (replaceRange/replaceToEnd) is different: that existing content is
+			// about to be erased by this very take, over a span stopRecording() won't actually
+			// know until the take ends - replaceRange erases up to wherever recording is
+			// stopped, replaceToEnd erases everything from the take's start on. Playing it back
+			// meanwhile would sound like a doubled performance for content that's being thrown
+			// away, so it stays silent for the whole take rather than only over whatever range
+			// turns out to get erased.
 			const auto &track = trackAt(t);
 			if (track.muted) continue;
 			if (solo && !track.soloed) continue;
+			if (recording && t == armedTrack && recordMode != RecordMode::overdub) continue;
 
 			const auto &seq = track.events;
 			for (int i = seq.getNextIndexAtTime(windowStart); i < seq.getNumEvents(); ++i) {

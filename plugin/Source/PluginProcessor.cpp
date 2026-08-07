@@ -265,12 +265,14 @@ void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
 // spelling. Among two empty (or two populated) candidates, prefers the space variant; if
 // neither exists at all, also returns the space variant, to create, matching this project's
 // own established naming (D-110 Emulator, D-110 Data).
+static bool folderIsPopulated(const juce::File &f) {
+	return f.isDirectory() && f.getNumberOfChildFiles(juce::File::findFilesAndDirectories) > 0;
+}
+
 static juce::File resolveNamedFolder(const juce::File &parent, const juce::String &spaceName) {
 	const auto spaced = parent.getChildFile(spaceName);
 	const auto underscored = parent.getChildFile(spaceName.replaceCharacter(' ', '_'));
-	const auto isPopulated = [](const juce::File &f) {
-		return f.isDirectory() && f.getNumberOfChildFiles(juce::File::findFilesAndDirectories) > 0;
-	};
+	const auto &isPopulated = folderIsPopulated;
 	if (isPopulated(spaced)) return spaced;
 	if (isPopulated(underscored)) return underscored;
 	if (spaced.isDirectory()) return spaced;
@@ -383,18 +385,32 @@ juce::String D110AudioProcessor::getMameRomPath() {
 
 juce::File D110AudioProcessor::getAutoRomFolder() {
 	// Colocated with the platform's standard shared VST3 folder (see VST3_COPY_DIR in
-	// plugin/CMakeLists.txt) - not AppData/etc, which was only ever a leftover from this
-	// project's original CMakeLists template.
+	// plugin/CMakeLists.txt) - makes sense for the plugin, since every DAW scans there anyway,
+	// and is the default location for a fresh install (checked first, below).
 #if JUCE_WINDOWS
-	return resolveNamedFolder(juce::File("C:/Program Files/Common Files/VST3"), "D-110 Data");
+	const auto vst3Colocated = resolveNamedFolder(juce::File("C:/Program Files/Common Files/VST3"), "D-110 Data");
 #elif JUCE_MAC
-	return resolveNamedFolder(
+	const auto vst3Colocated = resolveNamedFolder(
 		juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile("Library/Audio/Plug-Ins/VST3"),
 		"D-110 Data");
 #else
-	return resolveNamedFolder(juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile(".vst3"),
-	                          "D-110 Data");
+	const auto vst3Colocated = resolveNamedFolder(
+		juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile(".vst3"), "D-110 Data");
 #endif
+
+	// A second, per-OS "app data" location - the same root getNvramRoot()'s own fallback and
+	// the Standalone's settings file already use - because asking a Standalone user (no VST3
+	// host installed, possibly no ~/.vst3 at all) to put ROMs inside a VST3-specific folder
+	// makes no sense for them. Only actually used if that is where the ROMs turn out to be;
+	// the VST3-colocated folder above stays the default for a fresh install either way, so
+	// nothing changes for anyone already using it.
+	const auto appData = resolveNamedFolder(
+		juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("D-110 Emulator"),
+		"D-110 Data");
+
+	if (folderIsPopulated(vst3Colocated)) return vst3Colocated;
+	if (folderIsPopulated(appData)) return appData;
+	return vst3Colocated;
 }
 
 bool D110AudioProcessor::identifyRomData(const juce::MemoryBlock &data,

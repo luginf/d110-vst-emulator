@@ -227,12 +227,17 @@ void D110SequencerPanel::showQuantizeMenu(int track) {
 	m.addItem(4, "Quantize: 1/16", true, current == QuantizeGrid::sixteenth);
 	m.addItem(5, "Quantize: 1/8 triplet", true, current == QuantizeGrid::eighthTriplet);
 	m.addItem(6, "Quantize: 1/16 triplet", true, current == QuantizeGrid::sixteenthTriplet);
+	m.addItem(7, "Quantize: 1/32", true, current == QuantizeGrid::thirtySecond);
 	m.addSeparator();
-	m.addItem(7, "Clear track", engine().trackHasEvents(track));
+	m.addItem(8, "Clear track", engine().trackHasEvents(track));
+	m.addItem(9, "Delete bar(s) on this track...", engine().getBarCount() >= 1);
+	m.addItem(10, "Copy bar(s) on this track to...", engine().trackHasEvents(track));
 
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this, track](int result) {
 		using d110seq::QuantizeGrid;
-		if (result == 7) { confirmClearTrack(track); return; }
+		if (result == 8) { confirmClearTrack(track); return; }
+		if (result == 9) { promptForDeleteBars(track); return; }
+		if (result == 10) { promptForCopyBars(track); return; }
 		QuantizeGrid grid;
 		switch (result) {
 			case 1: grid = QuantizeGrid::off; break;
@@ -241,6 +246,7 @@ void D110SequencerPanel::showQuantizeMenu(int track) {
 			case 4: grid = QuantizeGrid::sixteenth; break;
 			case 5: grid = QuantizeGrid::eighthTriplet; break;
 			case 6: grid = QuantizeGrid::sixteenthTriplet; break;
+			case 7: grid = QuantizeGrid::thirtySecond; break;
 			default: return;
 		}
 		engine().quantizeTrack(track, grid);
@@ -287,6 +293,9 @@ void D110SequencerPanel::showBarMenu() {
 	m.addItem(2, "Set punch in here (bar " + juce::String(eng.getCurrentBar()) + ")");
 	m.addItem(3, "Set punch out here (bar " + juce::String(eng.getCurrentBar()) + ")");
 	m.addItem(4, "Set punch in/out...");
+	m.addSeparator();
+	m.addItem(5, "Delete bar(s) (all tracks)...");
+	m.addItem(6, "Copy bar(s) to... (all tracks)");
 
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this](int result) {
 		auto &e = engine();
@@ -295,6 +304,8 @@ void D110SequencerPanel::showBarMenu() {
 			case 2: e.setPunchIn(e.getCurrentBar()); break;
 			case 3: e.setPunchOut(e.getCurrentBar()); break;
 			case 4: promptForPunchRange(); return;
+			case 5: promptForDeleteBars(-1); return;
+			case 6: promptForCopyBars(-1); return;
 			default: return;
 		}
 		repaint();
@@ -335,6 +346,123 @@ void D110SequencerPanel::promptForPunchRange() {
 			const int in = aw->getTextEditorContents("in").getIntValue();
 			const int out = aw->getTextEditorContents("out").getIntValue();
 			if (in >= 1 && out >= 1) e.setPunchRange(in, out);
+			repaint();
+		}
+		delete aw;
+	}));
+}
+
+// Destructive (see D110SequencerEngine::deleteBars()) and unrecoverable, so it confirms with a
+// warning icon the same way confirmClearTrack() does, rather than acting straight from the menu.
+void D110SequencerPanel::promptForDeleteBars(int track) {
+	auto &eng = engine();
+	const bool isRhythm = track == d110seq::D110SequencerEngine::kRhythmTrack;
+	const juce::String scope =
+		track < 0 ? "every track" : (isRhythm ? "RHYTHM" : ("PART " + juce::String(track + 1)));
+	auto *aw = new juce::AlertWindow(
+		"Delete bar(s)",
+		"Removes the given bar range from " + scope
+			+ " and closes the gap by shifting everything after it earlier. This cannot be undone.",
+		juce::AlertWindow::WarningIcon);
+	aw->addTextEditor("from", juce::String(eng.getCurrentBar()), "From bar:");
+	aw->addTextEditor("to", juce::String(eng.getCurrentBar()), "To bar:");
+	aw->addButton("Delete", 1, juce::KeyPress(juce::KeyPress::returnKey));
+	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track](int result) {
+		if (result == 1) {
+			const int from = aw->getTextEditorContents("from").getIntValue();
+			const int to = aw->getTextEditorContents("to").getIntValue();
+			if (from >= 1 && to >= from) engine().deleteBars(track, from, to);
+			repaint();
+		}
+		delete aw;
+	}));
+}
+
+// Inserts (see D110SequencerEngine::copyBars()) - pushes whatever's already at/after the
+// destination later rather than overwriting it, so this is destructive only in the sense that
+// it changes bar numbers from the destination onward; still confirmed with a warning icon since
+// that reflow can't be undone either.
+void D110SequencerPanel::promptForCopyBars(int track) {
+	auto &eng = engine();
+	const bool isRhythm = track == d110seq::D110SequencerEngine::kRhythmTrack;
+	const juce::String scope =
+		track < 0 ? "every track, independently" : (isRhythm ? "RHYTHM" : ("PART " + juce::String(track + 1)));
+	auto *aw = new juce::AlertWindow(
+		"Copy bar(s)",
+		"Copies the given bar range and inserts it at the destination bar on " + scope
+			+ ", pushing anything already there later to make room. This cannot be undone.",
+		juce::AlertWindow::WarningIcon);
+	aw->addTextEditor("from", juce::String(eng.getCurrentBar()), "From bar:");
+	aw->addTextEditor("to", juce::String(eng.getCurrentBar()), "To bar:");
+	aw->addTextEditor("dest", juce::String(eng.getBarCount() + 1), "Destination bar:");
+	// Only a single track's worth of notes can go to a chosen OTHER track - copying "every
+	// track" always keeps each one going to its own same track, so they stay aligned (see
+	// copyBars()'s own comment on srcTrack == destTrack == -1).
+	if (track >= 0) {
+		juce::StringArray names;
+		for (int t = 0; t < d110seq::D110SequencerEngine::kNumTracks; ++t)
+			names.add(t == d110seq::D110SequencerEngine::kRhythmTrack ? "RHYTHM" : ("PART " + juce::String(t + 1)));
+		aw->addComboBox("destTrack", names, "Destination track:");
+		aw->getComboBoxComponent("destTrack")->setSelectedItemIndex(track, juce::dontSendNotification);
+	}
+	aw->addButton("Copy", 1, juce::KeyPress(juce::KeyPress::returnKey));
+	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track](int result) {
+		if (result == 1) {
+			const int from = aw->getTextEditorContents("from").getIntValue();
+			const int to = aw->getTextEditorContents("to").getIntValue();
+			const int dest = aw->getTextEditorContents("dest").getIntValue();
+			const int destTrack = track >= 0 ? aw->getComboBoxComponent("destTrack")->getSelectedItemIndex() : -1;
+			if (from >= 1 && to >= from && dest >= 1) engine().copyBars(track, destTrack, from, to, dest);
+			repaint();
+		}
+		delete aw;
+	}));
+}
+
+// Right-click any of the 4 slot buttons: offers copying the CURRENT song into one of the
+// other 3, regardless of which slot's button was actually clicked - there's only one sensible
+// source (whichever song is live right now), so the menu doesn't need to distinguish.
+void D110SequencerPanel::showCopySongMenu() {
+	auto &eng = engine();
+	const int current = eng.getCurrentSongSlot();
+
+	juce::PopupMenu m;
+	for (int s = 0; s < D110SequencerEngine::kNumSongSlots; ++s) {
+		if (s == current) continue;
+		juce::String label = "Copy this song to Slot " + juce::String(s + 1);
+		if (eng.songSlotHasContent(s)) label += " (overwrites it)";
+		m.addItem(s + 1, label);
+	}
+
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this](int result) {
+		if (result < 1) return;
+		confirmCopySongTo(result - 1);
+	});
+}
+
+// Destructive to destSlot's existing content (see D110SequencerEngine::copyCurrentSongTo()), so
+// it always confirms first, the same as confirmClearTrack()/confirmNewSong() - except when
+// destSlot is empty, where there's nothing to lose and confirming would just be a needless click.
+void D110SequencerPanel::confirmCopySongTo(int destSlot) {
+	auto &eng = engine();
+	const int current = eng.getCurrentSongSlot();
+	if (!eng.songSlotHasContent(destSlot)) {
+		eng.copyCurrentSongTo(destSlot);
+		repaint();
+		return;
+	}
+	auto *aw = new juce::AlertWindow(
+		"Copy song to Slot " + juce::String(destSlot + 1) + "?",
+		"This overwrites Slot " + juce::String(destSlot + 1) + " with a copy of Slot "
+			+ juce::String(current + 1) + " (the current song). This cannot be undone.",
+		juce::AlertWindow::WarningIcon);
+	aw->addButton("Copy", 1, juce::KeyPress(juce::KeyPress::returnKey));
+	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, destSlot](int result) {
+		if (result == 1) {
+			engine().copyCurrentSongTo(destSlot);
 			repaint();
 		}
 		delete aw;
@@ -525,6 +653,8 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 		if (stopBounds.contains(p)) { processor.midiPanic(); return; }
 		for (int t = 0; t < kNumTracks; ++t)
 			if (rows[static_cast<size_t>(t)].rowBounds.contains(p)) { showQuantizeMenu(t); return; }
+		for (int s = 0; s < D110SequencerEngine::kNumSongSlots; ++s)
+			if (slotBounds[static_cast<size_t>(s)].contains(p)) { showCopySongMenu(); return; }
 		return;
 	}
 

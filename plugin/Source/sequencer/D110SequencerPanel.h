@@ -42,6 +42,10 @@ private:
 	void showQuantizeMenu(int track);
 	void showMetronomeModeMenu();
 	void confirmClearTrack(int track);
+	// Right-click any song-slot button: copy the CURRENT song into one of the other 3 slots -
+	// see D110SequencerEngine::copyCurrentSongTo().
+	void showCopySongMenu();
+	void confirmCopySongTo(int destSlot);
 	// Right-click LOAD/SAVE: all 4 song slots at once (.d110songs), as opposed to the plain
 	// click's single current song (.mid) - see D110AudioProcessor::exportSequencerSongs().
 	void showLoadMenu();
@@ -51,6 +55,12 @@ private:
 	void promptForBar();
 	void promptForPunchRange();
 	void confirmNewSong();
+	// track == -1 means every track at once (from the BAR readout's own menu); track >= 0
+	// scopes the operation to just that one track (from a track row's right-click menu). See
+	// D110SequencerEngine::deleteBars()/copyBars() for what "every track" vs. "just this one"
+	// actually does to bar alignment.
+	void promptForDeleteBars(int track);
+	void promptForCopyBars(int track);
 
 	D110AudioProcessor &processor;
 
