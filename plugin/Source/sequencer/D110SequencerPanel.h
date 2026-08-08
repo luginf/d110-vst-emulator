@@ -27,8 +27,9 @@ public:
 
 	// Reference height, in the same units as D110Panel::kRefH - what the owning editor
 	// adds to its own layout, exactly as it already does for D110Keyboard::kRefH. Raised
-	// ~30% from the original 250 (Alan: tracks were too thin to read comfortably).
-	static constexpr float kRefH = 325.0f;
+	// ~30% from the original 250 (Alan: tracks were too thin to read comfortably), then by
+	// another 22 for the step-recording strip.
+	static constexpr float kRefH = 347.0f;
 
 private:
 	void timerCallback() override; // repaints the bar readout while the transport rolls
@@ -55,19 +56,29 @@ private:
 	void promptForBar();
 	void promptForPunchRange();
 	void confirmNewSong();
+	// STEP-strip controls - see D110SequencerEngine::setStepDuration()/startStepRecording().
+	void cycleStepDuration();
+	void showStepDurationMenu();
 	// track == -1 means every track at once (from the BAR readout's own menu); track >= 0
 	// scopes the operation to just that one track (from a track row's right-click menu). See
 	// D110SequencerEngine::deleteBars()/copyBars() for what "every track" vs. "just this one"
 	// actually does to bar alignment.
 	void promptForDeleteBars(int track);
 	void promptForCopyBars(int track);
+	// Same track==-1-means-every-track convention as the two above - see
+	// D110SequencerEngine::transposeBars().
+	void promptForTransposeBars(int track);
 
 	D110AudioProcessor &processor;
 
 	juce::Rectangle<float> stopBounds, playBounds, recBounds;
 	juce::Rectangle<float> tempoBounds, timeSigBounds, metronomeBounds, precountBounds, loopBounds;
 	juce::Rectangle<float> barPrevBounds, barNextBounds, barReadoutBounds;
-	juce::Rectangle<float> loadBounds, saveBounds, recModeBounds, newBounds;
+	juce::Rectangle<float> loadBounds, saveBounds, recModeBounds, newBounds, undoBounds;
+	// Step-recording strip, under the file strip - see D110SequencerEngine's step API.
+	// stepInfoBounds is a plain readout (current bar/step while active), not clickable.
+	juce::Rectangle<float> stepBounds, stepDurationBounds, stepDotBounds, restBounds, backBounds,
+		stepInfoBounds;
 	// One button per song slot (see D110SequencerEngine::kNumSongSlots) - click to switch,
 	// highlighted on whichever is current, with a small dot for slots that have content.
 	std::array<juce::Rectangle<float>, d110seq::D110SequencerEngine::kNumSongSlots> slotBounds;

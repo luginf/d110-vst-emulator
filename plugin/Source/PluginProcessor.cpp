@@ -834,6 +834,21 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 			}
 		}
 
+		// Step recording doesn't care about beat position (see stepNoteOn()'s own comment), only
+		// which notes were played and released - same armed-channel gating as real-time capture
+		// above, just routed to the step API instead. Notes stay in midiMessages either way, so
+		// they're still audible through the firmware while being entered, same as a real-time take.
+		const int stepArmed = sequencerEngine.isStepRecording() ? sequencerEngine.getArmedTrack() : -1;
+		if (stepArmed >= 0) {
+			const int armedChannel = sequencerEngine.channelForTrack(stepArmed);
+			for (const auto meta : midiMessages) {
+				const auto &msg = meta.getMessage();
+				if (msg.getChannel() != armedChannel) continue;
+				if (msg.isNoteOn()) sequencerEngine.stepNoteOn(msg.getNoteNumber(), msg.getVelocity());
+				else if (msg.isNoteOff()) sequencerEngine.stepNoteOff(msg.getNoteNumber());
+			}
+		}
+
 		sequencerEngine.renderInto(midiMessages, numSamples, currentSampleRate,
 		                            sequencerEngine.getMetronomeEnabled() ? &sequencerClicks : nullptr);
 	}
@@ -1961,6 +1976,8 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	xml->setAttribute("seqMetronomeVolume", double(sequencerEngine.getMetronomeVolume()));
 	xml->setAttribute("seqPrecountBars", sequencerEngine.getPrecountBars());
 	xml->setAttribute("seqRecordMode", static_cast<int>(sequencerEngine.getRecordMode()));
+	xml->setAttribute("seqStepGrid", static_cast<int>(sequencerEngine.getStepDuration()));
+	xml->setAttribute("seqStepDotted", sequencerEngine.getStepDotted() ? 1 : 0);
 	xml->setAttribute("seqLoopMode", static_cast<int>(sequencerEngine.getLoopMode()));
 	xml->setAttribute("seqPunchIn", sequencerEngine.getPunchIn());
 	xml->setAttribute("seqPunchOut", sequencerEngine.getPunchOut());
@@ -2114,6 +2131,9 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 		sequencerEngine.setPrecountBars(xml->getIntAttribute("seqPrecount", 1) != 0 ? 1 : 0);
 	sequencerEngine.setRecordMode(static_cast<d110seq::RecordMode>(
 		xml->getIntAttribute("seqRecordMode", static_cast<int>(d110seq::RecordMode::replaceRange))));
+	sequencerEngine.setStepDuration(static_cast<d110seq::QuantizeGrid>(
+		xml->getIntAttribute("seqStepGrid", static_cast<int>(d110seq::QuantizeGrid::eighth))));
+	sequencerEngine.setStepDotted(xml->getIntAttribute("seqStepDotted", 0) != 0);
 	sequencerEngine.setPunchIn(xml->getIntAttribute("seqPunchIn", sequencerEngine.getPunchIn()));
 	sequencerEngine.setPunchOut(xml->getIntAttribute("seqPunchOut", sequencerEngine.getPunchOut()));
 	sequencerEngine.setLoopMode(static_cast<d110seq::LoopMode>(

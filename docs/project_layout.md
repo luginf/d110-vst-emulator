@@ -8,6 +8,11 @@
   machine on its own thread with a headless OSD, and exposes the display, the sixteen buttons
   and the firmware's parameter memory. Opt-in (`D110_BUILD_MAME_BACKEND`), not built by default.
 - `plugin/Source/PluginProcessor.*`, `PluginEditor.*` - the JUCE plugin and the photo-composite panel.
+- `plugin/Source/sequencer/` - the D-20-style multitrack sequencer (`D110SequencerEngine` +
+  `D110SequencerPanel`), a third foldable drawer alongside the editor and test keyboard. See
+  [`sequencer.md`](sequencer.md). `plugin/sequencer_probe.cpp` and
+  `plugin/sequencer_state_probe.cpp` are its headless tests (engine timing/quantize/step-
+  recording/undo/file-I/O, and the state-save round trip, respectively).
 - `plugin/mame.cmake` - the MAME library/include/define lists and how the subset was built.
 - `docs/` - the measured panel geometry and the SysEx address map, both derived by profiling
   rather than by eye. Every number in the code is justified there.

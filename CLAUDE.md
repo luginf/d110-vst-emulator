@@ -37,17 +37,19 @@ behaviour. Don't duplicate that here; this file is about how to work in the repo
   keyboard input, MIDI channel/omni via right-click), also independently foldable, open
   by default. `D110SequencerPanel` (see below) is a third such drawer, closed by
   default. `D110MemoryCard` = the memory card slot widget.
-- `plugin/Source/sequencer/` - a D-20-style multitrack MIDI sequencer, added 2026-08-05.
+- `plugin/Source/sequencer/` - a D-20-style multitrack MIDI sequencer, added 2026-08-05,
+  since grown to also cover step recording, undo, and bar-range delete/copy/transpose - see
+  `docs/sequencer.md` for the full feature list, this is just the code layout.
   `D110SequencerEngine` is the transport/data model - deliberately D-110-agnostic (own
-  internal clock, note-only `juce::MidiMessageSequence` per track, MIDI-file and
-  quantize logic), talking to the rest of the plugin only through a `channelForTrack`
+  internal clock, note-only `juce::MidiMessageSequence` per track, MIDI-file, quantize and
+  step-recording logic), talking to the rest of the plugin only through a `channelForTrack`
   callback the processor supplies. `D110SequencerPanel` is the JUCE UI drawer. 9 tracks
   (D-110 Parts 1-8 by their live SYSTEM-area channel, plus a rhythm track fixed on
   channel 10); state persists in `getStateInformation`/`setStateInformation` the same
   way the firmware NVRAM does. `plugin/sequencer_probe.cpp` and
-  `plugin/sequencer_state_probe.cpp` are its headless tests (engine timing/quantize/
-  file-I/O, and the state-save round trip, respectively) - both native-core-only, no
-  MAME dependency.
+  `plugin/sequencer_state_probe.cpp` are its headless tests (engine timing/quantize/step-
+  recording/undo/file-I/O, and the state-save round trip, respectively) - both
+  native-core-only, no MAME dependency.
 - `plugin/CMakeLists.txt` - two plugin targets (native always, MAME opt-in) plus a long
   list of headless test/probe executables (`plugin/*.cpp` at the top level, ~60 of
   them) used to measure firmware RAM layout and verify behaviour empirically rather

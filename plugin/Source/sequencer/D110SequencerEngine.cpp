@@ -5,6 +5,35 @@
 
 namespace d110seq {
 
+// Shared by deleteBars()/copyBars()/stepBack() below: rebuilds a track's events, keeping a note
+// (both its on and off, wherever the off actually lands) whenever its on-time satisfies `keep`,
+// and shifting a kept note's on/off times together by whatever `shiftFor` returns for its
+// on-time - so a held note's duration always survives, even one that starts before a boundary
+// and ends after it.
+template <typename KeepFn, typename ShiftFn>
+static void rebuildTrackEvents(juce::MidiMessageSequence &events, KeepFn keep, ShiftFn shiftFor) {
+	events.updateMatchedPairs();
+	juce::MidiMessageSequence rebuilt;
+	for (int i = 0; i < events.getNumEvents(); ++i) {
+		const auto *ev = events.getEventPointer(i);
+		if (ev->message.isNoteOff()) continue; // carried along with its note-on below
+		const double onBeat = ev->message.getTimeStamp();
+		if (!keep(onBeat)) continue;
+		const double shift = shiftFor(onBeat);
+		auto onMsg = ev->message;
+		onMsg.setTimeStamp(onBeat + shift);
+		rebuilt.addEvent(onMsg);
+		if (ev->noteOffObject != nullptr) {
+			auto offMsg = ev->noteOffObject->message;
+			offMsg.setTimeStamp(offMsg.getTimeStamp() + shift);
+			rebuilt.addEvent(offMsg);
+		}
+	}
+	rebuilt.sort();
+	rebuilt.updateMatchedPairs();
+	events = std::move(rebuilt);
+}
+
 D110SequencerEngine::D110SequencerEngine() = default;
 
 void D110SequencerEngine::setChannelSource(std::function<int(int)> f) {
@@ -136,11 +165,13 @@ int D110SequencerEngine::getBarCount() const {
 void D110SequencerEngine::armTrack(int index) {
 	jassert(index == -1 || (index >= 0 && index < kNumTracks));
 	if (recording) stopRecording();
+	if (stepRecording) stopStepRecording();
 	armedTrack = index;
 }
 
 void D110SequencerEngine::startRecording() {
 	if (armedTrack < 0) return;
+	if (stepRecording) stopStepRecording();
 	playing = true;
 	recording = true;
 	// Precount is fictitious - it never moves positionBeats (see renderInto()), so the take
@@ -188,6 +219,105 @@ void D110SequencerEngine::stopRecording() {
 	recordBuffer.clear();
 }
 
+void D110SequencerEngine::setStepDuration(QuantizeGrid grid) {
+	stepGrid = grid == QuantizeGrid::off ? QuantizeGrid::quarter : grid;
+}
+
+void D110SequencerEngine::startStepRecording() {
+	if (armedTrack < 0) return;
+	if (recording) stopRecording();
+	stepRecording = true;
+	stepPositionBeats = double(getCurrentBar() - 1) * barLengthBeats();
+	stepHeldNotes.clear();
+	stepLengths.clear();
+}
+
+void D110SequencerEngine::stopStepRecording() {
+	if (!stepRecording) return;
+	if (!stepHeldNotes.empty()) commitStepInternal(); // don't drop a chord still mid-entry
+	stepRecording = false;
+	stepHeldNotes.clear();
+	stepLengths.clear();
+}
+
+void D110SequencerEngine::commitStepInternal() {
+	const double len = currentStepBeats();
+	if (armedTrack >= 0 && len > 0.0 && !stepHeldNotes.empty()) {
+		auto &events = trackAt(armedTrack).events;
+		const int channel = channelForTrack(armedTrack);
+		for (const auto &h : stepHeldNotes) {
+			auto on = juce::MidiMessage::noteOn(channel, h.note, static_cast<juce::uint8>(h.velocity));
+			on.setTimeStamp(stepPositionBeats);
+			events.addEvent(on);
+			auto off = juce::MidiMessage::noteOff(channel, h.note);
+			off.setTimeStamp(stepPositionBeats + len);
+			events.addEvent(off);
+		}
+		events.sort();
+		events.updateMatchedPairs();
+	}
+	stepLengths.push_back(len);
+	stepPositionBeats += len;
+	stepHeldNotes.clear();
+}
+
+void D110SequencerEngine::stepNoteOn(int noteNumber, int velocity) {
+	if (!stepRecording) return;
+	for (auto &h : stepHeldNotes)
+		if (h.note == noteNumber) {
+			h.stillDown = true;
+			h.velocity = velocity;
+			return;
+		}
+	stepHeldNotes.push_back({noteNumber, velocity, true});
+}
+
+void D110SequencerEngine::stepNoteOff(int noteNumber) {
+	if (!stepRecording) return;
+	bool found = false;
+	for (auto &h : stepHeldNotes)
+		if (h.note == noteNumber) {
+			h.stillDown = false;
+			found = true;
+		}
+	if (!found) return;
+	for (const auto &h : stepHeldNotes)
+		if (h.stillDown) return; // still waiting on the rest of the chord
+	commitStepInternal();
+}
+
+void D110SequencerEngine::stepRest() {
+	if (!stepRecording || !stepHeldNotes.empty()) return;
+	const double len = currentStepBeats();
+	stepLengths.push_back(len);
+	stepPositionBeats += len;
+}
+
+void D110SequencerEngine::stepBack() {
+	if (!stepRecording || stepLengths.empty()) return;
+	const double len = stepLengths.back();
+	stepLengths.pop_back();
+	stepPositionBeats -= len;
+	if (armedTrack >= 0) {
+		const double at = stepPositionBeats;
+		rebuildTrackEvents(
+			trackAt(armedTrack).events, [&](double onBeat) { return std::abs(onBeat - at) > 1.0e-9; },
+			[](double) { return 0.0; });
+	}
+}
+
+int D110SequencerEngine::getStepBar() const {
+	const double bl = barLengthBeats();
+	return bl > 0.0 ? static_cast<int>(std::floor(stepPositionBeats / bl)) + 1 : 1;
+}
+
+int D110SequencerEngine::getStepIndexInBar() const {
+	const double step = currentStepBeats();
+	if (step <= 0.0) return 1;
+	const double barStart = double(getStepBar() - 1) * barLengthBeats();
+	return static_cast<int>(std::round((stepPositionBeats - barStart) / step)) + 1;
+}
+
 void D110SequencerEngine::setTrackMuted(int index, bool muted) { trackAt(index).muted = muted; }
 bool D110SequencerEngine::isTrackMuted(int index) const { return trackAt(index).muted; }
 void D110SequencerEngine::setTrackSoloed(int index, bool soloed) { trackAt(index).soloed = soloed; }
@@ -208,6 +338,8 @@ double D110SequencerEngine::gridBeats(QuantizeGrid grid) const {
 		case QuantizeGrid::eighthTriplet: return 1.0 / 3.0;
 		case QuantizeGrid::sixteenthTriplet: return 1.0 / 6.0;
 		case QuantizeGrid::thirtySecond: return 0.125;
+		case QuantizeGrid::half: return 2.0;
+		case QuantizeGrid::whole: return 4.0;
 		case QuantizeGrid::off:
 		default: return 0.0;
 	}
@@ -235,6 +367,20 @@ void D110SequencerEngine::snapTrackToGrid(Track &track, QuantizeGrid grid) const
 	seq.updateMatchedPairs();
 }
 
+void D110SequencerEngine::pushUndoSnapshot() {
+	if (undoStack.size() >= kMaxUndoDepth) undoStack.erase(undoStack.begin());
+	undoStack.push_back(UndoSnapshot{tracks, songs, currentSlot});
+}
+
+void D110SequencerEngine::undo() {
+	if (undoStack.empty()) return;
+	auto snapshot = std::move(undoStack.back());
+	undoStack.pop_back();
+	tracks = std::move(snapshot.tracks);
+	songs = std::move(snapshot.songs);
+	currentSlot = snapshot.currentSlot;
+}
+
 void D110SequencerEngine::quantizeTrack(int index, QuantizeGrid grid) {
 	jassert(index >= 0 && index < kNumTracks);
 	snapTrackToGrid(trackAt(index), grid);
@@ -245,35 +391,6 @@ QuantizeGrid D110SequencerEngine::getTrackQuantize(int index) const { return tra
 void D110SequencerEngine::clearTrack(int index) {
 	jassert(index >= 0 && index < kNumTracks);
 	trackAt(index).events.clear();
-}
-
-// Shared by deleteBars()/copyBars() below: rebuilds a track's events, keeping a note (both its
-// on and off, wherever the off actually lands) whenever its on-time satisfies `keep`, and
-// shifting a kept note's on/off times together by whatever `shiftFor` returns for its on-time -
-// so a held note's duration always survives, even one that starts before a boundary and ends
-// after it.
-template <typename KeepFn, typename ShiftFn>
-static void rebuildTrackEvents(juce::MidiMessageSequence &events, KeepFn keep, ShiftFn shiftFor) {
-	events.updateMatchedPairs();
-	juce::MidiMessageSequence rebuilt;
-	for (int i = 0; i < events.getNumEvents(); ++i) {
-		const auto *ev = events.getEventPointer(i);
-		if (ev->message.isNoteOff()) continue; // carried along with its note-on below
-		const double onBeat = ev->message.getTimeStamp();
-		if (!keep(onBeat)) continue;
-		const double shift = shiftFor(onBeat);
-		auto onMsg = ev->message;
-		onMsg.setTimeStamp(onBeat + shift);
-		rebuilt.addEvent(onMsg);
-		if (ev->noteOffObject != nullptr) {
-			auto offMsg = ev->noteOffObject->message;
-			offMsg.setTimeStamp(offMsg.getTimeStamp() + shift);
-			rebuilt.addEvent(offMsg);
-		}
-	}
-	rebuilt.sort();
-	rebuilt.updateMatchedPairs();
-	events = std::move(rebuilt);
 }
 
 void D110SequencerEngine::deleteBars(int trackIndex, int fromBar, int toBarInclusive) {
@@ -340,6 +457,33 @@ void D110SequencerEngine::copyBars(int srcTrack, int destTrack, int fromBar, int
 		for (auto &t : tracks) apply(t, t);
 	else
 		apply(trackAt(srcTrack), trackAt(destTrack));
+}
+
+void D110SequencerEngine::transposeBars(int trackIndex, int fromBar, int toBarInclusive, int semitones) {
+	jassert(trackIndex == -1 || (trackIndex >= 0 && trackIndex < kNumTracks));
+	if (semitones == 0) return;
+	const double bar = barLengthBeats();
+	const double fromBeats = double(juce::jmax(1, fromBar) - 1) * bar;
+	const double toBeats = double(juce::jmax(fromBar, toBarInclusive)) * bar; // exclusive
+	if (toBeats <= fromBeats) return;
+
+	auto apply = [&](Track &track) {
+		auto &seq = track.events;
+		seq.updateMatchedPairs();
+		for (int i = 0; i < seq.getNumEvents(); ++i) {
+			auto *ev = seq.getEventPointer(i);
+			if (!ev->message.isNoteOn()) continue;
+			const double onBeat = ev->message.getTimeStamp();
+			if (onBeat < fromBeats || onBeat >= toBeats) continue;
+			const int note = juce::jlimit(0, 127, ev->message.getNoteNumber() + semitones);
+			ev->message.setNoteNumber(note);
+			if (ev->noteOffObject != nullptr) ev->noteOffObject->message.setNoteNumber(note);
+		}
+	};
+	if (trackIndex < 0)
+		for (auto &t : tracks) apply(t);
+	else
+		apply(trackAt(trackIndex));
 }
 
 D110SequencerEngine::Track &D110SequencerEngine::songTrackAt(int slot, int track) {

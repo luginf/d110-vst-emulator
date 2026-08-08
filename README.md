@@ -48,6 +48,8 @@ build details, see [`docs/building.md`](docs/building.md).
 
 - [`docs/architecture.md`](docs/architecture.md) - how it works, the extended editor, firmware
   memory vs. plugin settings, the memory card slot, known limits.
+- [`docs/sequencer.md`](docs/sequencer.md) - the D-20-style multitrack sequencer: tracks and
+  channels, transport, real-time and step recording, quantize, bar editing, undo, song slots.
 - [`docs/roms.md`](docs/roms.md) - full ROM requirements, checksums, factory defaults, and
   re-initializing the firmware.
 - [`docs/building.md`](docs/building.md) - full build details, including the opt-in MAME-backed

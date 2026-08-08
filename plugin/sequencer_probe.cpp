@@ -1042,6 +1042,418 @@ void testCopyBars() {
 	}
 }
 
+// ---- 16. step recording: enter notes/chords/rests one step at a time, undo the last one ----
+void testStepRecording() {
+	std::printf("-- step recording --\n");
+	constexpr double sr = 48000.0;
+	constexpr int barSamples = 96000; // 2s at 48kHz = 1 bar at 120bpm/4-4
+
+	auto notesWithOffsets = [&](std::vector<CapturedEvent> &notes, int channel) {
+		std::vector<std::pair<int, int>> out; // (sampleOffset, noteNumber)
+		for (const auto &e : notes)
+			if (e.message.isNoteOn() && e.message.getChannel() == channel)
+				out.push_back({e.sampleOffset, e.message.getNoteNumber()});
+		return out;
+	};
+
+	// 8 single-note eighth-note steps exactly fill one 4/4 bar.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setTempo(120.0);
+		engine.setTimeSignature(4, 4);
+		engine.armTrack(0);
+		engine.setStepDuration(QuantizeGrid::eighth);
+		engine.startStepRecording();
+		check(engine.isStepRecording(), "step: recording started");
+		check(engine.getStepBar() == 1, "step: cursor starts at bar 1");
+		check(engine.getStepIndexInBar() == 1, "step: cursor starts at step 1 of the bar");
+
+		for (int i = 0; i < 8; ++i) {
+			engine.stepNoteOn(60 + i, 100);
+			engine.stepNoteOff(60 + i);
+		}
+		check(engine.getStepBar() == 2, "step: cursor rolled over into bar 2 after 8 eighths");
+		engine.stopStepRecording();
+		check(!engine.isStepRecording(), "step: stopped");
+
+		engine.gotoBar(1);
+		engine.play();
+		auto rendered = renderBlock(engine, barSamples, sr);
+		auto notes = notesWithOffsets(rendered, 2);
+		check(notes.size() == 8, "step: 8 notes landed in the track");
+		if (notes.size() == 8) {
+			bool ok = true;
+			for (int i = 0; i < 8; ++i) {
+				const int expectedOffset = juce::roundToInt(barSamples * (i / 8.0));
+				if (notes[i].first != expectedOffset || notes[i].second != 60 + i) ok = false;
+			}
+			check(ok, "step: each note lands on its own eighth-note offset, in order, right pitch");
+		}
+	}
+
+	// A chord: several notes held together commit as ONE step, not one step each.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setTempo(120.0);
+		engine.setTimeSignature(4, 4);
+		engine.armTrack(0);
+		engine.setStepDuration(QuantizeGrid::quarter);
+		engine.startStepRecording();
+
+		engine.stepNoteOn(60, 100);
+		engine.stepNoteOn(64, 100);
+		engine.stepNoteOn(67, 100);
+		check(engine.getStepBar() == 1, "step/chord: still on step 1 while notes are held");
+		// Release out of order - the step must not commit until the LAST one lets go.
+		engine.stepNoteOff(64);
+		check(engine.getStepBar() == 1, "step/chord: still step 1 after releasing only one of three notes");
+		engine.stepNoteOff(60);
+		engine.stepNoteOff(67);
+		check(engine.getStepBar() == 1, "step/chord: quarter-note step 1 doesn't roll into bar 2 until step 5");
+
+		engine.stopStepRecording();
+		engine.gotoBar(1);
+		engine.play();
+		auto rendered = renderBlock(engine, barSamples, sr);
+		auto notes = notesWithOffsets(rendered, 2);
+		check(notes.size() == 3, "step/chord: all 3 chord notes landed");
+		if (notes.size() == 3) {
+			bool allAtZero = notes[0].first == 0 && notes[1].first == 0 && notes[2].first == 0;
+			check(allAtZero, "step/chord: all 3 notes share the same step offset");
+		}
+	}
+
+	// stepRest() advances without recording anything.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setTempo(120.0);
+		engine.setTimeSignature(4, 4);
+		engine.armTrack(0);
+		engine.setStepDuration(QuantizeGrid::quarter);
+		engine.startStepRecording();
+
+		engine.stepNoteOn(60, 100);
+		engine.stepNoteOff(60); // step 1
+		engine.stepRest();      // step 2: silence
+		engine.stepNoteOn(62, 100);
+		engine.stepNoteOff(62); // step 3
+		engine.stopStepRecording();
+
+		engine.gotoBar(1);
+		engine.play();
+		auto rendered = renderBlock(engine, barSamples, sr);
+		auto notes = notesWithOffsets(rendered, 2);
+		check(notes.size() == 2, "step/rest: only the 2 played steps produced notes");
+		if (notes.size() == 2)
+			check(notes[0].first == 0 && notes[0].second == 60 && notes[1].first == barSamples / 2
+			          && notes[1].second == 62,
+			      "step/rest: the rest left a quarter-note gap between the two notes");
+	}
+
+	// stepBack() undoes the most recently committed step, whether a note or a rest.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setTempo(120.0);
+		engine.setTimeSignature(4, 4);
+		engine.armTrack(0);
+		engine.setStepDuration(QuantizeGrid::quarter);
+		engine.startStepRecording();
+
+		engine.stepNoteOn(60, 100);
+		engine.stepNoteOff(60); // step 1: note 60
+		engine.stepNoteOn(61, 100);
+		engine.stepNoteOff(61); // step 2: wrong note
+		check(engine.getStepBar() == 1 && engine.getStepIndexInBar() == 3, "step/back: 2 steps entered");
+
+		engine.stepBack(); // undo the wrong note
+		check(engine.getStepIndexInBar() == 2, "step/back: cursor rewound by one step");
+		engine.stepNoteOn(65, 100);
+		engine.stepNoteOff(65); // step 2: corrected note
+		engine.stopStepRecording();
+
+		engine.gotoBar(1);
+		engine.play();
+		auto rendered = renderBlock(engine, barSamples, sr);
+		auto notes = notesWithOffsets(rendered, 2);
+		check(notes.size() == 2, "step/back: exactly 2 notes remain, the wrong one didn't linger");
+		if (notes.size() == 2)
+			check(notes[0].second == 60 && notes[1].second == 65,
+			      "step/back: the corrected note replaced the wrong one, not the first one");
+	}
+
+	// Starting real-time recording while step recording is in progress stops step mode (and
+	// vice versa) - the two are mutually exclusive, same as armTrack() already enforces between
+	// arming and an in-progress take.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setTempo(120.0);
+		engine.setTimeSignature(4, 4);
+		engine.setPrecountBars(0);
+		engine.armTrack(0);
+		engine.startStepRecording();
+		check(engine.isStepRecording(), "step/exclusive: step recording is on");
+		engine.startRecording();
+		check(!engine.isStepRecording() && engine.isRecording(),
+		      "step/exclusive: starting real-time recording turns step mode off");
+		engine.stopRecording();
+
+		engine.startStepRecording();
+		check(engine.isStepRecording() && !engine.isRecording(),
+		      "step/exclusive: starting step recording while nothing else is active");
+	}
+
+	// Half and whole note step durations.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setTempo(120.0);
+		engine.setTimeSignature(4, 4);
+		engine.armTrack(0);
+		engine.setStepDuration(QuantizeGrid::half);
+		engine.startStepRecording();
+		engine.stepNoteOn(60, 100);
+		engine.stepNoteOff(60); // step 1: half note, 2 beats
+		check(engine.getStepIndexInBar() == 2, "step/half: cursor advanced by 2 beats, one half-note step");
+		engine.setStepDuration(QuantizeGrid::whole);
+		engine.stepNoteOn(64, 100);
+		engine.stepNoteOff(64); // step 2: whole note, 4 beats
+		check(engine.getStepBar() == 2, "step/whole: cursor rolled into bar 2 after a half + a whole note");
+		engine.stopStepRecording();
+
+		engine.gotoBar(1);
+		engine.play();
+		auto rendered = renderBlock(engine, barSamples * 2, sr);
+		auto notes = notesWithOffsets(rendered, 2);
+		check(notes.size() == 2, "step/half+whole: 2 notes landed");
+		if (notes.size() == 2)
+			check(notes[0].first == 0 && notes[0].second == 60 && notes[1].first == barSamples / 2
+			          && notes[1].second == 64,
+			      "step/half+whole: the whole note starts right after the half note's 2 beats");
+	}
+
+	// A dotted step is 1.5x its plain duration, and applies to stepRest() too.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setTempo(120.0);
+		engine.setTimeSignature(4, 4);
+		engine.armTrack(0);
+		engine.setStepDuration(QuantizeGrid::quarter);
+		check(!engine.getStepDotted(), "step/dot: off by default");
+		engine.setStepDotted(true);
+		engine.startStepRecording();
+
+		engine.stepNoteOn(60, 100);
+		engine.stepNoteOff(60); // dotted quarter = 1.5 beats
+		engine.stepRest();      // dotted quarter rest = 1.5 beats
+		engine.stepNoteOn(62, 100);
+		engine.stepNoteOff(62); // dotted quarter = 1.5 beats, lands at 3.0 beats
+		engine.stopStepRecording();
+
+		engine.gotoBar(1);
+		engine.play();
+		auto rendered = renderBlock(engine, barSamples * 2, sr);
+		auto notes = notesWithOffsets(rendered, 2);
+		check(notes.size() == 2, "step/dot: 2 notes landed, the rest produced none");
+		if (notes.size() == 2) {
+			const int expectedSecondOffset = juce::roundToInt(barSamples * (3.0 / 4.0));
+			check(notes[0].first == 0 && notes[1].first == expectedSecondOffset,
+			      "step/dot: 1.5 + 1.5 beats of dotted-quarter steps lands the 2nd note at beat 3");
+		}
+	}
+}
+
+// ---- 17. transposeBars() shifts pitch in place, clamped to [0, 127] ----
+void testTransposeBars() {
+	std::printf("-- transposeBars --\n");
+	constexpr double sr = 48000.0;
+	constexpr int barSamples = 96000; // 2s at 48kHz = 1 bar at 120bpm/4-4
+
+	auto seed = [&](D110SequencerEngine &engine, int track, int note, std::initializer_list<int> bars) {
+		engine.armTrack(track);
+		engine.startRecording();
+		for (int bar : bars) {
+			const double b = double(bar - 1) * 4.0;
+			engine.captureEvent(juce::MidiMessage::noteOn(1, (juce::uint8)note, (juce::uint8)100), b);
+			engine.captureEvent(juce::MidiMessage::noteOff(1, (juce::uint8)note), b + 0.5);
+		}
+		engine.stopRecording();
+	};
+	auto onNotes = [&](std::vector<CapturedEvent> &notes, int channel) {
+		std::vector<int> ns;
+		for (const auto &e : notes)
+			if (e.message.isNoteOn() && e.message.getChannel() == channel) ns.push_back(e.message.getNoteNumber());
+		return ns;
+	};
+
+	// Single track, one bar of a two-bar range: only the targeted bar moves.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setTempo(120.0);
+		engine.setTimeSignature(4, 4);
+		engine.setPrecountBars(0);
+		seed(engine, 0, 60, {1, 2});
+
+		engine.transposeBars(0, 1, 1, 12); // bar 1 only, up an octave
+
+		engine.gotoBar(1);
+		engine.play();
+		auto notes = renderBlock(engine, barSamples * 2, sr);
+		auto ns = onNotes(notes, 2);
+		check(ns.size() == 2, "single-track transpose: still 2 notes");
+		if (ns.size() == 2)
+			check(ns[0] == 72 && ns[1] == 60, "single-track transpose: bar 1 up an octave, bar 2 untouched");
+	}
+
+	// Clamped rather than wrapped at the top of the MIDI range.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setTempo(120.0);
+		engine.setTimeSignature(4, 4);
+		engine.setPrecountBars(0);
+		seed(engine, 0, 120, {1});
+
+		engine.transposeBars(0, 1, 1, 20); // 120 + 20 = 140, must clamp to 127
+
+		engine.gotoBar(1);
+		engine.play();
+		auto notes = renderBlock(engine, barSamples, sr);
+		auto ns = onNotes(notes, 2);
+		check(ns.size() == 1 && ns[0] == 127, "transpose clamps to 127 instead of wrapping");
+	}
+
+	// "All tracks" transposes every track independently over the same bar range.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setTempo(120.0);
+		engine.setTimeSignature(4, 4);
+		engine.setPrecountBars(0);
+		seed(engine, 0, 60, {1});
+		seed(engine, 1, 64, {1});
+
+		engine.transposeBars(-1, 1, 1, -12);
+
+		engine.gotoBar(1);
+		engine.play();
+		auto notes = renderBlock(engine, barSamples, sr);
+		auto ns0 = onNotes(notes, 2);
+		auto ns1 = onNotes(notes, 3);
+		check(ns0.size() == 1 && ns0[0] == 48, "all-tracks transpose: track 0 down an octave");
+		check(ns1.size() == 1 && ns1[0] == 52, "all-tracks transpose: track 1 down an octave too");
+	}
+}
+
+// ---- 18. undo() reverts the most recent pushUndoSnapshot()-checkpointed edit ----
+void testUndo() {
+	std::printf("-- undo --\n");
+	auto onNotes = [&](std::vector<CapturedEvent> &notes, int channel) {
+		std::vector<int> ns;
+		for (const auto &e : notes)
+			if (e.message.isNoteOn() && e.message.getChannel() == channel) ns.push_back(e.message.getNoteNumber());
+		return ns;
+	};
+
+	// No snapshot pushed yet: undo() is a harmless no-op.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		check(!engine.canUndo(), "undo: nothing to undo on a fresh engine");
+		engine.undo(); // must not crash/assert
+		check(!engine.canUndo(), "undo: still nothing to undo after a no-op call");
+	}
+
+	// Reverts clearTrack() back to the exact events that were there before.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setPrecountBars(0);
+		engine.armTrack(0);
+		engine.startRecording();
+		engine.captureEvent(juce::MidiMessage::noteOn(1, (juce::uint8)60, (juce::uint8)100), 0.0);
+		engine.captureEvent(juce::MidiMessage::noteOff(1, (juce::uint8)60), 0.5);
+		engine.stopRecording();
+		check(engine.trackHasEvents(0), "undo/clearTrack: track has an event before clearing");
+
+		engine.pushUndoSnapshot();
+		engine.clearTrack(0);
+		check(!engine.trackHasEvents(0), "undo/clearTrack: track is empty right after clearing");
+		check(engine.canUndo(), "undo/clearTrack: a snapshot is now on the stack");
+
+		engine.undo();
+		check(engine.trackHasEvents(0), "undo/clearTrack: the event is back after undo()");
+		check(!engine.canUndo(), "undo/clearTrack: the stack is empty again after the one undo");
+	}
+
+	// Multiple checkpoints unwind one at a time, most recent first - tempo/time signature are
+	// deliberately NOT part of a snapshot (they're workspace settings, same as newSong() leaving
+	// them alone), so this stacks two content edits (transposeBars) instead.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setPrecountBars(0);
+		engine.armTrack(0);
+		engine.startRecording();
+		engine.captureEvent(juce::MidiMessage::noteOn(1, (juce::uint8)60, (juce::uint8)100), 0.0);
+		engine.captureEvent(juce::MidiMessage::noteOff(1, (juce::uint8)60), 0.5);
+		engine.stopRecording();
+
+		engine.pushUndoSnapshot();
+		engine.transposeBars(0, 1, 1, 12); // 60 -> 72
+		engine.pushUndoSnapshot();
+		engine.transposeBars(0, 1, 1, 12); // 72 -> 84
+
+		engine.gotoBar(1);
+		engine.play();
+		auto notes = renderBlock(engine, 96000, 48000.0);
+		auto ns = onNotes(notes, 2);
+		check(ns.size() == 1 && ns[0] == 84, "undo: both transposes applied before any undo");
+
+		engine.undo();
+		engine.gotoBar(1);
+		engine.play();
+		notes = renderBlock(engine, 96000, 48000.0);
+		ns = onNotes(notes, 2);
+		check(ns.size() == 1 && ns[0] == 72, "undo: first undo lands back on the middle pitch");
+
+		engine.undo();
+		engine.gotoBar(1);
+		engine.play();
+		notes = renderBlock(engine, 96000, 48000.0);
+		ns = onNotes(notes, 2);
+		check(ns.size() == 1 && ns[0] == 60, "undo: second undo lands back on the original pitch");
+		check(!engine.canUndo(), "undo: stack empty after unwinding both checkpoints");
+	}
+
+	// copyCurrentSongTo() touches a slot that isn't live - undo has to restore that slot too,
+	// not just the current one.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setPrecountBars(0);
+		engine.armTrack(0);
+		engine.startRecording();
+		engine.captureEvent(juce::MidiMessage::noteOn(1, (juce::uint8)60, (juce::uint8)100), 0.0);
+		engine.captureEvent(juce::MidiMessage::noteOff(1, (juce::uint8)60), 0.5);
+		engine.stopRecording();
+		check(!engine.songSlotHasContent(1), "undo/copyCurrentSongTo: slot 1 starts empty");
+
+		engine.pushUndoSnapshot();
+		engine.copyCurrentSongTo(1);
+		check(engine.songSlotHasContent(1), "undo/copyCurrentSongTo: slot 1 now has the copy");
+
+		engine.undo();
+		check(!engine.songSlotHasContent(1), "undo/copyCurrentSongTo: slot 1 is empty again after undo()");
+	}
+}
+
 } // namespace
 
 int main() {
@@ -1070,6 +1482,9 @@ int main() {
 	testPrecountIsFictitious();
 	testDeleteBars();
 	testCopyBars();
+	testStepRecording();
+	testTransposeBars();
+	testUndo();
 
 	if (failures == 0) {
 		std::printf("\nALL PASSED\n");

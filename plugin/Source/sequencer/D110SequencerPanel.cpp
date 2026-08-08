@@ -10,11 +10,20 @@ using d110seq::D110SequencerEngine;
 namespace {
 constexpr int kNumTracks = D110SequencerEngine::kNumTracks;
 
-void paintToggleButton(juce::Graphics &g, juce::Rectangle<float> b, const juce::String &label, bool active) {
+// enabled=false dims the button (used only by UNDO, greyed out while its stack is empty) -
+// distinct from active, which picks the on/off colour pair rather than an alpha.
+void paintToggleButton(juce::Graphics &g, juce::Rectangle<float> b, const juce::String &label, bool active,
+                        bool enabled = true) {
 	const auto &pal = d110ui::palette();
-	g.setColour(active ? pal.seqActiveFill : pal.seqInactiveFill);
+	auto fill = active ? pal.seqActiveFill : pal.seqInactiveFill;
+	auto text = active ? pal.seqActiveText : pal.seqInactiveText;
+	if (!enabled) {
+		fill = fill.withAlpha(0.35f);
+		text = text.withAlpha(0.35f);
+	}
+	g.setColour(fill);
 	g.fillRect(b.reduced(2.0f));
-	g.setColour(active ? pal.seqActiveText : pal.seqInactiveText);
+	g.setColour(text);
 	g.setFont(juce::FontOptions(juce::jlimit(8.0f, 13.0f, b.getHeight() * 0.5f)));
 	g.drawText(label, b, juce::Justification::centred);
 }
@@ -45,6 +54,34 @@ juce::String loopModeLabel(d110seq::LoopMode mode) {
 	}
 	return {};
 }
+
+// QuantizeGrid::off is not a valid step duration (see D110SequencerEngine::setStepDuration()),
+// so it's left out of both this list and its label below. Largest to smallest, whole note first -
+// the dotted modifier (see the DOT button) covers the in-between durations (dotted half = 3
+// beats, ...) without needing a dotted entry for every base grid here.
+const std::array<d110seq::QuantizeGrid, 8> &stepGridPresets() {
+	using d110seq::QuantizeGrid;
+	static const std::array<QuantizeGrid, 8> presets{
+		{QuantizeGrid::whole, QuantizeGrid::half, QuantizeGrid::quarter, QuantizeGrid::eighth,
+	     QuantizeGrid::sixteenth, QuantizeGrid::eighthTriplet, QuantizeGrid::sixteenthTriplet,
+	     QuantizeGrid::thirtySecond}};
+	return presets;
+}
+
+juce::String stepDurationLabel(d110seq::QuantizeGrid grid) {
+	using d110seq::QuantizeGrid;
+	switch (grid) {
+		case QuantizeGrid::whole: return "STEP 1/1";
+		case QuantizeGrid::half: return "STEP 1/2";
+		case QuantizeGrid::quarter: return "STEP 1/4";
+		case QuantizeGrid::eighth: return "STEP 1/8";
+		case QuantizeGrid::sixteenth: return "STEP 1/16";
+		case QuantizeGrid::eighthTriplet: return "STEP 1/8 T";
+		case QuantizeGrid::sixteenthTriplet: return "STEP 1/16 T";
+		case QuantizeGrid::thirtySecond: return "STEP 1/32";
+		case QuantizeGrid::off: default: return "STEP 1/4";
+	}
+}
 } // namespace
 
 D110SequencerPanel::D110SequencerPanel(D110AudioProcessor &p) : processor(p) { startTimerHz(15); }
@@ -69,9 +106,12 @@ void D110SequencerPanel::timerCallback() {
 	} else {
 		lastPrecountBeatsElapsed = -1;
 	}
-	// The only other thing that changes on its own, without a click, is the bar readout (and
-	// the transport buttons' own on/off look) while the transport is rolling.
-	if (eng.isPlaying()) repaint();
+	// The only other things that change on their own, without a click on this panel, are the bar
+	// readout (and the transport buttons' own on/off look) while the transport is rolling, and
+	// the step-recording readout, which advances from notes played on an external MIDI
+	// controller or the on-screen keyboard drawer - neither of which is a click on THIS panel,
+	// so nothing else would ever trigger the repaint that shows it.
+	if (eng.isPlaying() || eng.isStepRecording()) repaint();
 }
 
 void D110SequencerPanel::cycleTimeSignature() {
@@ -104,6 +144,37 @@ void D110SequencerPanel::showTimeSignatureMenu() {
 		const auto &presets = timeSigPresets();
 		if (result < 1 || result > int(presets.size())) return;
 		engine().setTimeSignature(presets[size_t(result - 1)].num, presets[size_t(result - 1)].den);
+		repaint();
+	});
+}
+
+void D110SequencerPanel::cycleStepDuration() {
+	const auto &presets = stepGridPresets();
+	auto &eng = engine();
+	size_t idx = 0;
+	for (size_t i = 0; i < presets.size(); ++i)
+		if (presets[i] == eng.getStepDuration()) {
+			idx = i;
+			break;
+		}
+	idx = (idx + 1) % presets.size();
+	eng.setStepDuration(presets[idx]);
+}
+
+// Right-click the step-duration readout: pick any grid directly, same convention as
+// showTimeSignatureMenu().
+void D110SequencerPanel::showStepDurationMenu() {
+	const auto &presets = stepGridPresets();
+	auto &eng = engine();
+
+	juce::PopupMenu m;
+	for (size_t i = 0; i < presets.size(); ++i)
+		m.addItem(int(i) + 1, stepDurationLabel(presets[i]), true, presets[i] == eng.getStepDuration());
+
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this](int result) {
+		const auto &presets = stepGridPresets();
+		if (result < 1 || result > int(presets.size())) return;
+		engine().setStepDuration(presets[size_t(result - 1)]);
 		repaint();
 	});
 }
@@ -232,12 +303,14 @@ void D110SequencerPanel::showQuantizeMenu(int track) {
 	m.addItem(8, "Clear track", engine().trackHasEvents(track));
 	m.addItem(9, "Delete bar(s) on this track...", engine().getBarCount() >= 1);
 	m.addItem(10, "Copy bar(s) on this track to...", engine().trackHasEvents(track));
+	m.addItem(11, "Transpose bar(s) on this track...", engine().trackHasEvents(track));
 
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this, track](int result) {
 		using d110seq::QuantizeGrid;
 		if (result == 8) { confirmClearTrack(track); return; }
 		if (result == 9) { promptForDeleteBars(track); return; }
 		if (result == 10) { promptForCopyBars(track); return; }
+		if (result == 11) { promptForTransposeBars(track); return; }
 		QuantizeGrid grid;
 		switch (result) {
 			case 1: grid = QuantizeGrid::off; break;
@@ -249,6 +322,7 @@ void D110SequencerPanel::showQuantizeMenu(int track) {
 			case 7: grid = QuantizeGrid::thirtySecond; break;
 			default: return;
 		}
+		engine().pushUndoSnapshot();
 		engine().quantizeTrack(track, grid);
 		repaint();
 	});
@@ -260,12 +334,13 @@ void D110SequencerPanel::confirmClearTrack(int track) {
 	auto *aw = new juce::AlertWindow(
 		"Clear this track?",
 		"This clears every recorded event on " + name
-			+ ". Mute/solo/quantize and every other track are kept. This cannot be undone.",
+			+ ". Mute/solo/quantize and every other track are kept. UNDO can bring it back.",
 		juce::AlertWindow::WarningIcon);
 	aw->addButton("Clear", 1, juce::KeyPress(juce::KeyPress::returnKey));
 	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track](int result) {
 		if (result == 1) {
+			engine().pushUndoSnapshot();
 			engine().clearTrack(track);
 			repaint();
 		}
@@ -296,6 +371,7 @@ void D110SequencerPanel::showBarMenu() {
 	m.addSeparator();
 	m.addItem(5, "Delete bar(s) (all tracks)...");
 	m.addItem(6, "Copy bar(s) to... (all tracks)");
+	m.addItem(7, "Transpose bar(s) (all tracks)...");
 
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this](int result) {
 		auto &e = engine();
@@ -306,6 +382,7 @@ void D110SequencerPanel::showBarMenu() {
 			case 4: promptForPunchRange(); return;
 			case 5: promptForDeleteBars(-1); return;
 			case 6: promptForCopyBars(-1); return;
+			case 7: promptForTransposeBars(-1); return;
 			default: return;
 		}
 		repaint();
@@ -362,7 +439,7 @@ void D110SequencerPanel::promptForDeleteBars(int track) {
 	auto *aw = new juce::AlertWindow(
 		"Delete bar(s)",
 		"Removes the given bar range from " + scope
-			+ " and closes the gap by shifting everything after it earlier. This cannot be undone.",
+			+ " and closes the gap by shifting everything after it earlier. UNDO can bring it back.",
 		juce::AlertWindow::WarningIcon);
 	aw->addTextEditor("from", juce::String(eng.getCurrentBar()), "From bar:");
 	aw->addTextEditor("to", juce::String(eng.getCurrentBar()), "To bar:");
@@ -372,7 +449,10 @@ void D110SequencerPanel::promptForDeleteBars(int track) {
 		if (result == 1) {
 			const int from = aw->getTextEditorContents("from").getIntValue();
 			const int to = aw->getTextEditorContents("to").getIntValue();
-			if (from >= 1 && to >= from) engine().deleteBars(track, from, to);
+			if (from >= 1 && to >= from) {
+				engine().pushUndoSnapshot();
+				engine().deleteBars(track, from, to);
+			}
 			repaint();
 		}
 		delete aw;
@@ -391,7 +471,7 @@ void D110SequencerPanel::promptForCopyBars(int track) {
 	auto *aw = new juce::AlertWindow(
 		"Copy bar(s)",
 		"Copies the given bar range and inserts it at the destination bar on " + scope
-			+ ", pushing anything already there later to make room. This cannot be undone.",
+			+ ", pushing anything already there later to make room. UNDO can bring it back.",
 		juce::AlertWindow::WarningIcon);
 	aw->addTextEditor("from", juce::String(eng.getCurrentBar()), "From bar:");
 	aw->addTextEditor("to", juce::String(eng.getCurrentBar()), "To bar:");
@@ -414,7 +494,43 @@ void D110SequencerPanel::promptForCopyBars(int track) {
 			const int to = aw->getTextEditorContents("to").getIntValue();
 			const int dest = aw->getTextEditorContents("dest").getIntValue();
 			const int destTrack = track >= 0 ? aw->getComboBoxComponent("destTrack")->getSelectedItemIndex() : -1;
-			if (from >= 1 && to >= from && dest >= 1) engine().copyBars(track, destTrack, from, to, dest);
+			if (from >= 1 && to >= from && dest >= 1) {
+				engine().pushUndoSnapshot();
+				engine().copyBars(track, destTrack, from, to, dest);
+			}
+			repaint();
+		}
+		delete aw;
+	}));
+}
+
+// Transposes in place - see D110SequencerEngine::transposeBars(). Not confirmed with a warning
+// dialog the way delete/copy bars are (nothing is removed or reflowed, only pitches shift), but
+// still checkpointed for UNDO since it can touch a lot of notes at once.
+void D110SequencerPanel::promptForTransposeBars(int track) {
+	auto &eng = engine();
+	const bool isRhythm = track == d110seq::D110SequencerEngine::kRhythmTrack;
+	const juce::String scope =
+		track < 0 ? "every track, independently" : (isRhythm ? "RHYTHM" : ("PART " + juce::String(track + 1)));
+	auto *aw = new juce::AlertWindow(
+		"Transpose bar(s)",
+		"Shifts the pitch of every note in the given bar range on " + scope
+			+ " by the given number of semitones (negative to transpose down).",
+		juce::AlertWindow::NoIcon);
+	aw->addTextEditor("from", juce::String(eng.getCurrentBar()), "From bar:");
+	aw->addTextEditor("to", juce::String(eng.getCurrentBar()), "To bar:");
+	aw->addTextEditor("semitones", "0", "Semitones:");
+	aw->addButton("Transpose", 1, juce::KeyPress(juce::KeyPress::returnKey));
+	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track](int result) {
+		if (result == 1) {
+			const int from = aw->getTextEditorContents("from").getIntValue();
+			const int to = aw->getTextEditorContents("to").getIntValue();
+			const int semitones = aw->getTextEditorContents("semitones").getIntValue();
+			if (from >= 1 && to >= from && semitones != 0) {
+				engine().pushUndoSnapshot();
+				engine().transposeBars(track, from, to, semitones);
+			}
 			repaint();
 		}
 		delete aw;
@@ -449,6 +565,7 @@ void D110SequencerPanel::confirmCopySongTo(int destSlot) {
 	auto &eng = engine();
 	const int current = eng.getCurrentSongSlot();
 	if (!eng.songSlotHasContent(destSlot)) {
+		eng.pushUndoSnapshot();
 		eng.copyCurrentSongTo(destSlot);
 		repaint();
 		return;
@@ -456,12 +573,13 @@ void D110SequencerPanel::confirmCopySongTo(int destSlot) {
 	auto *aw = new juce::AlertWindow(
 		"Copy song to Slot " + juce::String(destSlot + 1) + "?",
 		"This overwrites Slot " + juce::String(destSlot + 1) + " with a copy of Slot "
-			+ juce::String(current + 1) + " (the current song). This cannot be undone.",
+			+ juce::String(current + 1) + " (the current song). UNDO can bring it back.",
 		juce::AlertWindow::WarningIcon);
 	aw->addButton("Copy", 1, juce::KeyPress(juce::KeyPress::returnKey));
 	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, destSlot](int result) {
 		if (result == 1) {
+			engine().pushUndoSnapshot();
 			engine().copyCurrentSongTo(destSlot);
 			repaint();
 		}
@@ -476,12 +594,13 @@ void D110SequencerPanel::confirmNewSong() {
 	auto *aw = new juce::AlertWindow(
 		"Clear this song?",
 		"This clears every track's recorded MIDI in song " + juce::String(slot + 1)
-			+ ". Tempo, time signature and other settings are kept. This cannot be undone.",
+			+ ". Tempo, time signature and other settings are kept. UNDO can bring it back.",
 		juce::AlertWindow::WarningIcon);
 	aw->addButton("Clear", 1, juce::KeyPress(juce::KeyPress::returnKey));
 	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw](int result) {
 		if (result == 1) {
+			engine().pushUndoSnapshot();
 			engine().newSong();
 			repaint();
 		}
@@ -530,8 +649,25 @@ void D110SequencerPanel::layout() {
 	newBounds = colF(0.225f, 0.075f);
 	for (int s = 0; s < D110SequencerEngine::kNumSongSlots; ++s)
 		slotBounds[static_cast<size_t>(s)] = colF(0.310f + float(s) * 0.048f, 0.044f);
+	undoBounds = colF(0.560f, 0.110f);
 	loadBounds = colF(0.780f, 0.100f);
 	saveBounds = colF(0.885f, 0.100f);
+	area.removeFromTop(juce::jmax(2.0f, area.getHeight() * 0.015f));
+
+	// Third strip: step recording (see D110SequencerEngine's step API) - a toggle, the step
+	// duration readout, REST/BACK, and a plain "bar N step M" readout while it's active.
+	auto stepStrip = area.removeFromTop(juce::jmin(24.0f, area.getHeight() * 0.13f));
+	const float sw = stepStrip.getWidth();
+	auto colS = [&](float frac, float widthFrac) {
+		return juce::Rectangle<float>(stepStrip.getX() + sw * frac, stepStrip.getY(), sw * widthFrac - 4.0f,
+		                               stepStrip.getHeight());
+	};
+	stepBounds = colS(0.000f, 0.115f);
+	stepDurationBounds = colS(0.125f, 0.130f);
+	stepDotBounds = colS(0.265f, 0.075f);
+	restBounds = colS(0.350f, 0.115f);
+	backBounds = colS(0.475f, 0.115f);
+	stepInfoBounds = colS(0.600f, 0.400f);
 	area.removeFromTop(juce::jmax(2.0f, area.getHeight() * 0.015f));
 
 	const float rowH = area.getHeight() / float(kNumTracks);
@@ -612,8 +748,21 @@ void D110SequencerPanel::paint(juce::Graphics &g) {
 			g.fillEllipse(b.getRight() - 8.0f, b.getY() + 3.0f, 4.0f, 4.0f);
 		}
 	}
+	paintToggleButton(g, undoBounds, "UNDO", false, eng.canUndo());
 	paintToggleButton(g, loadBounds, "LOAD", false);
 	paintToggleButton(g, saveBounds, "SAVE", false);
+
+	paintToggleButton(g, stepBounds, "STEP", eng.isStepRecording());
+	paintToggleButton(g, stepDurationBounds, stepDurationLabel(eng.getStepDuration()), false);
+	paintToggleButton(g, stepDotBounds, "DOT", eng.getStepDotted());
+	paintToggleButton(g, restBounds, "REST", false, eng.isStepRecording());
+	paintToggleButton(g, backBounds, "BACK", false, eng.isStepRecording());
+	if (eng.isStepRecording()) {
+		g.setColour(pal.handleLabel);
+		g.setFont(juce::FontOptions(juce::jlimit(8.0f, 13.0f, stepInfoBounds.getHeight() * 0.5f)));
+		g.drawText("Bar " + juce::String(eng.getStepBar()) + " step " + juce::String(eng.getStepIndexInBar()),
+		           stepInfoBounds, juce::Justification::centredLeft);
+	}
 
 	for (int t = 0; t < kNumTracks; ++t) {
 		const auto &r = rows[static_cast<size_t>(t)];
@@ -643,6 +792,7 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 
 	if (e.mods.isPopupMenu()) {
 		if (timeSigBounds.contains(p)) { showTimeSignatureMenu(); return; }
+		if (stepDurationBounds.contains(p)) { showStepDurationMenu(); return; }
 		if (recModeBounds.contains(p)) { showRecordModeMenu(); return; }
 		if (metronomeBounds.contains(p)) { showMetronomeModeMenu(); return; }
 		if (loadBounds.contains(p)) { showLoadMenu(); return; }
@@ -660,6 +810,29 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 
 	if (recModeBounds.contains(p)) { cycleRecordMode(); repaint(); return; }
 	if (newBounds.contains(p)) { confirmNewSong(); return; }
+	if (undoBounds.contains(p)) {
+		if (eng.canUndo()) eng.undo();
+		repaint();
+		return;
+	}
+	if (stepBounds.contains(p)) {
+		if (eng.isStepRecording()) eng.stopStepRecording();
+		else if (eng.getArmedTrack() >= 0) eng.startStepRecording();
+		repaint();
+		return;
+	}
+	if (stepDurationBounds.contains(p)) { cycleStepDuration(); repaint(); return; }
+	if (stepDotBounds.contains(p)) { eng.setStepDotted(!eng.getStepDotted()); repaint(); return; }
+	if (restBounds.contains(p)) {
+		if (eng.isStepRecording()) eng.stepRest();
+		repaint();
+		return;
+	}
+	if (backBounds.contains(p)) {
+		if (eng.isStepRecording()) eng.stepBack();
+		repaint();
+		return;
+	}
 	for (int s = 0; s < D110SequencerEngine::kNumSongSlots; ++s)
 		if (slotBounds[static_cast<size_t>(s)].contains(p)) { eng.selectSongSlot(s); repaint(); return; }
 

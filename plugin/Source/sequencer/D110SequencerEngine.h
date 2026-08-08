@@ -20,10 +20,23 @@
 
 namespace d110seq {
 
-// Appended after sixteenthTriplet, not alphabetised/reordered - the enum's integer value is
+// Appended after thirtySecond, not alphabetised/reordered - the enum's integer value is
 // what gets persisted (state XML, .d110songs), so inserting anywhere else would silently
-// reinterpret every existing save's quantize setting as the wrong grid.
-enum class QuantizeGrid { off, quarter, eighth, sixteenth, eighthTriplet, sixteenthTriplet, thirtySecond };
+// reinterpret every existing save's quantize/step-duration setting as the wrong grid. half and
+// whole exist for step recording (see setStepDuration()) but, since this enum is shared with
+// quantizeTrack(), also become quantize-to-a-half/whole-note-grid options - unusual, but
+// harmless to leave available rather than splitting the enum in two.
+enum class QuantizeGrid {
+	off,
+	quarter,
+	eighth,
+	sixteenth,
+	eighthTriplet,
+	sixteenthTriplet,
+	thirtySecond,
+	half,
+	whole
+};
 
 // How a take is folded into the armed track's existing content when it stops - see
 // stopRecording()'s own comment for exactly where each one erases from/to.
@@ -184,25 +197,94 @@ public:
 	// what each mode does. No-op if nothing was being recorded.
 	void stopRecording();
 
+	// Step (non-real-time) recording: instead of playing in tempo, one step's worth of notes is
+	// entered at a time - play a note or chord and let go of it (or call stepRest() for
+	// silence), and the write cursor advances by getStepDuration() worth of beats. Reuses
+	// QuantizeGrid to express a step's length, since "one step = a quarter/eighth/sixteenth/..."
+	// is exactly what that enum already models - no separate grid type needed (QuantizeGrid::off
+	// is not a valid step duration; setStepDuration() substitutes quarter for it). Works on the
+	// same armed track as real-time recording (armTrack()) and is mutually exclusive with it -
+	// starting one stops the other, same as armTrack() already does mid-take.
+	void setStepDuration(QuantizeGrid grid);
+	QuantizeGrid getStepDuration() const { return stepGrid; }
+
+	// Multiplies the current step's length by 1.5 (a dotted note - e.g. dotted half = 3 beats)
+	// - independent of getStepDuration() rather than a separate set of "dotted" QuantizeGrid
+	// values, so the grid list doesn't have to double to cover every base duration's dotted
+	// form. A plain toggle like MUTE/SOLO/ARM, not a one-shot modifier: it stays on across
+	// steps (and applies to stepRest() too - a dotted rest is a real notation concept) until
+	// switched off again.
+	void setStepDotted(bool dotted) { stepDotted = dotted; }
+	bool getStepDotted() const { return stepDotted; }
+
+	// Starts step recording on the currently armed track, writing from the current bar's start
+	// (see gotoBar()). No-op if no track is armed. Does not touch play/pause state - the
+	// transport is typically left stopped during step entry, the same way real hardware step
+	// sequencers work, but nothing here enforces that.
+	void startStepRecording();
+	// Commits whatever notes are still held (if any - see stepNoteOn()) rather than discarding
+	// them, then leaves step mode. No-op if not currently step recording.
+	void stopStepRecording();
+	bool isStepRecording() const { return stepRecording; }
+
+	// Feeds one note on/off into the step currently being entered - same event shape as
+	// captureEvent(), but with no beat position: step recording doesn't care when in real time a
+	// note was played, only that it was held. Chords: hold several notes down together, they all
+	// land on the SAME step - the step commits and the cursor advances automatically once every
+	// note that was part of it has been released (not just the one currently reported).
+	void stepNoteOn(int noteNumber, int velocity);
+	void stepNoteOff(int noteNumber);
+	// Advances the cursor by one step without recording anything - a rest. No-op while any note
+	// from the current step is still held (finish the chord first).
+	void stepRest();
+	// Undoes the most recently committed step (whatever notes were on it, or a rest) and moves
+	// the cursor back by one step, so a wrong note can be fixed without restarting step entry
+	// from the top. No-op at the very start of the take.
+	void stepBack();
+
+	// 1-indexed bar, and 1-indexed step within that bar, the write cursor currently sits on -
+	// for the UI to show "where you are" during step entry the same way getCurrentBar() does for
+	// the transport. Not the same position: step recording never touches positionBeats, so
+	// leaving step mode always drops you back exactly wherever the transport was, the same way a
+	// precount leaves it untouched (see startRecording()'s own comment).
+	int getStepBar() const;
+	int getStepIndexInBar() const;
+
 	void setTrackMuted(int index, bool muted);
 	bool isTrackMuted(int index) const;
 	void setTrackSoloed(int index, bool soloed);
 	bool isTrackSoloed(int index) const;
 	bool trackHasEvents(int index) const;
 
+	// Undo for the editing operations below (quantizeTrack, clearTrack, deleteBars, copyBars,
+	// transposeBars, newSong, copyCurrentSongTo) - none of them checkpoints on its own; the
+	// caller (the UI) calls pushUndoSnapshot() right before applying one, exactly where it
+	// already shows a confirmation dialog for the destructive ones, so undo() always reverts
+	// whichever of those the user actually did most recently. A snapshot captures every song
+	// slot's tracks plus which slot is current - copyCurrentSongTo() is the one operation that
+	// touches a slot that isn't live, so a snapshot has to cover all of them, not just the
+	// current one. Playback/transport state (position, playing, armed track, ...) is
+	// deliberately NOT captured, so undoing an edit never disturbs what's currently rolling.
+	// Capped at kMaxUndoDepth entries - the oldest snapshot is dropped once the stack is full,
+	// rather than growing without bound over a long editing session.
+	void pushUndoSnapshot();
+	// Restores the most recently pushed snapshot, if any; a no-op with nothing to undo.
+	void undo();
+	bool canUndo() const { return !undoStack.empty(); }
+
 	void quantizeTrack(int index, QuantizeGrid grid);
 	QuantizeGrid getTrackQuantize(int index) const;
 	// Erases every recorded event on one track only, leaving its mute/solo/quantize state and
-	// every other track untouched - unlike newSong(), which wipes the whole current slot. No
-	// undo, same as quantizeTrack() and newSong() - the UI is expected to confirm first.
+	// every other track untouched - unlike newSong(), which wipes the whole current slot. See
+	// pushUndoSnapshot() above - the UI checkpoints before calling this.
 	void clearTrack(int index);
 
 	// Removes [fromBar, toBarInclusive] (1-indexed, inclusive) from one track (trackIndex >= 0)
 	// or every track at once (trackIndex < 0), closing the gap by shifting everything after the
 	// range earlier by its length. Ripples independently per track: deleting on a single track
 	// only shifts that track's own later content - it will then read a different bar number
-	// than the other tracks from that point on, by design (Alan's own call). No undo, same as
-	// clearTrack()/newSong() - the UI is expected to confirm first.
+	// than the other tracks from that point on, by design (Alan's own call). See
+	// pushUndoSnapshot() above - the UI checkpoints before calling this.
 	void deleteBars(int trackIndex, int fromBar, int toBarInclusive);
 
 	// Copies [fromBar, toBarInclusive] (1-indexed, inclusive) from srcTrack, inserting it at
@@ -214,14 +296,22 @@ public:
 	// whole-song copy. Copying onto a different track only ever carries the notes across, never
 	// the source track's channel - see channelForTrack(), always re-applied at render time from
 	// whichever track index the notes end up living on, regardless of what they were recorded
-	// with. No undo, same as clearTrack()/newSong() - the UI is expected to confirm first.
+	// with. See pushUndoSnapshot() above - the UI checkpoints before calling this.
 	void copyBars(int srcTrack, int destTrack, int fromBar, int toBarInclusive, int destBar);
+
+	// Transposes every note in [fromBar, toBarInclusive] (1-indexed, inclusive) on one track
+	// (trackIndex >= 0) or every track at once, independently (trackIndex < 0), by semitones.
+	// Applied in place - a note's own track and position never change, unlike copyBars(), so
+	// there is no destination track/bar to choose. Clamps the resulting pitch to [0, 127]
+	// rather than wrapping or dropping the note. See pushUndoSnapshot() above - the UI
+	// checkpoints before calling this.
+	void transposeBars(int trackIndex, int fromBar, int toBarInclusive, int semitones);
 
 	// Clears every track in the CURRENT slot (events, mute/solo/quantize all reset) and
 	// stops/rewinds/disarms - "new song" within the currently selected slot. Transport
 	// preferences (tempo, time signature, loop/punch, precount, metronome) are left alone,
-	// since those read as workspace settings rather than song content. No undo - the caller
-	// (the UI) is expected to confirm with the user first.
+	// since those read as workspace settings rather than song content. See pushUndoSnapshot()
+	// above - the UI checkpoints before calling this.
 	void newSong();
 
 	// Switches which of the kNumSongSlots slots is live: the outgoing slot's tempo/time
@@ -237,8 +327,7 @@ public:
 	// copy of this one instead of rebuilding matching tracks by hand or round-tripping through
 	// a .mid export/import. The current slot itself, and what's currently playing, are left
 	// untouched either way - only destSlot's stored data changes. No-op if destSlot is already
-	// the current slot. No undo, same as clearTrack()/newSong() - the UI is expected to confirm
-	// first.
+	// the current slot. See pushUndoSnapshot() above - the UI checkpoints before calling this.
 	void copyCurrentSongTo(int destSlot);
 
 	// Per-slot accessors that read/write ANY slot's data without switching which one is
@@ -298,6 +387,13 @@ private:
 
 	double gridBeats(QuantizeGrid grid) const;
 	bool anySoloed() const;
+	// gridBeats(stepGrid), x1.5 if stepDotted - the actual length of the step about to be
+	// committed, shared by commitStepInternal(), stepRest() and stepBack().
+	double currentStepBeats() const { return gridBeats(stepGrid) * (stepDotted ? 1.5 : 1.0); }
+	// Writes whatever's in stepHeldNotes into the armed track at stepPositionBeats, advances the
+	// cursor by one step, and clears the held set - shared by the auto-commit in stepNoteOff()
+	// and the commit-on-stop in stopStepRecording().
+	void commitStepInternal();
 	static bool isNoteEvent(const juce::MidiMessage &m) { return m.isNoteOnOrOff(); }
 	Track &trackAt(int index) { return tracks[static_cast<size_t>(index)]; }
 	const Track &trackAt(int index) const { return tracks[static_cast<size_t>(index)]; }
@@ -328,6 +424,15 @@ private:
 	};
 	std::array<Song, kNumSongSlots> songs;
 	int currentSlot = 0;
+
+	// See pushUndoSnapshot()/undo() above.
+	struct UndoSnapshot {
+		std::array<Track, kNumTracks> tracks;
+		std::array<Song, kNumSongSlots> songs;
+		int currentSlot;
+	};
+	static constexpr size_t kMaxUndoDepth = 20;
+	std::vector<UndoSnapshot> undoStack;
 
 	double tempoBpm = 120.0;
 	int timeSigNum = 4;
@@ -364,6 +469,29 @@ private:
 	// Notes captured during the take in progress, in the same beat/channel shape as a
 	// Track's own events - merged into the armed track by stopRecording(), per recordMode.
 	juce::MidiMessageSequence recordBuffer;
+
+	// See setStepDuration()/startStepRecording() and friends above.
+	bool stepRecording = false;
+	QuantizeGrid stepGrid = QuantizeGrid::eighth;
+	bool stepDotted = false;
+	// Where the NEXT committed step will land, in beats - advanced by commitStepInternal()/
+	// stepRest(), rewound by stepBack(). Independent of positionBeats (see startStepRecording()'s
+	// own comment).
+	double stepPositionBeats = 0.0;
+	struct StepHeldNote {
+		int note;
+		int velocity;
+		bool stillDown;
+	};
+	// Every note played as part of the step currently being entered, whether or not it's still
+	// physically held - stepNoteOff() only flips stillDown, it never removes an entry, so a note
+	// released early is still part of the chord once the rest are released too. Cleared by
+	// commitStepInternal().
+	std::vector<StepHeldNote> stepHeldNotes;
+	// Beat length of each step committed so far in this take, oldest first - a stack stepBack()
+	// pops from, so it always rewinds exactly what was applied even if getStepDuration() has
+	// since changed mid-take.
+	std::vector<double> stepLengths;
 };
 
 } // namespace d110seq

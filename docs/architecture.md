@@ -114,8 +114,8 @@ back the sounds it was saved with rather than whatever the file has since become
 **Moving to a different machine also means copying a second, separate file.** The battery RAM
 above only holds the firmware's own memory - patches, timbres, system settings, the memory
 card. Everything belonging to the *plugin itself* instead - the light/dark theme, the editor
-drawer's height, and the D-20-style sequencer's 4 song slots - lives in the Standalone build's
-own settings file, which the NVRAM folder does not include:
+drawer's height, and the sequencer's 4 song slots (see [`sequencer.md`](sequencer.md)) - lives
+in the Standalone build's own settings file, which the NVRAM folder does not include:
 
 - Linux: `~/.config/D-110 Emulator.settings`
 - macOS: `~/Library/Application Support/D-110 Emulator.settings`
