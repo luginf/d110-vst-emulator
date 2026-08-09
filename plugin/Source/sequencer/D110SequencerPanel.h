@@ -5,17 +5,18 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "D110SequencerEngine.h"
-
-class D110AudioProcessor;
+#include "D110SequencerHost.h"
 
 // D-20-style sequencer drawer: a transport strip plus one row per track (D-110 parts
-// 1-8, then rhythm). A third independently-foldable drawer, alongside D110EditorPane
-// and D110Keyboard - see D110AudioProcessorEditor, which owns and positions this the
-// same way it does those two. Talks to the processor only through getSequencer(), so
-// this UI - like the engine itself - doesn't know anything about firmware RAM.
+// 1-8, then rhythm). Inside the plugin it's a third independently-foldable drawer,
+// alongside D110EditorPane and D110Keyboard - see D110AudioProcessorEditor, which owns
+// and positions this the same way it does those two. In the independent sequencer app
+// (see NonetSeqHost, the independent Nonet Sequencer app) it's the whole window instead. Talks to its host only
+// through D110SequencerHost, so this UI - like the engine itself - doesn't know anything
+// about firmware RAM, and doesn't require one to exist.
 class D110SequencerPanel : public juce::Component, private juce::Timer {
 public:
-	explicit D110SequencerPanel(D110AudioProcessor &);
+	explicit D110SequencerPanel(D110SequencerHost &);
 	~D110SequencerPanel() override;
 
 	void paint(juce::Graphics &) override;
@@ -41,13 +42,16 @@ private:
 	void cycleRecordMode();
 	void showRecordModeMenu();
 	void showQuantizeMenu(int track);
+	void promptForRenameTrack(int track);
+	// Only ever called when processor.supportsTrackChannelEdit() - see D110SequencerHost.h.
+	void showTrackChannelMenu(int track);
 	void showMetronomeModeMenu();
 	void confirmClearTrack(int track);
 	// Right-click any song-slot button: copy the CURRENT song into one of the other 3 slots -
 	// see D110SequencerEngine::copyCurrentSongTo().
 	void showCopySongMenu();
 	void confirmCopySongTo(int destSlot);
-	// Right-click LOAD/SAVE: all 4 song slots at once (.d110songs), as opposed to the plain
+	// Right-click LOAD/SAVE: all 4 song slots at once (.midiseq), as opposed to the plain
 	// click's single current song (.mid) - see D110AudioProcessor::exportSequencerSongs().
 	void showLoadMenu();
 	void showSaveMenu();
@@ -69,7 +73,7 @@ private:
 	// D110SequencerEngine::transposeBars().
 	void promptForTransposeBars(int track);
 
-	D110AudioProcessor &processor;
+	D110SequencerHost &processor;
 
 	juce::Rectangle<float> stopBounds, playBounds, recBounds;
 	juce::Rectangle<float> tempoBounds, timeSigBounds, metronomeBounds, precountBounds, loopBounds;
@@ -91,7 +95,8 @@ private:
 		// rowBounds spans the whole row - used only to catch a right-click anywhere on the
 		// row for the quantize menu, regardless of which column it lands on.
 		juce::Rectangle<float> rowBounds;
-		juce::Rectangle<float> label, channelReadout, muteBounds, soloBounds, armBounds, activityBounds;
+		juce::Rectangle<float> label, channelReadout, muteBounds, soloBounds, armBounds, activityBounds,
+			partNumberBounds;
 	};
 	std::array<TrackRow, d110seq::D110SequencerEngine::kNumTracks> rows;
 

@@ -125,9 +125,10 @@ endif()
 
 target_sources(D110Emulator PRIVATE
     Source/PluginProcessor.cpp
-    Source/PluginEditor.cpp
+    Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp
     ${D110_DRIVLIST_SOURCE}
@@ -229,13 +230,14 @@ juce_add_plugin(D110EmulatorNative
 
 target_sources(D110EmulatorNative PRIVATE
     Source/PluginProcessor.cpp
-    Source/PluginEditor.cpp
+    Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/native/mcs96_cpu.cpp
     Source/native/d110_bus.cpp
     Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp
     Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp
 )
@@ -269,8 +271,9 @@ if(D110_BUILD_MAME_BACKEND)
 # that a panel edit becomes audible once the RAM bridge is in.
 # ---------------------------------------------------------------------------
 add_executable(d110_audio_test audio_test.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_audio_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -298,8 +301,9 @@ target_link_options(d110_bridge_probe PRIVATE ${MAME_LINK_OPTIONS})
 # wired up. See docs/sysex_address_map.md.
 # ---------------------------------------------------------------------------
 add_executable(d110_tone_probe tone_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_tone_probe PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -314,8 +318,9 @@ target_link_options(d110_tone_probe PRIVATE ${MAME_LINK_OPTIONS})
 # Checks that loading the plugin does NOT re-initialise the instrument, and that the
 # hardware's own factory init (latch WRITE/COPY, power on, ENTER) works from the panel.
 add_executable(d110_coldstart_test coldstart_test.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_coldstart_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -330,8 +335,9 @@ target_link_options(d110_coldstart_test PRIVATE ${MAME_LINK_OPTIONS})
 # Checks that a project recalls its own firmware memory, that two instances get separate
 # memory, and that the second one refuses to power on instead of crashing the host.
 add_executable(d110_state_test state_test.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_state_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -346,8 +352,9 @@ target_link_options(d110_state_test PRIVATE ${MAME_LINK_OPTIONS})
 # Discovers the LA32's register interface by logging every access to an address the D-110's
 # map leaves unclaimed - which is precisely where the missing sound board would answer.
 add_executable(d110_la32_probe la32_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_probe PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -362,8 +369,9 @@ target_link_options(d110_la32_probe PRIVATE ${MAME_LINK_OPTIONS})
 # One-shot: play a single note, freeze it (no interrupt answered), dump the raw voice
 # bookkeeping tables - ground truth for what StuckPolicy::La32Stub's slot scan should see.
 add_executable(d110_la32_lifecycle la32_lifecycle_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_lifecycle PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -379,8 +387,9 @@ target_link_options(d110_la32_lifecycle PRIVATE ${MAME_LINK_OPTIONS})
 # together with StuckPolicy::La32Stub - answers whether the firmware's own housekeeping
 # ever reaches f460[] bit 6 at all (the second stall) instead of guessing from statics.
 add_executable(d110_la32_ctx la32_ctx_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_ctx PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -395,8 +404,9 @@ target_link_options(d110_la32_ctx PRIVATE ${MAME_LINK_OPTIONS})
 # Practical question hang_probe/longrun_test don't ask: with La32Stub engaged, does the
 # panel survive NORMAL playing (single notes, realistic gaps), not deliberate chord-stress.
 add_executable(d110_la32_realistic la32_realistic_test.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_realistic PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -413,8 +423,9 @@ target_link_options(d110_la32_realistic PRIVATE ${MAME_LINK_OPTIONS})
 # the same freeze. Also checks whether La32Stub fares differently here, since the demo
 # song runs entirely on MAME's own thread with no host MIDI injection at all.
 add_executable(d110_demo_song_repro demo_song_repro.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_demo_song_repro PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -430,8 +441,9 @@ target_link_options(d110_demo_song_repro PRIVATE ${MAME_LINK_OPTIONS})
 # byte reach the sound engine as a real stereo shift? Answers the "panning feels wrong /
 # it won't return to defaults" question by measurement rather than by listening.
 add_executable(d110_pan_verify pan_verify.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_pan_verify PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -447,8 +459,9 @@ target_link_options(d110_pan_verify PRIVATE ${MAME_LINK_OPTIONS})
 # This checks whether the notes are nevertheless recoverable from the firmware's own RAM
 # (f400 = note, f420 = velocity, f3a0 = part?), which would let the bridge carry them.
 add_executable(d110_note_source note_source_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_note_source PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -463,8 +476,9 @@ target_link_options(d110_note_source PRIVATE ${MAME_LINK_OPTIONS})
 # Renders the demo song to a WAV so "is there any sound at all" is answered by a file the
 # user can listen to, not by inference.
 add_executable(d110_demo_wav demo_wav_render.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_demo_wav PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -480,8 +494,9 @@ target_link_options(d110_demo_wav PRIVATE ${MAME_LINK_OPTIONS})
 # answered per part instead of by ear across nine at once. Two passes: straight into the
 # engine, and through the firmware on that part's own channel.
 add_executable(d110_part_audio part_audio_test.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_part_audio PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -496,8 +511,9 @@ target_link_options(d110_part_audio PRIVATE ${MAME_LINK_OPTIONS})
 # Renders the demo song once per part, with only that part delivered, and measures what
 # comes out. Note counts cannot tell "silent" from "buried"; a level can.
 add_executable(d110_solo_level solo_level_test.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_solo_level PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -513,8 +529,9 @@ target_link_options(d110_solo_level PRIVATE ${MAME_LINK_OPTIONS})
 # holds. A level 20 dB adrift is either the bridge failing to carry something or the
 # arrangement; only a byte-for-byte comparison tells them apart.
 add_executable(d110_part_state part_state_compare.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_part_state PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -530,8 +547,9 @@ target_link_options(d110_part_state PRIVATE ${MAME_LINK_OPTIONS})
 # держит прошивка, - по имени, чего измерение уровня не умеет. Собственный путь чтения
 # из движка доказывает контролем "записал и прочитал обратно" до всех прочих показаний.
 add_executable(d110_tone_clobber tone_clobber_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_tone_clobber PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -546,8 +564,9 @@ target_link_options(d110_tone_clobber PRIVATE ${MAME_LINK_OPTIONS})
 # Различает две причины «Attempted to play unmapped key» в начале демо: карту ритма,
 # которая ещё не доехала до движка, и карту, в которой клавиша действительно выключена.
 add_executable(d110_rhythm_map rhythm_map_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_rhythm_map PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -562,8 +581,9 @@ target_link_options(d110_rhythm_map PRIVATE ${MAME_LINK_OPTIONS})
 # Ищет путь, которым тип/время/уровень ревербератора доходят до микросхемы BOSS: жмёт
 # кнопки, печатает экран и показывает рядом сдвиги ОЗУ и записи в регистр SO.
 add_executable(d110_reverb_path reverb_path_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_reverb_path PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -578,8 +598,9 @@ target_link_options(d110_reverb_path PRIVATE ${MAME_LINK_OPTIONS})
 # Карта регистров LA32: что прошивка кладёт в микросхему синтеза и какая ячейка что значит.
 # Три раздражителя, отличающиеся ровно одним свойством, плюс окно без ноты как контроль.
 add_executable(d110_la32_regmap la32_regmap_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_regmap PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -595,8 +616,9 @@ target_link_options(d110_la32_regmap PRIVATE ${MAME_LINK_OPTIONS})
 # «до и после» сравнивает с контрольным окном такой же длины БЕЗ импорта, потому что
 # прошивка непрерывно пишет в свои рабочие области и сама по себе.
 add_executable(d110_factory_bank factory_bank_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_factory_bank PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -613,8 +635,9 @@ target_link_options(d110_factory_bank PRIVATE ${MAME_LINK_OPTIONS})
 # редактора - без него правка из редактора была бы догадкой. Заодно измеряет место памяти
 # ТОНОВ, которого не найти по содержимому: в заводском приборе она пуста.
 add_executable(d110_editor_write editor_write_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_editor_write PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -629,8 +652,9 @@ target_link_options(d110_editor_write PRIVATE ${MAME_LINK_OPTIONS})
 # Снимок расширенного редактора в PNG - настоящего компонента, с живыми значениями из
 # работающего прибора. Судить о разметке по константам нельзя, поэтому её снимают и смотрят.
 add_executable(d110_editor_shot editor_shot.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_editor_shot PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -649,8 +673,9 @@ target_link_options(d110_editor_shot PRIVATE ${MAME_LINK_OPTIONS})
 # JUCE_MODAL_LOOPS_PERMITTED здесь включён намеренно и только для этой цели: переход на патч
 # идёт по таймеру очереди сообщений, а в консольной программе эту очередь надо крутить руками.
 add_executable(d110_editor_test editor_test.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_editor_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -666,8 +691,9 @@ target_link_options(d110_editor_test PRIVATE ${MAME_LINK_OPTIONS})
 # внешний ввод-вывод 0x0400-0x0BFF, разворачивает восемь типов и сравнивает с контрольным
 # прогоном, где нажатия и нота те же, а тип не меняется.
 add_executable(d110_reverb_reg reverb_reg_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_reverb_reg PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -684,8 +710,9 @@ target_link_options(d110_reverb_reg PRIVATE ${MAME_LINK_OPTIONS})
 # опыт дважды в одном прогоне, с подтверждением тембров и без него, чтобы у результата был
 # контроль, умеющий показать отказ.
 add_executable(d110_tone_edit_survives tone_edit_survives_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_tone_edit_survives PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -701,8 +728,9 @@ target_link_options(d110_tone_edit_survives PRIVATE ${MAME_LINK_OPTIONS})
 # же микросхемы из munt. Включает её внутренние заголовки - библиотека статическая, символы на
 # месте, а публичного интерфейса у генератора волны нет и не задумано.
 add_executable(d110_la32_render la32_render.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_render PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -719,8 +747,9 @@ target_link_options(d110_la32_render PRIVATE ${MAME_LINK_OPTIONS})
 # Что банк 0x0CC0 несёт во времени, пока нота звучит. Печатает поток как ряд, а не сравнивает
 # множества значений - на этом сравнении три прежних захода на этот банк и провалились.
 add_executable(d110_la32_stream la32_stream_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_stream PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -734,8 +763,9 @@ target_link_options(d110_la32_stream PRIVATE ${MAME_LINK_OPTIONS})
 
 # Снимает настоящую панель в PNG, чтобы её было на что посмотреть рядом с фотографией.
 add_executable(d110_panel_render panel_render.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_panel_render PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -752,8 +782,9 @@ target_link_options(d110_panel_render PRIVATE ${MAME_LINK_OPTIONS})
 # Чем прошивка отличает вставленную карту памяти от пустого гнезда. Подставляет ей четыре
 # разные карты и снимает с экрана, что она о каждой сказала.
 add_executable(d110_card card_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_card PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -768,8 +799,9 @@ target_link_options(d110_card PRIVATE ${MAME_LINK_OPTIONS})
 # Ищет момент, когда прошивка перепрограммирует микросхему ревербератора: пишет каждую
 # запись в регистр SO вместе с адресом подпрограммы, которая её сделала.
 add_executable(d110_so_trace so_trace_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_so_trace PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -792,8 +824,9 @@ target_link_libraries(d110_lcd_check PRIVATE juce::juce_gui_basics juce::juce_gr
 # Checks that an imported SysEx bank actually reaches the control board, rather than only
 # the sound engine - where the next RAM mirror silently undid it.
 add_executable(d110_sysex_test sysex_test.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_sysex_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -817,8 +850,9 @@ target_link_options(d110_disasm PRIVATE ${MAME_LINK_OPTIONS})
 # Finds WHERE the firmware gets stuck once notes reach it, by sampling the program counter
 # in a healthy state and a dead one and diffing the two histograms.
 add_executable(d110_hang_probe hang_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_hang_probe PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -833,8 +867,9 @@ target_link_options(d110_hang_probe PRIVATE ${MAME_LINK_OPTIONS})
 # Isolates why the control board stops responding after some seconds of playing: runs the
 # firmware for a minute with and without host MIDI, pressing a button throughout.
 add_executable(d110_longrun_test longrun_test.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_longrun_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -867,8 +902,9 @@ target_link_options(d110_core_test PRIVATE ${MAME_LINK_OPTIONS})
 # Считает ноту на трёх рубежах - отправлено, взято прошивкой, занято у движка - и делает это
 # дважды, тоном в два партиала и тоном в четыре, чтобы полифонию нельзя было спутать с потерей.
 add_executable(d110_polyphony polyphony_test.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_polyphony PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -883,8 +919,9 @@ target_link_options(d110_polyphony PRIVATE ${MAME_LINK_OPTIONS})
 # Two parts (bass + solo) playing fast, overlapping lines AT THE SAME TIME - the user's actual
 # reported shape (both parts losing notes together), not one part tested in isolation.
 add_executable(d110_multi_part_polyphony multi_part_polyphony_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_multi_part_polyphony PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -899,8 +936,9 @@ target_link_options(d110_multi_part_polyphony PRIVATE ${MAME_LINK_OPTIONS})
 # Measures the real DSP cost of raising mt32emu's usePartialCount - no real-time pacing in its
 # timed section, unlike every other probe here, on purpose.
 add_executable(d110_partial_count_cpu partial_count_cpu_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_partial_count_cpu PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -916,8 +954,9 @@ target_link_options(d110_partial_count_cpu PRIVATE ${MAME_LINK_OPTIONS})
 # LCD on Fantasy/Steel Drum, while D110EmulatorNative is fine - so this is backend-specific,
 # not the mechanism fixed earlier this session (which was ported to both).
 add_executable(d110_mame_stuck_note_repro mame_stuck_note_repro.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_mame_stuck_note_repro PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -933,8 +972,9 @@ target_link_options(d110_mame_stuck_note_repro PRIVATE ${MAME_LINK_OPTIONS})
 # окно диспетчеризации даёт адрес, значение и PC - то есть отвечает не догадкой, а именем
 # подпрограммы. См. docs/la32_interface.md.
 add_executable(d110_slot_life slot_life_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_slot_life PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -951,8 +991,9 @@ target_link_options(d110_slot_life PRIVATE ${MAME_LINK_OPTIONS})
 # D110AudioProcessor::getNvramRoot() без единого своего аргумента, - поэтому правит именно
 # тот файл, который откроет установленный VST3.
 add_executable(d110_nvram_recovery nvram_recovery.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_nvram_recovery PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -969,8 +1010,9 @@ target_link_options(d110_nvram_recovery PRIVATE ${MAME_LINK_OPTIONS})
 # coldstart_test.cpp, который вызывает D110Core::setButton() в обход панели и потому не мог
 # бы поймать регрессию в самой D110Panel::setButtonState().
 add_executable(d110_panel_factory_init panel_factory_init_test.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_panel_factory_init PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -986,8 +1028,9 @@ target_link_options(d110_panel_factory_init PRIVATE ${MAME_LINK_OPTIONS})
 # партий бьют одновременно - измеряет по-настоящему через D110Core::startNoteLog(), а не
 # пересчитывает байтовую скорость на бумаге. См. docs про общую очередь MIDI к прошивке.
 add_executable(d110_midi_congestion midi_congestion_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_midi_congestion PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1003,8 +1046,9 @@ target_link_options(d110_midi_congestion PRIVATE ${MAME_LINK_OPTIONS})
 # nvram_recovery: тот возвращает заводское состояние, а память тонов заводским состоянием
 # ПУСТА, и наполнить её можно только банком со стороны.
 add_executable(d110_bank_import bank_import.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_bank_import PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1020,8 +1064,9 @@ target_link_options(d110_bank_import PRIVATE ${MAME_LINK_OPTIONS})
 # тот меряет ПОТЕРИ нот на одной партии, а этот - ОСТАТОК при отпущенных клавишах на всех
 # девяти, и это противоположные признаки.
 add_executable(d110_stuck_notes stuck_notes_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_stuck_notes PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1036,8 +1081,9 @@ target_link_options(d110_stuck_notes PRIVATE ${MAME_LINK_OPTIONS})
 # MAME-backed counterpart to d110_native_ramp_edge_stress - same dense overlapping/legato
 # pattern, against D110Core.cpp's own midiTick() fix.
 add_executable(d110_mame_ramp_edge_stress mame_ramp_edge_stress_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_mame_ramp_edge_stress PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1053,8 +1099,9 @@ target_link_options(d110_mame_ramp_edge_stress PRIVATE ${MAME_LINK_OPTIONS})
 # звучит" измерением, а не догадкой - список молчащих клавиш даёт прямо, без предположений
 # о том, какая именно сломана.
 add_executable(d110_rhythm_key rhythm_key_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_rhythm_key PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1070,8 +1117,9 @@ target_link_options(d110_rhythm_key PRIVATE ${MAME_LINK_OPTIONS})
 # Живая область читалась сплошным центром (pan 7 у всех восьми) при верных данных в самом
 # патче - вопрос в том, чинится ли это тем же нажатием, каким пользуется панель.
 add_executable(d110_pan_resync pan_resync_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_pan_resync PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1096,8 +1144,9 @@ target_link_options(d110_virgin_boot PRIVATE ${MAME_LINK_OPTIONS})
 # по ритм-клавише, чтобы найти источник "Attempted to play invalid key 1" рядом с closed
 # hat/open hat: пишет ли это сама прошивка в f400[], или подмена происходит в нашем мосте.
 add_executable(d110_rhythm_ctx rhythm_ctx_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_rhythm_ctx PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1114,8 +1163,9 @@ target_link_options(d110_rhythm_ctx PRIVATE ${MAME_LINK_OPTIONS})
 # пользователя, у которой нет настоящих заводских имён без карты FACTORY PRESET), или демо
 # полностью самодостаточна и патчей пользователя не касается вовсе.
 add_executable(d110_demo_patch demo_patch_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_demo_patch PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1131,8 +1181,9 @@ target_link_options(d110_demo_patch PRIVATE ${MAME_LINK_OPTIONS})
 # processBlock и моментом, когда прошивка сама её регистрирует (NoteLog). Демо-песня этого
 # круга не проходит вовсе (прошивка играет сама себе), поэтому и не плывёт.
 add_executable(d110_note_latency note_latency_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_note_latency PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1148,8 +1199,9 @@ target_link_options(d110_note_latency PRIVATE ${MAME_LINK_OPTIONS})
 # ic6.bin, доходит ли байт типа ревербератора (System 0x2D95) до BossEmu, и дают ли разные
 # из восьми типов заметно разный хвост затухания.
 add_executable(d110_boss_reverb boss_reverb_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_boss_reverb PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1164,8 +1216,9 @@ target_link_options(d110_boss_reverb PRIVATE ${MAME_LINK_OPTIONS})
 # Проверка одного типа ревербератора в СВЕЖЕМ экземпляре (аргумент argv[1]) - разводит
 # "тип сам по себе тих" от "переключение между типами что-то ломает".
 add_executable(d110_boss_reverb_iso boss_reverb_isolated_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_boss_reverb_iso PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1181,8 +1234,9 @@ target_link_options(d110_boss_reverb_iso PRIVATE ${MAME_LINK_OPTIONS})
 # компиляции: включает все доп. шины, меняет Output Assign партии 1, меряет энергию в
 # каждом из восьми каналов.
 add_executable(d110_multi_output multi_output_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_multi_output PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1198,8 +1252,9 @@ target_link_options(d110_multi_output PRIVATE ${MAME_LINK_OPTIONS})
 # соседний барабан. Причина была в том, что подсказка для подмены ставилась в очередь для
 # ЛЮБОЙ ритм-ноты, а не только для трёх сломанных клавиш - рабочие клавиши душили очередь.
 add_executable(d110_rhythm_hint_bleed rhythm_hint_bleed_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_rhythm_hint_bleed PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1216,8 +1271,9 @@ target_link_options(d110_rhythm_hint_bleed PRIVATE ${MAME_LINK_OPTIONS})
 # сброса - разделяет "правки Synth.cpp сломали рендер" и "живая область просто не
 # заполняется сбросом для большинства партий".
 add_executable(d110_pan_verify_diag pan_verify_diag_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_pan_verify_diag PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1232,8 +1288,9 @@ target_link_options(d110_pan_verify_diag PRIVATE ${MAME_LINK_OPTIONS})
 # Настоящее звуковое измерение панорамы барабанов - до сих пор сверяли только байт в
 # памяти против заводского дампа, никогда реальный звук по обоим каналам.
 add_executable(d110_rhythm_pan_audio rhythm_pan_audio_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Core.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/D110Core.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_rhythm_pan_audio PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1347,10 +1404,11 @@ add_executable(d110_native_ramp_edge_stress native_ramp_edge_stress_probe.cpp
 target_include_directories(d110_native_ramp_edge_stress PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 add_executable(d110_native_plugin_smoke native_plugin_smoke_test.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_plugin_smoke PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1366,10 +1424,11 @@ target_link_libraries(d110_native_plugin_smoke PRIVATE
 # sendTimbreTempParam genuinely sticks on the real firmware RAM; see the probe's own header
 # comment.
 add_executable(d110_native_timbre_group_number native_timbre_group_number_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_timbre_group_number PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1385,10 +1444,11 @@ target_link_libraries(d110_native_timbre_group_number PRIVATE
 # through, Super Mode toggle or a patch change unsticks it" report; see the probe's own
 # header comment.
 add_executable(d110_native_single_part_stuck native_single_part_stuck_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_single_part_stuck PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1405,10 +1465,11 @@ target_link_libraries(d110_native_single_part_stuck PRIVATE
 # audible sound - see the probe's own header comment for why this checks actual rendered
 # audio, not just firmware bookkeeping the way native_single_part_stuck_probe does.
 add_executable(d110_native_retrigger_silence native_retrigger_silence_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_retrigger_silence PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1424,10 +1485,11 @@ target_link_libraries(d110_native_retrigger_silence PRIVATE
 # simulated session, watching for state that drifts into occasional silence rather than
 # testing one fixed retrigger shape - see the probe's own header comment.
 add_executable(d110_native_long_session_stress native_long_session_stress_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_long_session_stress PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1444,10 +1506,11 @@ target_link_libraries(d110_native_long_session_stress PRIVATE
 # a genuine cumulative drift - one part, one fast-attack tone, thousands of notes, watching for
 # exactly when (if ever) it starts failing. See the probe's own header comment.
 add_executable(d110_native_cumulative_drift native_cumulative_drift_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_cumulative_drift PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1465,10 +1528,11 @@ target_link_libraries(d110_native_cumulative_drift PRIVATE
 # TimbreTemp write specifically, landing while notes are actively streaming. See the probe's
 # own header comment.
 add_executable(d110_native_editor_race native_editor_race_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_editor_race PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1485,10 +1549,11 @@ target_link_libraries(d110_native_editor_race PRIVATE
 # runDispatchLoopUntil this time (earlier probes calling selectPatch() never did, so its
 # timer likely never fired in them at all). See the probe's own header comment.
 add_executable(d110_native_patch_select_race native_patch_select_race_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_patch_select_race PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1504,10 +1569,11 @@ target_link_libraries(d110_native_patch_select_race PRIVATE
 # holding 0 partials/no parts sounding while the firmware's own voice-slot table showed 12
 # busy. See the probe's own header comment.
 add_executable(d110_native_chord_patch native_chord_patch_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_chord_patch PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1523,10 +1589,11 @@ target_link_libraries(d110_native_chord_patch PRIVATE
 # just his JACK/Focusrite one) and hammers notes/chords on it. See the probe's own header
 # comment.
 add_executable(d110_native_snapshot_repro native_snapshot_repro_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_snapshot_repro PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1542,10 +1609,11 @@ target_link_libraries(d110_native_snapshot_repro PRIVATE
 # and 4 both on MIDI channel 3) on an otherwise fresh/default instance. See the probe's own
 # header comment.
 add_executable(d110_native_duplicate_channel native_duplicate_channel_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_duplicate_channel PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1561,10 +1629,11 @@ target_link_libraries(d110_native_duplicate_channel PRIVATE
 # to AcouPiano1 via the Editor's own direct-write mechanism (not the native panel) - notes go
 # silent every time. See the probe's own header comment.
 add_executable(d110_native_editor_tone_repro native_editor_tone_repro_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_editor_tone_repro PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1582,10 +1651,11 @@ target_link_libraries(d110_native_editor_tone_repro PRIVATE
 # processBlock() buffer injection, is what Alan's actual keyboard/on-screen-keyboard usage
 # goes through.
 add_executable(d110_native_realtime_collector native_realtime_collector_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_realtime_collector PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1601,10 +1671,11 @@ target_link_libraries(d110_native_realtime_collector PRIVATE
 # field 5 (ASSIGN), never touched by the Parts tab's tone-picker. See the probe's own header
 # comment.
 add_executable(d110_native_assign_mode native_assign_mode_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_assign_mode PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1619,10 +1690,11 @@ target_link_libraries(d110_native_assign_mode PRIVATE
 # Verifies the 2026-08-07 fix mirroring masterTune to the sound engine. See the probe's own
 # header comment.
 add_executable(d110_native_master_tune native_master_tune_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_master_tune PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1637,10 +1709,11 @@ target_link_libraries(d110_native_master_tune PRIVATE
 # Same shape as d110_native_plugin_smoke, but for the sequencer's getStateInformation/
 # setStateInformation round trip - see that file's header comment.
 add_executable(d110_sequencer_state_probe sequencer_state_probe.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/UiTheme.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp Source/UiTheme.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
-    Source/sequencer/D110SequencerEngine.cpp Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_sequencer_state_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_sequencer_state_probe PRIVATE
     D110_NATIVE_CORE=1
@@ -1654,10 +1727,11 @@ target_link_libraries(d110_sequencer_state_probe PRIVATE
 # native core so it builds without D110_BUILD_MAME_BACKEND - useful for eyeballing LCD
 # rendering changes (panel scale, dot antialiasing) without a full MAME configure.
 add_executable(d110_native_editor_shot editor_shot.cpp
-    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp)
 target_include_directories(d110_native_editor_shot PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1672,10 +1746,28 @@ target_link_libraries(d110_native_editor_shot PRIVATE
 # The sequencer engine (Source/sequencer/) has no firmware/plugin dependency at all -
 # it only knows MIDI channels, beats and sample counts - so its probe links nothing
 # beyond the two JUCE modules it actually uses.
-add_executable(d110_sequencer_probe sequencer_probe.cpp Source/sequencer/D110SequencerEngine.cpp)
+add_executable(d110_sequencer_probe sequencer_probe.cpp Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp)
 target_include_directories(d110_sequencer_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_sequencer_probe PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)
 target_link_libraries(d110_sequencer_probe PRIVATE juce::juce_audio_basics juce::juce_core)
+
+# Nonet Sequencer, the independent sequencer app: D110SequencerPanel/Engine plus a bare
+# window and direct system MIDI In/Out, no firmware/ROMs/plugin wrapper at all - see
+# Source/sequencer/NonetSeqHost.h and docs/sequencer.md's "MIDI Out" section. Standalone
+# only, deliberately - see release-artifacts' own deploy step, there is no VST3/plugin-
+# format target for this one. Target name matches the binary Alan asked for (Nonet-Seq).
+add_executable(Nonet-Seq
+    Source/sequencer/NonetSeqMain.cpp
+    Source/sequencer/NonetSeqHost.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/D110Keyboard.cpp
+    Source/UiTheme.cpp)
+target_include_directories(Nonet-Seq PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(Nonet-Seq PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)
+target_link_libraries(Nonet-Seq PRIVATE juce::juce_gui_extra juce::juce_audio_devices juce::juce_audio_basics)
 
 if(D110_BUILD_MAME_BACKEND)
 

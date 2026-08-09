@@ -18,12 +18,16 @@ using D110CoreType = D110CoreNative;
 #include "D110Core.h"
 using D110CoreType = D110Core;
 #endif
+#include "D110KeyboardHost.h"
 #include "sequencer/D110SequencerEngine.h"
+#include "sequencer/D110SequencerHost.h"
 #include <array>
 #include <memory>
 #include <thread>
 
 class D110AudioProcessor : public juce::AudioProcessor,
+                           public D110SequencerHost,
+                           public D110KeyboardHost,
                            private juce::MidiInputCallback,
                            private juce::Timer {
 public:
@@ -148,7 +152,7 @@ public:
 	// processBlock()), so a clicked key reaches the firmware, the panel and the sound engine
 	// by the identical route a real keyboard would - nothing here talks to the synth directly.
 	// Safe to call from the message thread; the collector is its own lock.
-	void injectTestNote(int channel, int note, float velocity, bool on);
+	void injectTestNote(int channel, int note, float velocity, bool on) override;
 
 	// D110Keyboard's own config (MIDI channel/omni, PC-keyboard tracker input, QWERTY/AZERTY
 	// layout) - stored here, not as plain members on the UI component itself, so it survives
@@ -156,16 +160,16 @@ public:
 	// open at save/restore time (a host can create/destroy the editor independently of the
 	// processor's own lifetime). D110Keyboard reads these once at construction and writes
 	// back through these setters on every change - see its own constructor/showContextMenu().
-	int getKeyboardMidiChannel() const { return keyboardMidiChannel; }
-	void setKeyboardMidiChannel(int channel) { keyboardMidiChannel = juce::jlimit(1, 16, channel); }
-	bool getKeyboardOmni() const { return keyboardOmni; }
-	void setKeyboardOmni(bool omni) { keyboardOmni = omni; }
-	bool getKeyboardPcInputEnabled() const { return keyboardPcInput; }
-	void setKeyboardPcInputEnabled(bool enabled) { keyboardPcInput = enabled; }
+	int getKeyboardMidiChannel() const override { return keyboardMidiChannel; }
+	void setKeyboardMidiChannel(int channel) override { keyboardMidiChannel = juce::jlimit(1, 16, channel); }
+	bool getKeyboardOmni() const override { return keyboardOmni; }
+	void setKeyboardOmni(bool omni) override { keyboardOmni = omni; }
+	bool getKeyboardPcInputEnabled() const override { return keyboardPcInput; }
+	void setKeyboardPcInputEnabled(bool enabled) override { keyboardPcInput = enabled; }
 	// 0 = QWERTY, 1 = AZERTY - a plain int rather than D110Keyboard's own private PcLayout
 	// enum, so this header doesn't need to know that type exists.
-	int getKeyboardPcLayout() const { return keyboardPcLayout; }
-	void setKeyboardPcLayout(int layout) { keyboardPcLayout = juce::jlimit(0, 1, layout); }
+	int getKeyboardPcLayout() const override { return keyboardPcLayout; }
+	void setKeyboardPcLayout(int layout) override { keyboardPcLayout = juce::jlimit(0, 1, layout); }
 
 	// The custom-drawn part of the interface's light/dark theme (Utility tab -> THEME) -
 	// the photographed panel and its LED-style indicators sit outside this, since those
@@ -174,6 +178,14 @@ public:
 	// the same way the keyboard config above does.
 	bool getUiThemeLight() const { return uiThemeLight; }
 	void setUiThemeLight(bool light) { uiThemeLight = light; }
+
+	// One shared "last used folder" for every file dialog in the app (SysEx bank import/
+	// export, memory snapshot save/load, the sequencer's own .mid/.midiseq dialogs) - set
+	// after each successful pick, offered as the starting point for the next one, so
+	// browsing to a folder once doesn't mean re-navigating there for every subsequent
+	// dialog. Persisted the same way the theme above is.
+	juce::File getLastDialogDir() const override { return lastDialogDir; }
+	void setLastDialogDir(const juce::File &dir) override { lastDialogDir = dir; }
 
 	// Utility tab -> DEBUG. Gates the note-dropout diagnostic instrumentation in
 	// processBlock() - off by default so nothing writes to disk on the audio thread unless a
@@ -196,7 +208,7 @@ public:
 	// Source/sequencer/D110SequencerEngine.h. processBlock() is the only other reader/
 	// writer, on the audio thread; the UI's own access is safe as long as it stays to the
 	// plain getters/setters (no long-held references across a block boundary).
-	d110seq::D110SequencerEngine &getSequencer() { return sequencerEngine; }
+	d110seq::D110SequencerEngine &getSequencer() override { return sequencerEngine; }
 
 	// The plugin opens powered OFF, and clicking POWER boots the real Roland firmware live,
 	// in real time, exactly as the hardware does - the D110Core machine is started here and
@@ -272,8 +284,8 @@ public:
 	// song, but this is what actually survives a move to a different machine's Standalone -
 	// unlike a DAW project, the Standalone's own state lives in a local settings file
 	// (~/.config on Linux) that copying the shared NVRAM folder does not carry along.
-	void exportSequencerSongs(const juce::File &file);
-	void importSequencerSongs(const juce::File &file);
+	void exportSequencerSongs(const juce::File &file) override;
+	void importSequencerSongs(const juce::File &file) override;
 
 	// The same memory, but as a real Roland "Data set 1" SysEx bank instead of this plugin's
 	// own snapshot format - built directly from the current RAM image rather than captured by
@@ -300,7 +312,7 @@ public:
 	// MIDI channels, not just the factory Part 1-8/Rhythm map, since channels can be
 	// reassigned. Safe to call from the message thread (a button click) - queued the same
 	// way stepPatch()'s program changes already are, not sent directly.
-	void midiPanic();
+	void midiPanic() override;
 
 	// --- the extended editor ---------------------------------------------------
 	// Everything the drawer edits goes to the INSTRUMENT, as a Roland DT1 into its own
@@ -535,6 +547,8 @@ private:
 	// See getUiThemeLight()/setUiThemeLight() above.
 	bool uiThemeLight = false;
 	bool debugModeEnabled = false;
+	// See getLastDialogDir()/setLastDialogDir() above.
+	juce::File lastDialogDir;
 	// See getEditorPaneRefH()/setEditorPaneRefH() above. 750.0f mirrors
 	// D110AudioProcessorEditor::kPaneRefH's own default - duplicated rather than shared
 	// because PluginEditor.h isn't (and shouldn't become) a dependency of this header.

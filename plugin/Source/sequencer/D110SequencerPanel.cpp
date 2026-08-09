@@ -2,7 +2,6 @@
 
 #include <cmath>
 
-#include "../PluginProcessor.h"
 #include "../UiTheme.h"
 
 using d110seq::D110SequencerEngine;
@@ -26,6 +25,24 @@ void paintToggleButton(juce::Graphics &g, juce::Rectangle<float> b, const juce::
 	g.setColour(text);
 	g.setFont(juce::FontOptions(juce::jlimit(8.0f, 13.0f, b.getHeight() * 0.5f)));
 	g.drawText(label, b, juce::Justification::centred);
+}
+
+// The ARM button: a plain filled box like every other button here, but with a small
+// record-style dot instead of a text label - filled red while armed, a dim hollow ring
+// otherwise, the same convention most DAWs use for a track's record-enable.
+void paintArmButton(juce::Graphics &g, juce::Rectangle<float> b, bool armed) {
+	const auto &pal = d110ui::palette();
+	g.setColour(pal.seqInactiveFill);
+	g.fillRect(b.reduced(2.0f));
+	const float d = juce::jmin(b.getWidth(), b.getHeight()) * 0.4f;
+	const juce::Rectangle<float> dot(b.getCentreX() - d * 0.5f, b.getCentreY() - d * 0.5f, d, d);
+	if (armed) {
+		g.setColour(pal.seqArmDot);
+		g.fillEllipse(dot);
+	} else {
+		g.setColour(pal.seqInactiveText.withAlpha(0.6f));
+		g.drawEllipse(dot, 1.5f);
+	}
 }
 
 struct TimeSig {
@@ -84,7 +101,7 @@ juce::String stepDurationLabel(d110seq::QuantizeGrid grid) {
 }
 } // namespace
 
-D110SequencerPanel::D110SequencerPanel(D110AudioProcessor &p) : processor(p) { startTimerHz(15); }
+D110SequencerPanel::D110SequencerPanel(D110SequencerHost &p) : processor(p) { startTimerHz(15); }
 
 D110SequencerPanel::~D110SequencerPanel() { stopTimer(); }
 
@@ -140,7 +157,7 @@ void D110SequencerPanel::showTimeSignatureMenu() {
 		m.addItem(int(i) + 1, juce::String(presets[i].num) + "/" + juce::String(presets[i].den), true, current);
 	}
 
-	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this](int result) {
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [this](int result) {
 		const auto &presets = timeSigPresets();
 		if (result < 1 || result > int(presets.size())) return;
 		engine().setTimeSignature(presets[size_t(result - 1)].num, presets[size_t(result - 1)].den);
@@ -171,7 +188,7 @@ void D110SequencerPanel::showStepDurationMenu() {
 	for (size_t i = 0; i < presets.size(); ++i)
 		m.addItem(int(i) + 1, stepDurationLabel(presets[i]), true, presets[i] == eng.getStepDuration());
 
-	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this](int result) {
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [this](int result) {
 		const auto &presets = stepGridPresets();
 		if (result < 1 || result > int(presets.size())) return;
 		engine().setStepDuration(presets[size_t(result - 1)]);
@@ -200,7 +217,7 @@ void D110SequencerPanel::showRecordModeMenu() {
 	m.addItem(3, "Replace to end - erases from the punch-in point onward", true,
 	          current == RecordMode::replaceToEnd);
 
-	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this](int result) {
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [this](int result) {
 		using d110seq::RecordMode;
 		switch (result) {
 			case 1: engine().setRecordMode(RecordMode::overdub); break;
@@ -237,7 +254,7 @@ void D110SequencerPanel::showMetronomeModeMenu() {
 		                    std::abs(currentVolume - kVolumePresets[i]) < 0.01f);
 	m.addSubMenu("Volume", volumeMenu);
 
-	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this](int result) {
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [this](int result) {
 		using d110seq::MetronomeMode;
 		auto &eng = engine();
 		if (result >= 10 && result < 16) {
@@ -258,29 +275,37 @@ void D110SequencerPanel::showMetronomeModeMenu() {
 }
 
 // Plain click loads/saves just the current song (.mid) - see mouseDown(). Right-click is the
-// shortcut for all 4 slots at once (.d110songs), so there's exactly one action per gesture
+// shortcut for all 4 slots at once (.midiseq), so there's exactly one action per gesture
 // rather than a one-item menu restating what the plain click already does.
 void D110SequencerPanel::showLoadMenu() {
-	auto *chooser = new juce::FileChooser("Load all 4 sequencer songs", juce::File(), "*.d110songs");
+	// Also accepts the old *.d110songs extension (same XML underneath, only the file's own
+	// name changed - see D110SequencerSongsFile.h) so a file saved before the rename still
+	// opens.
+	auto *chooser =
+		new juce::FileChooser("Load all 4 sequencer songs", processor.getLastDialogDir(), "*.midiseq;*.d110songs");
 	chooser->launchAsync(
 		juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
 		[this, chooser](const juce::FileChooser &fc) {
 			const auto file = fc.getResult();
-			if (file != juce::File()) processor.importSequencerSongs(file);
+			if (file != juce::File()) {
+				processor.setLastDialogDir(file.getParentDirectory());
+				processor.importSequencerSongs(file);
+			}
 			delete chooser;
 			repaint();
 		});
 }
 
 void D110SequencerPanel::showSaveMenu() {
-	auto *chooser = new juce::FileChooser("Save all 4 sequencer songs", juce::File(), "*.d110songs");
+	auto *chooser = new juce::FileChooser("Save all 4 sequencer songs", processor.getLastDialogDir(), "*.midiseq");
 	chooser->launchAsync(
 		juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
 			| juce::FileBrowserComponent::warnAboutOverwriting,
 		[this, chooser](const juce::FileChooser &fc) {
 			auto file = fc.getResult();
 			if (file != juce::File()) {
-				if (!file.hasFileExtension("d110songs")) file = file.withFileExtension("d110songs");
+				if (!file.hasFileExtension("midiseq")) file = file.withFileExtension("midiseq");
+				processor.setLastDialogDir(file.getParentDirectory());
 				processor.exportSequencerSongs(file);
 			}
 			delete chooser;
@@ -292,6 +317,8 @@ void D110SequencerPanel::showQuantizeMenu(int track) {
 	const auto current = engine().getTrackQuantize(track);
 
 	juce::PopupMenu m;
+	m.addItem(12, "Rename track...", true);
+	m.addSeparator();
 	m.addItem(1, "Quantize: Off", true, current == QuantizeGrid::off);
 	m.addItem(2, "Quantize: 1/4", true, current == QuantizeGrid::quarter);
 	m.addItem(3, "Quantize: 1/8", true, current == QuantizeGrid::eighth);
@@ -305,12 +332,13 @@ void D110SequencerPanel::showQuantizeMenu(int track) {
 	m.addItem(10, "Copy bar(s) on this track to...", engine().trackHasEvents(track));
 	m.addItem(11, "Transpose bar(s) on this track...", engine().trackHasEvents(track));
 
-	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this, track](int result) {
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [this, track](int result) {
 		using d110seq::QuantizeGrid;
 		if (result == 8) { confirmClearTrack(track); return; }
 		if (result == 9) { promptForDeleteBars(track); return; }
 		if (result == 10) { promptForCopyBars(track); return; }
 		if (result == 11) { promptForTransposeBars(track); return; }
+		if (result == 12) { promptForRenameTrack(track); return; }
 		QuantizeGrid grid;
 		switch (result) {
 			case 1: grid = QuantizeGrid::off; break;
@@ -326,6 +354,41 @@ void D110SequencerPanel::showQuantizeMenu(int track) {
 		engine().quantizeTrack(track, grid);
 		repaint();
 	});
+}
+
+// Only reachable when processor.supportsTrackChannelEdit() - see D110SequencerHost.h.
+void D110SequencerPanel::showTrackChannelMenu(int track) {
+	const int current = engine().channelForTrack(track);
+	juce::PopupMenu m;
+	for (int ch = 1; ch <= 16; ++ch) m.addItem(ch, "Channel " + juce::String(ch), true, ch == current);
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
+	                 [this, track](int result) {
+		                 if (result < 1 || result > 16) return;
+		                 processor.setTrackChannel(track, result);
+		                 repaint();
+	                 });
+}
+
+// Empty input clears back to the default "PART N"/"RHYTHM" label (isNotEmpty() in
+// D110SequencerEngine::saveMidiFile()/paint() below both read an empty name as "not set").
+void D110SequencerPanel::promptForRenameTrack(int track) {
+	const bool isRhythm = track == d110seq::D110SequencerEngine::kRhythmTrack;
+	const juce::String defaultName = isRhythm ? "RHYTHM" : ("PART " + juce::String(track + 1));
+	auto *aw = new juce::AlertWindow(
+		"Rename track", "Shown here and in the MIDI file this track is exported to. Leave blank for \""
+			+ defaultName + "\".",
+		juce::AlertWindow::NoIcon);
+	aw->addTextEditor("name", engine().getTrackName(track), "Name:");
+	aw->addButton("Rename", 1, juce::KeyPress(juce::KeyPress::returnKey));
+	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track](int result) {
+		if (result == 1) {
+			engine().pushUndoSnapshot();
+			engine().setTrackName(track, aw->getTextEditorContents("name").trim());
+			repaint();
+		}
+		delete aw;
+	}));
 }
 
 void D110SequencerPanel::confirmClearTrack(int track) {
@@ -373,7 +436,7 @@ void D110SequencerPanel::showBarMenu() {
 	m.addItem(6, "Copy bar(s) to... (all tracks)");
 	m.addItem(7, "Transpose bar(s) (all tracks)...");
 
-	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this](int result) {
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [this](int result) {
 		auto &e = engine();
 		switch (result) {
 			case 1: promptForBar(); return;
@@ -552,7 +615,7 @@ void D110SequencerPanel::showCopySongMenu() {
 		m.addItem(s + 1, label);
 	}
 
-	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this](int result) {
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [this](int result) {
 		if (result < 1) return;
 		confirmCopySongTo(result - 1);
 	});
@@ -680,12 +743,19 @@ void D110SequencerPanel::layout() {
 		auto row = area.removeFromTop(rowH);
 		auto &r = rows[static_cast<size_t>(t)];
 		r.rowBounds = row;
-		r.label = colR(row, 0.000f, 0.150f);
-		r.channelReadout = colR(row, 0.150f, 0.150f);
-		r.muteBounds = colR(row, 0.320f, 0.130f);
-		r.soloBounds = colR(row, 0.460f, 0.130f);
-		r.armBounds = colR(row, 0.600f, 0.130f);
-		r.activityBounds = colR(row, 0.750f, 0.230f);
+		r.label = colR(row, 0.000f, 0.190f);
+		r.channelReadout = colR(row, 0.195f, 0.100f);
+		// MUTE/SOLO narrower than before (Alan: too wide) and ARM down to a small square
+		// around its own record-style dot (see paintArmButton) rather than a text button -
+		// the freed width goes to the activity bar and the new part-number reminder below.
+		r.muteBounds = colR(row, 0.300f, 0.085f);
+		r.soloBounds = colR(row, 0.390f, 0.085f);
+		r.armBounds = colR(row, 0.480f, 0.065f);
+		r.activityBounds = colR(row, 0.555f, 0.340f);
+		// Extreme right: just the bare digit ("1".."8") or "R" for rhythm - a compact
+		// reminder of which part this is, independent of whatever custom name/CH the rest
+		// of the row shows (see setTrackName()).
+		r.partNumberBounds = colR(row, 0.905f, 0.080f);
 	}
 }
 
@@ -767,22 +837,34 @@ void D110SequencerPanel::paint(juce::Graphics &g) {
 	for (int t = 0; t < kNumTracks; ++t) {
 		const auto &r = rows[static_cast<size_t>(t)];
 		const bool isRhythm = t == D110SequencerEngine::kRhythmTrack;
+		const juce::String defaultLabel = isRhythm ? "RHYTHM" : ("PART " + juce::String(t + 1));
+		const juce::String customName = eng.getTrackName(t);
 
 		g.setColour(pal.seqInactiveText);
 		g.setFont(juce::FontOptions(juce::jlimit(9.0f, 14.0f, r.label.getHeight() * 0.5f)));
-		g.drawText(isRhythm ? "RHYTHM" : ("PART " + juce::String(t + 1)), r.label,
+		g.drawText(customName.isNotEmpty() ? customName : defaultLabel, r.label,
 		           juce::Justification::centredLeft);
 
-		g.setColour(pal.handleLabel);
+		// A different colour when this readout is actually clickable (Nonet Sequencer only -
+		// see D110SequencerHost::supportsTrackChannelEdit()), so it reads as a control there
+		// and a plain readout in the plugin, where the channel only ever follows the live
+		// firmware's own SYSTEM page.
+		g.setColour(processor.supportsTrackChannelEdit() ? pal.value : pal.handleLabel);
 		g.drawText("CH " + juce::String(eng.channelForTrack(t)), r.channelReadout,
 		           juce::Justification::centredLeft);
 
 		paintToggleButton(g, r.muteBounds, "MUTE", eng.isTrackMuted(t));
 		paintToggleButton(g, r.soloBounds, "SOLO", eng.isTrackSoloed(t));
-		paintToggleButton(g, r.armBounds, "ARM", eng.getArmedTrack() == t);
+		paintArmButton(g, r.armBounds, eng.getArmedTrack() == t);
 
 		g.setColour(eng.trackHasEvents(t) ? pal.seqTrackFilled : pal.seqTrackEmpty);
 		g.fillRect(r.activityBounds.reduced(2.0f));
+
+		// Far right: a bare digit/letter reminder of which part this is, independent of
+		// whatever custom name is showing on the left (see promptForRenameTrack()).
+		g.setColour(pal.seqInactiveText.withAlpha(0.7f));
+		g.setFont(juce::FontOptions(juce::jlimit(9.0f, 14.0f, r.partNumberBounds.getHeight() * 0.5f)));
+		g.drawText(isRhythm ? "R" : juce::String(t + 1), r.partNumberBounds, juce::Justification::centred);
 	}
 }
 
@@ -837,19 +919,22 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 		if (slotBounds[static_cast<size_t>(s)].contains(p)) { eng.selectSongSlot(s); repaint(); return; }
 
 	if (loadBounds.contains(p)) {
-		auto *chooser = new juce::FileChooser("Load a MIDI file into the sequencer", juce::File(), "*.mid");
+		auto *chooser = new juce::FileChooser("Load a MIDI file into the sequencer", processor.getLastDialogDir(), "*.mid");
 		chooser->launchAsync(
 			juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
 			[this, chooser](const juce::FileChooser &fc) {
 				const auto file = fc.getResult();
-				if (file != juce::File()) engine().loadMidiFile(file);
+				if (file != juce::File()) {
+					processor.setLastDialogDir(file.getParentDirectory());
+					engine().loadMidiFile(file);
+				}
 				delete chooser;
 				repaint();
 			});
 		return;
 	}
 	if (saveBounds.contains(p)) {
-		auto *chooser = new juce::FileChooser("Save the sequencer as a MIDI file", juce::File(), "*.mid");
+		auto *chooser = new juce::FileChooser("Save the sequencer as a MIDI file", processor.getLastDialogDir(), "*.mid");
 		chooser->launchAsync(
 			juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
 				| juce::FileBrowserComponent::warnAboutOverwriting,
@@ -857,6 +942,7 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 				auto file = fc.getResult();
 				if (file != juce::File()) {
 					if (!file.hasFileExtension("mid")) file = file.withFileExtension("mid");
+					processor.setLastDialogDir(file.getParentDirectory());
 					engine().saveMidiFile(file);
 				}
 				delete chooser;
@@ -901,6 +987,7 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 		if (r.muteBounds.contains(p)) { eng.setTrackMuted(t, !eng.isTrackMuted(t)); repaint(); return; }
 		if (r.soloBounds.contains(p)) { eng.setTrackSoloed(t, !eng.isTrackSoloed(t)); repaint(); return; }
 		if (r.armBounds.contains(p)) { eng.armTrack(eng.getArmedTrack() == t ? -1 : t); repaint(); return; }
+		if (r.channelReadout.contains(p) && processor.supportsTrackChannelEdit()) { showTrackChannelMenu(t); return; }
 	}
 }
 

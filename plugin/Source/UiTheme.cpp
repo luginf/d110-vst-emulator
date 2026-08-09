@@ -41,6 +41,7 @@ const Palette kDark {
 	juce::Colour(0xff4fb81f), // seqMetroBeat
 	juce::Colour(0xff3f7a10), // seqTrackFilled
 	juce::Colour(0xff26262c), // seqTrackEmpty
+	juce::Colour(0xffe0392a), // seqArmDot
 };
 
 // Light palette - the same meaning for every field (labels blue, values green, like the
@@ -79,6 +80,7 @@ const Palette kLight {
 	juce::Colour(0xff3f9a1a), // seqMetroBeat
 	juce::Colour(0xff3f7a10), // seqTrackFilled
 	juce::Colour(0xffd6d9de), // seqTrackEmpty
+	juce::Colour(0xffd0311f), // seqArmDot
 };
 
 } // namespace

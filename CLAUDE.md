@@ -33,23 +33,35 @@ behaviour. Don't duplicate that here; this file is about how to work in the repo
   with invisible hit-regions + the offscreen-rendered dot-matrix LCD. `D110EditorPane` =
   the nine-tab extended editor drawer (`Tab` enum: Parts, Tone, Rhythm, Patches,
   Timbres, Tones, System, Monitor, Utility), opens downward, independently foldable.
-  `D110Keyboard` = the on-screen test keyboard drawer (mouse piano + tracker-style PC
-  keyboard input, MIDI channel/omni via right-click), also independently foldable, open
-  by default. `D110SequencerPanel` (see below) is a third such drawer, closed by
-  default. `D110MemoryCard` = the memory card slot widget.
+  `D110SequencerPanel` (see below) is a third such drawer, closed by default.
+  `D110MemoryCard` = the memory card slot widget.
+- `plugin/Source/D110Keyboard.h/.cpp` - the on-screen test keyboard drawer (mouse piano +
+  tracker-style PC keyboard input, MIDI channel/omni via right-click), independently
+  foldable in the plugin, open by default. Lives outside `PluginEditor.*` and talks to its
+  owner only through `plugin/Source/D110KeyboardHost.h` (note injection + its own persisted
+  config), so it's also embedded, unfoldable, in `Nonet-Seq` (see below) - `D110AudioProcessor`
+  implements that interface for the plugin, `NonetSeqHost` for Nonet Sequencer.
 - `plugin/Source/sequencer/` - a D-20-style multitrack MIDI sequencer, added 2026-08-05,
-  since grown to also cover step recording, undo, and bar-range delete/copy/transpose - see
-  `docs/sequencer.md` for the full feature list, this is just the code layout.
-  `D110SequencerEngine` is the transport/data model - deliberately D-110-agnostic (own
-  internal clock, note-only `juce::MidiMessageSequence` per track, MIDI-file, quantize and
-  step-recording logic), talking to the rest of the plugin only through a `channelForTrack`
-  callback the processor supplies. `D110SequencerPanel` is the JUCE UI drawer. 9 tracks
-  (D-110 Parts 1-8 by their live SYSTEM-area channel, plus a rhythm track fixed on
-  channel 10); state persists in `getStateInformation`/`setStateInformation` the same
-  way the firmware NVRAM does. `plugin/sequencer_probe.cpp` and
-  `plugin/sequencer_state_probe.cpp` are its headless tests (engine timing/quantize/step-
-  recording/undo/file-I/O, and the state-save round trip, respectively) - both
-  native-core-only, no MAME dependency.
+  since grown to also cover step recording, undo, bar-range delete/copy/transpose, a MIDI
+  Out path, and a standalone-only build of its own - see `docs/sequencer.md` for the full
+  feature list, this is just the code layout. `D110SequencerEngine` is the transport/data
+  model - deliberately D-110-agnostic (own internal clock, note-only
+  `juce::MidiMessageSequence` per track, MIDI-file, quantize and step-recording logic),
+  talking to whatever embeds it only through a `channelForTrack` callback. `D110SequencerPanel`
+  is the JUCE UI drawer, talking to its host only through `D110SequencerHost` (6 methods) -
+  `D110AudioProcessor` implements that interface for the plugin, `NonetSeqHost` implements
+  it for `Nonet-Seq` (**Nonet Sequencer** - CMake target and binary both `Nonet-Seq`), the
+  independent sequencer app, deliberately named apart from the D-110 - Standalone-only, no
+  VST3, no firmware/ROMs/plugin wrapper, just the panel/engine plus the same `D110Keyboard`
+  the plugin has (for direct test-play/MIDI-routing, no fold - always visible), direct
+  system MIDI In/Out, and its own settings file. 9 tracks (D-110 Parts 1-8 by their
+  live SYSTEM-area channel inside the plugin, or a fixed factory-default channel map in the
+  independent app, plus a rhythm track fixed on channel 10); state persists in
+  `getStateInformation`/`setStateInformation` the same way the firmware NVRAM does (plugin)
+  or its own settings file (independent app), both via the shared `D110SequencerSongsFile.h/.cpp`.
+  `plugin/sequencer_probe.cpp` and `plugin/sequencer_state_probe.cpp` are its headless tests
+  (engine timing/quantize/step-recording/undo/file-I/O, and the state-save round trip,
+  respectively) - both native-core-only, no MAME dependency.
 - `plugin/CMakeLists.txt` - two plugin targets (native always, MAME opt-in) plus a long
   list of headless test/probe executables (`plugin/*.cpp` at the top level, ~60 of
   them) used to measure firmware RAM layout and verify behaviour empirically rather

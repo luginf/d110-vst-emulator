@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "sequencer/D110SequencerSongsFile.h"
 
 #include <algorithm>
 #include <cmath>
@@ -849,8 +850,22 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 			}
 		}
 
-		sequencerEngine.renderInto(midiMessages, numSamples, currentSampleRate,
+		// Rendered into its own buffer first, rather than straight into midiMessages, so the
+		// notes the sequencer actually played (as opposed to host/keyboard/thru input already
+		// sitting in midiMessages) can be told apart and also reach the direct MIDI Out port
+		// below - the first step towards the sequencer driving external gear on its own.
+		juce::MidiBuffer sequencerOut;
+		sequencerEngine.renderInto(sequencerOut, numSamples, currentSampleRate,
 		                            sequencerEngine.getMetronomeEnabled() ? &sequencerClicks : nullptr);
+		for (const auto meta : sequencerOut)
+			midiMessages.addEvent(meta.getMessage(), meta.samplePosition);
+
+		// Sent straight from the audio thread rather than queued for a background one: a real
+		// MIDI write is a handful of bytes, and every backend this targets (ALSA sequencer on
+		// Linux, CoreMIDI, WinMM) hands it off without blocking on note-rate traffic like this.
+		const juce::ScopedLock midiOutLock(osMidiLock);
+		if (osMidiOut != nullptr && sequencerOut.getNumEvents() > 0)
+			osMidiOut->sendBlockOfMessagesNow(sequencerOut);
 	}
 
 	// Held for the rest of this block: openSynthIfReady() (below) can run concurrently on the
@@ -1599,9 +1614,24 @@ void D110AudioProcessor::midiPanic() {
 		}
 	}
 
-	const juce::ScopedLock sl(engineActionLock);
-	pendingPanicBytes.insert(pendingPanicBytes.end(), firmwareBytes.begin(), firmwareBytes.end());
-	pendingShortMessages.insert(pendingShortMessages.end(), engineMessages.begin(), engineMessages.end());
+	{
+		const juce::ScopedLock sl(engineActionLock);
+		pendingPanicBytes.insert(pendingPanicBytes.end(), firmwareBytes.begin(), firmwareBytes.end());
+		pendingShortMessages.insert(pendingShortMessages.end(), engineMessages.begin(), engineMessages.end());
+	}
+
+	// A stuck note is far more annoying on real external gear than in the internal engine -
+	// there's no "stop the plugin" to fall back on - so panic reaches the direct MIDI Out port
+	// too, not just the firmware/sound engine above.
+	const juce::ScopedLock midiOutLock(osMidiLock);
+	if (osMidiOut != nullptr) {
+		juce::MidiBuffer panicOut;
+		for (int channel = 0; channel < 16; ++channel) {
+			panicOut.addEvent(juce::MidiMessage::controllerEvent(channel + 1, 64, 0), 0);
+			panicOut.addEvent(juce::MidiMessage::controllerEvent(channel + 1, 123, 0), 0);
+		}
+		osMidiOut->sendBlockOfMessagesNow(panicOut);
+	}
 }
 
 // ---- the extended editor -----------------------------------------------------
@@ -1957,6 +1987,8 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 
 	// Utility tab's THEME toggle - see getUiThemeLight().
 	xml->setAttribute("uiThemeLight", uiThemeLight ? 1 : 0);
+	// See getLastDialogDir().
+	xml->setAttribute("lastDialogDir", lastDialogDir.getFullPathName());
 	// Editor drawer's own height, drag-resized via the keyboard handle band - see
 	// getEditorPaneRefH().
 	xml->setAttribute("editorPaneRefH", editorPaneRefH);
@@ -1992,67 +2024,24 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	copyXmlToBinary(*xml, destData);
 }
 
+// Both of these just delegate to D110SequencerSongsFile.h now - kept as thin wrappers
+// (rather than updating every call site) since that's the smaller diff, and the doc
+// comment on their declaration explaining why the plugin's own state save and the
+// standalone .midiseq file share this logic still applies unchanged.
 void D110AudioProcessor::writeSequencerSongsXml(juce::XmlElement &xml) const {
-	xml.setAttribute("seqCurrentSlot", sequencerEngine.getCurrentSongSlot());
-	for (int slot = 0; slot < d110seq::D110SequencerEngine::kNumSongSlots; ++slot) {
-		const juce::String slotSuffix = "Slot" + juce::String(slot);
-		xml.setAttribute("seqTempo" + slotSuffix, sequencerEngine.slotTempo(slot));
-		xml.setAttribute("seqTimeSigNum" + slotSuffix, sequencerEngine.slotTimeSigNumerator(slot));
-		xml.setAttribute("seqTimeSigDen" + slotSuffix, sequencerEngine.slotTimeSigDenominator(slot));
-		for (int t = 0; t < d110seq::D110SequencerEngine::kNumTracks; ++t) {
-			const juce::String suffix = slotSuffix + juce::String(t);
-			xml.setAttribute("seqMute" + suffix, sequencerEngine.slotTrackMuted(slot, t) ? 1 : 0);
-			xml.setAttribute("seqSolo" + suffix, sequencerEngine.slotTrackSoloed(slot, t) ? 1 : 0);
-			xml.setAttribute("seqQuantize" + suffix, static_cast<int>(sequencerEngine.slotTrackQuantize(slot, t)));
-			xml.setAttribute("seqTrack" + suffix, packBlock(sequencerEngine.slotTrackToBytes(slot, t)));
-		}
-	}
+	d110seq::writeSongsXml(sequencerEngine, xml);
 }
 
-// selectSongSlot() also stops/rewinds/disarms, which is fine here: setStateInformation's
-// caller already expects the transport to come up stopped, and exportSequencerSongs'
-// caller is a deliberate, explicit load the user asked for.
 void D110AudioProcessor::readSequencerSongsXml(const juce::XmlElement &xml) {
-	sequencerEngine.selectSongSlot(juce::jlimit(
-		0, d110seq::D110SequencerEngine::kNumSongSlots - 1, xml.getIntAttribute("seqCurrentSlot", 0)));
-	for (int slot = 0; slot < d110seq::D110SequencerEngine::kNumSongSlots; ++slot) {
-		const juce::String slotSuffix = "Slot" + juce::String(slot);
-		sequencerEngine.setSlotTempo(slot, xml.getDoubleAttribute("seqTempo" + slotSuffix,
-		                                                          sequencerEngine.slotTempo(slot)));
-		sequencerEngine.setSlotTimeSignature(
-			slot, xml.getIntAttribute("seqTimeSigNum" + slotSuffix, sequencerEngine.slotTimeSigNumerator(slot)),
-			xml.getIntAttribute("seqTimeSigDen" + slotSuffix, sequencerEngine.slotTimeSigDenominator(slot)));
-		for (int t = 0; t < d110seq::D110SequencerEngine::kNumTracks; ++t) {
-			const juce::String suffix = slotSuffix + juce::String(t);
-			const auto trackBytes = unpackBlock(xml.getStringAttribute("seqTrack" + suffix));
-			sequencerEngine.slotTrackFromBytes(slot, t, trackBytes.getData(), trackBytes.getSize());
-			sequencerEngine.setSlotTrackMuted(slot, t, xml.getIntAttribute("seqMute" + suffix, 0) != 0);
-			sequencerEngine.setSlotTrackSoloed(slot, t, xml.getIntAttribute("seqSolo" + suffix, 0) != 0);
-			sequencerEngine.setSlotTrackQuantize(
-				slot, t, static_cast<d110seq::QuantizeGrid>(xml.getIntAttribute("seqQuantize" + suffix, 0)));
-		}
-	}
+	d110seq::readSongsXml(sequencerEngine, xml);
 }
 
 void D110AudioProcessor::exportSequencerSongs(const juce::File &file) {
-	juce::XmlElement xml("D110SequencerSongs");
-	xml.setAttribute("version", 1);
-	writeSequencerSongsXml(xml);
-	if (!xml.writeTo(file)) {
-		lastImportMessage = "Could not write songs file: " + file.getFullPathName();
-		return;
-	}
-	lastImportMessage = "Saved sequencer songs: " + file.getFileName();
+	lastImportMessage = d110seq::exportSongsFile(sequencerEngine, file);
 }
 
 void D110AudioProcessor::importSequencerSongs(const juce::File &file) {
-	std::unique_ptr<juce::XmlElement> xml(juce::XmlDocument::parse(file));
-	if (xml == nullptr || !xml->hasTagName("D110SequencerSongs")) {
-		lastImportMessage = "Not a D-110 sequencer songs file: " + file.getFileName();
-		return;
-	}
-	readSequencerSongsXml(*xml);
-	lastImportMessage = "Loaded sequencer songs: " + file.getFileName();
+	lastImportMessage = d110seq::importSongsFile(sequencerEngine, file);
 }
 
 void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) {
@@ -2109,6 +2098,7 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 	setKeyboardPcLayout(xml->getIntAttribute("kbPcLayout", keyboardPcLayout));
 
 	setUiThemeLight(xml->getIntAttribute("uiThemeLight", uiThemeLight ? 1 : 0) != 0);
+	setLastDialogDir(juce::File(xml->getStringAttribute("lastDialogDir", lastDialogDir.getFullPathName())));
 	setEditorPaneRefH(float(xml->getDoubleAttribute("editorPaneRefH", double(editorPaneRefH))));
 
 	// The sequencer's own tracks and transport settings - see the matching comment in

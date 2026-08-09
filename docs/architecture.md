@@ -70,10 +70,12 @@ Nine tabs, and everything on them is the instrument's own memory:
   row per partial, and the chosen partial in full — pitch, waveform, PCM sample, the pitch,
   TVF and TVA envelopes and the LFO. The name can be typed straight in.
 - **RHYTHM** — the rhythm setup, one row per drum key, all 85 of them.
-- **PATCHES** — the 64 stored patches. **Clicking a number selects that patch on the
-  instrument**, by pressing its own PATCH / BANK / NUMBER buttons — so the display, the parts
-  and the sound follow exactly as they do by hand. Below the list are that patch's own eight
-  part assignments.
+- **PATCHES** — two sub-tabs. **ALL PATCHES** lists the 64 stored patches — **clicking a
+  number selects that patch on the instrument**, by pressing its own PATCH / BANK / NUMBER
+  buttons, so the display, the parts and the sound follow exactly as they do by hand, and
+  switches to **PARTS OF PATCH**, that patch's own eight part assignments. Split into two
+  full-height sub-tabs (rather than a fixed vertical split of both) so neither is clipped
+  when the drawer is resized short.
 - **TIMBRES** — the 128 stored timbres; clicking one sends that program change on the chosen
   part's own MIDI channel, as an external keyboard would.
 - **TONES** — the 64 internal tone slots, with STORE and RECALL against the part's tone.
@@ -125,7 +127,7 @@ in the Standalone build's own settings file, which the NVRAM folder does not inc
 project file, so this only matters for the Standalone.) If a song written on one machine isn't
 showing up on another after copying the NVRAM folder over, this file is almost certainly why -
 copy it too, or use the sequencer's own right-click **LOAD**/**SAVE** on the transport strip to
-export/import all 4 song slots as a single portable `.d110songs` file instead (a plain click
+export/import all 4 song slots as a single portable `.midiseq` file instead (a plain click
 there still saves/loads just the current song as a standard `.mid`).
 
 ## The memory card slot

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
+#include "D110Keyboard.h"
 #include "PluginProcessor.h"
 #include "sequencer/D110SequencerPanel.h"
 
@@ -223,83 +224,12 @@ private:
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D110MemoryCard)
 };
 
-// Minimal on-screen test keyboard, under its own handle band - foldable like the extended
-// editor's drawer, but by a separate action, and open by default since it's the most direct
-// way to hear the instrument without any MIDI cabling.
-//
-// A struck key enters by exactly the same path as a real note arriving on the MIDI port:
-// D110AudioProcessor::injectTestNote() hands it to the same collector (osMidiCollector) that
-// handleIncomingMidiMessage(MidiInput*, ...) does, so it goes through the emulated firmware,
-// moves the voice indicator and sounds with the real part assignment - nothing here talks to
-// the sound engine directly.
-//
-// Two ways to strike a key: the mouse, on the drawn keys, and - opt-in, right-click to
-// enable - the computer keyboard, in the layout every tracker (FastTracker2, Impulse
-// Tracker, OpenMPT, Renoise...) has used since the 1990s: two overlapping rows, the lower
-// one ZSXDCVGBHNJM,L.;/ starting at the current base octave, the upper one Q2W3ER5T6Y7UI9O0P
-// one octave above it. QWERTY and AZERTY differ only in which CHARACTER a given physical
-// key sends, not in the note it plays, so kTrackerKeys carries both and the chosen layout
-// just picks which column to compare incoming key text against.
-class D110Keyboard : public juce::Component {
-public:
-	explicit D110Keyboard(D110AudioProcessor &);
-	~D110Keyboard() override;
-
-	void paint(juce::Graphics &) override;
-	void resized() override;
-	void mouseDown(const juce::MouseEvent &) override;
-	void mouseDrag(const juce::MouseEvent &) override;
-	void mouseUp(const juce::MouseEvent &) override;
-	void mouseExit(const juce::MouseEvent &) override;
-	bool keyStateChanged(bool isKeyDown) override;
-	void focusLost(juce::Component::FocusChangeType) override;
-
-	// Reference height, in the same units as D110Panel::kRefH - what the owning editor adds
-	// to its own layout, the same way it already does for the handle band and the extended
-	// editor's drawer.
-	static constexpr float kRefH = 130.0f;
-
-private:
-	static constexpr int kOctaves = 2;
-	static constexpr int kLowestNote = 48; // C3
-
-	enum class PcLayout { qwerty, azerty };
-
-	struct KeyRect { juce::Rectangle<float> bounds; int note; bool black; };
-
-	// One physical key of the tracker layout: the note it plays, relative to the keyboard's
-	// current base octave, and which character it sends under each PC layout this offers.
-	struct TrackerKey { int semitoneFromBase; juce::juce_wchar qwerty; juce::juce_wchar azerty; };
-	static const std::vector<TrackerKey> &trackerKeys();
-
-	void rebuildKeys();
-	int keyAt(juce::Point<float>) const;
-	void setHeldNote(int note); // -1 releases (mouse/touch - only one held note at a time)
-	void changeOctave(int delta);
-	void sendNote(int note, float velocity, bool on); // honours channel/omni
-	void showContextMenu();
-	void releaseAllPcNotes();
-
-	D110AudioProcessor &processor;
-	int octaveShift = 0;
-	int heldNote = -1;
-	bool draggingKey = false; // mouse went down on a key, not on OCT-/OCT+
-
-	int midiChannel = 1;        // 1..16 - which channel injectTestNote() targets
-	bool omni = false;          // when on, every note goes out on all 16 channels at once
-	bool pcKeyboardEnabled = false;
-	PcLayout pcLayout = PcLayout::qwerty;
-	// One flag per trackerKeys() entry, so keyStateChanged() (a single "something changed"
-	// callback with no indication of which key) can diff against last-known state and fire
-	// note-on/off only for the keys that actually moved. Polling juce::KeyPress rather than
-	// overriding keyPressed(): that only fires on press, and a tracker needs release too.
-	std::vector<bool> pcKeyDown;
-
-	juce::Rectangle<float> captionBounds, octaveDownBounds, octaveUpBounds, keysBounds;
-	std::vector<KeyRect> whiteKeys, blackKeys;
-
-	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D110Keyboard)
-};
+// The minimal on-screen test keyboard (D110Keyboard, see D110Keyboard.h) sits under its
+// own handle band here, foldable like the extended editor's drawer but by a separate
+// action, and open by default since it's the most direct way to hear the instrument
+// without any MIDI cabling. In this plugin it reaches the firmware through
+// D110AudioProcessor::injectTestNote(), which hands notes to the same collector
+// (osMidiCollector) that handleIncomingMidiMessage(MidiInput*, ...) does.
 
 // Расширенный редактор - ящик, выезжающий из-под прибора.
 //
@@ -386,6 +316,14 @@ private:
 	enum class Tab { Parts, Tone, Rhythm, Patches, Timbres, Tones, System, Monitor, Utility };
 	static constexpr int kNumTabs = 9;
 
+	// The PATCHES tab's own two views, switched by a small sub-tab strip under the main
+	// one - the 64-patch list and the 8-part breakdown of whichever one is selected used to
+	// share the tab as a fixed 58/42 vertical split; shrinking the drawer past a certain
+	// height clipped the bottom of whichever section didn't have its own scroll (only the
+	// patch list does, via patchScroll). Splitting into two full-height sub-tabs instead
+	// means neither view is ever squeezed below what it needs, whatever the drawer's height.
+	enum class PatchesSubTab { AllPatches, PartsOfPatch };
+
 	// Один параметр партиала: подпись, смещение внутри его 58-байтной записи и предел.
 	struct ToneParam {
 		const char *name;
@@ -414,6 +352,8 @@ private:
 	void layoutTone(juce::Rectangle<float> area);
 	void layoutRhythm(juce::Rectangle<float> area);
 	void layoutPatches(juce::Rectangle<float> area);
+	void layoutPatchesList(juce::Rectangle<float> area);
+	void layoutPatchesParts(juce::Rectangle<float> area);
 	void layoutTimbres(juce::Rectangle<float> area);
 	void layoutTones(juce::Rectangle<float> area);
 	void layoutSystem(juce::Rectangle<float> area);
@@ -459,8 +399,12 @@ private:
 	int timbreScroll = 0;
 	int patchScroll = 0;
 	int toneScroll = 0;
-	int patchSlot = 0;    // патч, чьи партии показаны внизу вкладки PATCHES
+	int patchSlot = 0;    // патч, чьи партии показаны на под-вкладке PARTS OF PATCH
 	int toneSlot = 0;     // выбранная ячейка памяти тонов
+
+	// See PatchesSubTab's own comment.
+	PatchesSubTab patchesSubTab = PatchesSubTab::AllPatches;
+	std::array<juce::Rectangle<float>, 2> patchesSubTabBounds{};
 
 	// UTILITY's own scroll - unlike the other tabs (which page a fixed-size row list), this
 	// one stacks sections of unequal, growing height, so it scrolls in raw pixels rather than

@@ -42,6 +42,7 @@ struct Palette {
 	juce::Colour seqMetroBeat;
 	juce::Colour seqTrackFilled;
 	juce::Colour seqTrackEmpty;
+	juce::Colour seqArmDot; // ARM button's record-style circle when armed
 };
 
 Theme getTheme();

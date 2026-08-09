@@ -21,7 +21,7 @@
 namespace d110seq {
 
 // Appended after thirtySecond, not alphabetised/reordered - the enum's integer value is
-// what gets persisted (state XML, .d110songs), so inserting anywhere else would silently
+// what gets persisted (state XML, .midiseq), so inserting anywhere else would silently
 // reinterpret every existing save's quantize/step-duration setting as the wrong grid. half and
 // whole exist for step recording (see setStepDuration()) but, since this enum is shared with
 // quantizeTrack(), also become quantize-to-a-half/whole-note-grid options - unusual, but
@@ -256,6 +256,14 @@ public:
 	bool isTrackSoloed(int index) const;
 	bool trackHasEvents(int index) const;
 
+	// A user-given label, empty by default - shown in the panel in place of "PART N"/
+	// "RHYTHM" once set, and written into the track as a Track Name meta-event by
+	// saveMidiFile() (falling back to "PART N"/"RHYTHM" there if still empty, so an
+	// exported file is never left with anonymous tracks). Per-slot, like mute/solo/
+	// quantize above - a name is part of what makes a song's track what it is.
+	void setTrackName(int index, const juce::String &name);
+	juce::String getTrackName(int index) const;
+
 	// Undo for the editing operations below (quantizeTrack, clearTrack, deleteBars, copyBars,
 	// transposeBars, newSong, copyCurrentSongTo) - none of them checkpoints on its own; the
 	// caller (the UI) calls pushUndoSnapshot() right before applying one, exactly where it
@@ -348,6 +356,8 @@ public:
 	void setSlotTrackSoloed(int slot, int track, bool soloed);
 	QuantizeGrid slotTrackQuantize(int slot, int track) const;
 	void setSlotTrackQuantize(int slot, int track, QuantizeGrid grid);
+	juce::String slotTrackName(int slot, int track) const;
+	void setSlotTrackName(int slot, int track, const juce::String &name);
 
 	struct MetronomeClick {
 		int samplePosition;
@@ -383,6 +393,7 @@ private:
 		bool muted = false;
 		bool soloed = false;
 		QuantizeGrid quantize = QuantizeGrid::off;
+		juce::String name;
 	};
 
 	double gridBeats(QuantizeGrid grid) const;

@@ -8,11 +8,25 @@
   machine on its own thread with a headless OSD, and exposes the display, the sixteen buttons
   and the firmware's parameter memory. Opt-in (`D110_BUILD_MAME_BACKEND`), not built by default.
 - `plugin/Source/PluginProcessor.*`, `PluginEditor.*` - the JUCE plugin and the photo-composite panel.
+- `plugin/Source/D110Keyboard.h/.cpp` - the on-screen test keyboard (mouse piano + tracker-
+  style PC keyboard input, MIDI channel/omni routing via right-click), extracted out of
+  `PluginEditor.*` so it can be reused outside the plugin. Talks to its owner only through
+  `plugin/Source/D110KeyboardHost.h` (note injection + its own persisted config); both
+  `D110AudioProcessor` and `NonetSeqHost` (below) implement it.
 - `plugin/Source/sequencer/` - the D-20-style multitrack sequencer (`D110SequencerEngine` +
   `D110SequencerPanel`), a third foldable drawer alongside the editor and test keyboard. See
   [`sequencer.md`](sequencer.md). `plugin/sequencer_probe.cpp` and
   `plugin/sequencer_state_probe.cpp` are its headless tests (engine timing/quantize/step-
-  recording/undo/file-I/O, and the state-save round trip, respectively).
+  recording/undo/file-I/O, and the state-save round trip, respectively). `D110SequencerHost`
+  is the whole interface the panel needs from whatever embeds it (6 methods); `D110AudioProcessor`
+  implements it for the plugin, and `NonetSeqHost` + `NonetSeqMain.cpp` implement/wrap it (and
+  `D110KeyboardHost`, for its own embedded `D110Keyboard`) for `Nonet-Seq` - **Nonet
+  Sequencer**, the sequencer on its own, no firmware/ROMs/plugin wrapper, named apart from
+  the D-110 on purpose, see
+  [`sequencer.md`](sequencer.md#nonet-sequencer---the-independent-app).
+  `D110SequencerSongsFile.h/.cpp` (de)serializes the 4 song slots to/from XML, shared by the
+  plugin's own project state and both standalone-song-file paths (the plugin's `.midiseq`
+  export/import and this app's own settings file).
 - `plugin/mame.cmake` - the MAME library/include/define lists and how the subset was built.
 - `docs/` - the measured panel geometry and the SysEx address map, both derived by profiling
   rather than by eye. Every number in the code is justified there.

@@ -320,6 +320,8 @@ int D110SequencerEngine::getStepIndexInBar() const {
 
 void D110SequencerEngine::setTrackMuted(int index, bool muted) { trackAt(index).muted = muted; }
 bool D110SequencerEngine::isTrackMuted(int index) const { return trackAt(index).muted; }
+void D110SequencerEngine::setTrackName(int index, const juce::String &name) { trackAt(index).name = name; }
+juce::String D110SequencerEngine::getTrackName(int index) const { return trackAt(index).name; }
 void D110SequencerEngine::setTrackSoloed(int index, bool soloed) { trackAt(index).soloed = soloed; }
 bool D110SequencerEngine::isTrackSoloed(int index) const { return trackAt(index).soloed; }
 bool D110SequencerEngine::trackHasEvents(int index) const { return trackAt(index).events.getNumEvents() > 0; }
@@ -585,6 +587,12 @@ void D110SequencerEngine::setSlotTrackSoloed(int slot, int track, bool soloed) {
 QuantizeGrid D110SequencerEngine::slotTrackQuantize(int slot, int track) const {
 	return songTrackAt(slot, track).quantize;
 }
+juce::String D110SequencerEngine::slotTrackName(int slot, int track) const {
+	return songTrackAt(slot, track).name;
+}
+void D110SequencerEngine::setSlotTrackName(int slot, int track, const juce::String &name) {
+	songTrackAt(slot, track).name = name;
+}
 void D110SequencerEngine::setSlotTrackQuantize(int slot, int track, QuantizeGrid grid) {
 	snapTrackToGrid(songTrackAt(slot, track), grid);
 }
@@ -791,6 +799,14 @@ bool D110SequencerEngine::saveMidiFile(const juce::File &file) const {
 	for (int t = 0; t < kNumTracks; ++t) {
 		juce::MidiMessageSequence seq;
 		const int channel = channelForTrack(t);
+		// Track Name meta-event (FF 03) - the user's own name if they set one (see
+		// setTrackName()), otherwise the same "PART N"/"RHYTHM" label the panel falls back
+		// to, so a track never reaches the exported file unnamed.
+		const auto &trackName = trackAt(t).name;
+		const juce::String label = trackName.isNotEmpty()
+			? trackName
+			: (t == kRhythmTrack ? juce::String("RHYTHM") : ("PART " + juce::String(t + 1)));
+		seq.addEvent(juce::MidiMessage::textMetaEvent(3, label), 0.0);
 		// A Program Change at time 0, ahead of the track's own notes, so a receiving synth
 		// (including this same plugin, reimporting the file) starts the piece on
 		// approximately the sound that was live when this was exported. See setProgramSource's
@@ -863,11 +879,13 @@ bool D110SequencerEngine::loadMidiFile(const juce::File &file) {
 
 	for (int t = 0; t < kNumTracks; ++t) {
 		juce::MidiMessageSequence fresh;
+		juce::String newName; // stays empty if the source track carries no name of its own
 		const int srcIndex = startTrack + t;
 		if (srcIndex < mf.getNumTracks()) {
 			const auto *seq = mf.getTrack(srcIndex);
 			for (int i = 0; i < seq->getNumEvents(); ++i) {
 				auto msg = seq->getEventPointer(i)->message;
+				if (msg.isTrackNameEvent()) newName = msg.getTextFromTextMetaEvent();
 				// Tracks are note-only in this model (see captureEvent); drop meta
 				// events like End-Of-Track that MidiFile::writeTo appends per track,
 				// or they'd otherwise get emitted verbatim by renderInto().
@@ -878,6 +896,7 @@ bool D110SequencerEngine::loadMidiFile(const juce::File &file) {
 			fresh.updateMatchedPairs();
 		}
 		trackAt(t).events = std::move(fresh);
+		trackAt(t).name = newName;
 	}
 
 	setTempo(newTempo);

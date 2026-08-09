@@ -19,11 +19,25 @@ whatever MIDI channel the corresponding D-110 part is *currently* set to on the 
 re-routing a part's channel on the Parts/System tab immediately changes which channel that
 track's already-recorded notes come out on - and it's what makes copying notes from one track
 to another (see **Copy bar(s)**, below) carry only the pitch/timing across, never the channel.
+**In Nonet Sequencer** (see below), which has no SYSTEM page to read a channel map from,
+the channel readout is clickable instead - a 1-16 picker per track, shown in a different
+colour from the plugin's own read-only readout so it reads as a control there.
 
 Each row: **MUTE**, **SOLO** (soloing any track silences every non-soloed one), **ARM** (record-
-enable - arming one track disarms whatever else was armed; arming mid-take commits that take
-first rather than discarding it), a channel readout, and a filled/empty bar showing whether the
-track has any recorded events.
+enable, drawn as a small record-style dot - filled red while armed, a hollow ring otherwise;
+arming one track disarms whatever else was armed; arming mid-take commits that take first
+rather than discarding it), a channel readout, and a filled/empty bar showing whether the track
+has any recorded events. The far right of each row carries a bare digit ("1".."8", or "R" for
+rhythm) that always identifies the part, independent of whatever the row's own label is showing.
+
+That label is "PART N"/"RHYTHM" by default, but **right-click anywhere on a row for Rename
+track...** to give it a name of your own - shown here in place of the default label, and
+written into the track as a Track Name meta-event when exporting to `.mid` (falling back to
+the default label if never renamed, so an exported file's tracks are never left anonymous).
+Names round-trip: importing a `.mid` picks up whatever track names it already carries, and
+they're saved/restored with the rest of a song's state as usual. The same right-click menu
+also carries quantize and the destructive per-track operations (clear/delete/copy/transpose
+bars, below).
 
 ## Transport
 
@@ -147,12 +161,87 @@ buttons - a small dot marks which slots have content. **Right-click any slot but
 the *current* song into one of the other three (flagged "(overwrites it)" if that slot already
 has content) - a shortcut for starting the next song from a copy of this one.
 
+## MIDI Out (driving external gear)
+
+Whatever the sequencer plays back - the tracks themselves, plus the metronome click when it's
+set to play through the rhythm channel instead of its own click sound - also reaches the direct
+**MIDI Out** port, if one is selected (right-click the panel, *MIDI Out* submenu; the same menu
+also has *MIDI In*, for an external controller). This is a real OS MIDI port, independent of
+whatever the host routes in and out, so it works identically in the Standalone app and inside a
+DAW - plug in a MIDI interface and the sequencer can drive a real D-110, or any other synth,
+alongside (or instead of) the emulation. Each track still goes out on whatever channel its D-110
+part is live on (`channelForTrack`), same as internally. **Right-click STOP**'s MIDI panic also
+reaches this port, since a stuck note on real hardware has no "stop the plugin" to fall back on.
+
+Only the sequencer's own output takes this path in the plugin - host MIDI, the on-screen
+keyboard, and the *MIDI In* port itself are not echoed to *MIDI Out* there, since the plugin's
+own D-110 emulation is always available to hear what you're playing regardless. The independent
+sequencer app below has no such emulation, and does thru MIDI In to MIDI Out for that reason. A
+VST3 MIDI output bus a host could route on its own, without a physical cable, remains a possible
+follow-up for the *plugin* specifically, distinct from the standalone app right below, which
+already needs no firmware loaded at all.
+
+## Nonet Sequencer - the independent app
+
+**Nonet Sequencer** (binary `Nonet-Seq`, CMake target `Nonet-Seq`, source in
+`NonetSeqMain.cpp`/`NonetSeqHost.h/.cpp`) is the sequencer on its own - no firmware, no
+ROMs, no plugin wrapper, not even a sound engine. Named apart from the D-110 on purpose:
+it's a plain 9-track MIDI sequencer (a nonet), not tied to any one instrument. It's the
+same `D110SequencerPanel` and `D110SequencerEngine` as inside the plugin, in a bare window
+with a three-field toolbar (**MIDI In**, **MIDI Out** - click either to pick a system MIDI
+port, same device lists as the plugin's own Options menu - and **THEME**, this app's mini
+utility field, click to flip the window's light/dark palette; its label always shows the
+theme actually in effect, never a fixed word). Every track defaults to the factory D-110
+channel map (Part 1-8 -> MIDI channels 2-9, Rhythm -> 10) so a real D-110 on its own
+factory defaults just works from this app's MIDI Out without reconfiguring either side;
+driving something else, point its own parts/tracks at the same channels instead.
+Unlike the plugin's own MIDI Out (sequencer playback only, see above), this app also
+**thru's MIDI In straight to MIDI Out** - there's no internal synth here to hear what
+you're playing while you record, so without this a live controller would be silent.
+
+Underneath the transport is the same on-screen test keyboard the plugin has
+(`D110Keyboard`, see `D110Keyboard.h`, extracted out of `PluginEditor.*` behind a small
+`D110KeyboardHost` interface so both this app and the plugin can own one) - a two-octave
+mouse piano plus optional tracker-style PC keyboard input, right-click for its own MIDI
+routing menu (channel 1-16 or omni, i.e. which of the app's own MIDI Out channels a struck
+key targets - independent of which channel a track records on). Notes played on it go
+through the same MIDI In collector a real port's notes do, so they thru to MIDI Out and get
+captured while a track is armed, exactly like a real controller plugged into MIDI In.
+
+Its own state (all 4 song slots, MIDI port choice, theme, keyboard routing, and the same
+transport preferences the plugin persists) lives in its own settings file, separate from
+the plugin's:
+
+- Linux: `~/.config/Nonet Sequencer.settings`
+- macOS: `~/Library/Application Support/Nonet Sequencer.settings`
+- Windows: `%APPDATA%\Nonet Sequencer.settings`
+
+Everything else - recording, step recording, quantize, bar editing, undo, song slots,
+Load/Save - works exactly as described above, since it's the same panel and engine code.
+Deliberately Standalone only: there's no VST3/plugin-format build of this one.
+
+Timing comes from a real (silent) audio device callback rather than a GUI timer, the same
+reasoning as the native CPU core's own move off MAME's non-audio-thread stepping (see
+`CLAUDE.md`) - this app's whole reason to exist is MIDI timing accuracy for external gear,
+and a hardware-clocked callback has far less jitter than the message thread does. If no
+output device is available at all, it falls back to a plain timer instead (degraded, but
+still usable).
+
 ## Load / Save
 
 A plain click on **LOAD**/**SAVE** loads/saves just the *current* song as a standard `.mid`
 file (a Program Change is written ahead of each track's notes, from whatever sound is live on
 that part at export time). **Right-click** LOAD/SAVE for all 4 song slots at once, as a single
-portable `.d110songs` file.
+portable `.midiseq` file - an XML wrapper around a gzip-compressed standard MIDI file per
+track, plus the transport preferences below; not a raw memory snapshot, hence the name
+(renamed from `.d110songs` - a file saved under the old name still loads, it's the same
+format either way).
+
+Every file dialog in the app - these two, plus SysEx bank import/export and the memory
+snapshot save/load on the panel's own Options menu - shares one "last used folder", updated
+on every successful pick and offered as the starting point for the next dialog, in any of
+them, instead of each one independently resetting to the OS default. Persisted between runs
+the same way the rest of this state is.
 
 The sequencer's state (all 4 slots, plus transport preferences like tempo, metronome, loop mode)
 persists in the plugin's own project save the same way the firmware's NVRAM does - see
