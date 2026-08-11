@@ -1756,18 +1756,13 @@ void D110EditorPane::setValue(const Cell &c, int value) {
 		// Picking a tone (group or number, fields 0/1) here only ever writes those two
 		// bytes - unlike the real panel's own tone selection, which (found by diffing two
 		// of Alan's own memory snapshots, 2026-08-07) leaves the part in normal polyphonic
-		// assign whatever it picks. Left alone, a part previously set to POLY 1/2 (single
-		// assign - deliberate for whatever tone was there before, e.g. a mono bass patch)
-		// silently carries that setting onto the NEW tone too, and mt32emu's own single-assign
-		// handling then intermittently drops retriggered notes/chords under nothing more than
-		// ordinary fast playing (Part::playPoly() aborts the same key's still-active poly and
-		// bails out for the new one if that abort hasn't finished yet - a genuine timing race,
-		// not a hang, so it shows up as the note dying maybe half the time rather than always).
-		// Resetting to POLY 3 here matches what reselecting the same tone from the panel was
-		// observed to do; ASSIGN has its own directly editable field in this same tab if a
-		// user wants POLY 1/2 back for a tone picked this way.
-		if (c.area == Area::TimbreTemp && (c.field == 0 || c.field == 1))
-			processor.sendTimbreTempParam(c.index, 5, 2);
+		// assign whatever it picks. This used to also force ASSIGN to POLY 3 here, to work
+		// around mt32emu's Part::playPoly() intermittently dropping retriggered notes in
+		// POLY 1/2 (a synth-wide isAbortingPoly() gate blocking retriggers even when the
+		// partial pool had spare partials available) - that root cause is fixed directly in
+		// munt/mt32emu/src/Part.cpp now (2026-08-11), so POLY 1/2 inherited from a previous
+		// tone is no longer a problem and a user's deliberate ASSIGN choice, on this or any
+		// other tone, is no longer silently overridden.
 		break;
 	}
 	// Значение показывается сразу, не дожидаясь, пока прошивка его примет и таймер это
@@ -1782,19 +1777,6 @@ void D110EditorPane::setValue(const Cell &c, int value) {
 	for (auto &p : pendingEdits)
 		if (p.address == at) { p.value = uint8_t(v); p.sentMs = now; replaced = true; break; }
 	if (!replaced) pendingEdits.push_back({at, uint8_t(v), now});
-
-	// Mirrors the ASSIGN reset above into the same optimistic cache/pending-edit tracking the
-	// changed cell itself just got, so the ASSIGN column (if shown) updates immediately too
-	// instead of waiting for the next refreshFromInstrument() tick.
-	if (c.area == Area::TimbreTemp && (c.field == 0 || c.field == 1)) {
-		const size_t assignAt = size_t(D110CoreType::kRamTimbreTemp)
-		                       + size_t(c.index) * D110CoreType::kTimbreTempRecord + 5;
-		if (ramValid && assignAt < ram.size()) ram[assignAt] = 2;
-		bool assignReplaced = false;
-		for (auto &p : pendingEdits)
-			if (p.address == assignAt) { p.value = 2; p.sentMs = now; assignReplaced = true; break; }
-		if (!assignReplaced) pendingEdits.push_back({ assignAt, 2, now });
-	}
 
 	repaint();
 }

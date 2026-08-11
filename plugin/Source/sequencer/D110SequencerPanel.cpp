@@ -883,6 +883,7 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 		if (barPrevBounds.contains(p)) { eng.gotoBar(1); repaint(); return; }
 		if (barNextBounds.contains(p)) { eng.gotoBar(eng.getBarCount()); repaint(); return; }
 		if (stopBounds.contains(p)) { processor.midiPanic(); return; }
+		if (playBounds.contains(p)) { eng.gotoBar(1); eng.play(); repaint(); return; }
 		for (int t = 0; t < kNumTracks; ++t)
 			if (rows[static_cast<size_t>(t)].rowBounds.contains(p)) { showQuantizeMenu(t); return; }
 		for (int s = 0; s < D110SequencerEngine::kNumSongSlots; ++s)
@@ -950,7 +951,12 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 		return;
 	}
 
-	if (stopBounds.contains(p)) { eng.stop(); repaint(); return; }
+	// STOP no longer just halts the transport - renderInto() stops walking the event
+	// sequence the instant playing flips false, so a note-off scheduled later than the
+	// stop point was previously never emitted, leaving that voice stuck audible (and
+	// stuck showing in the Monitor tab) until someone found the right-click panic below.
+	// A plain MIDI panic here covers it the same way right-click STOP always has.
+	if (stopBounds.contains(p)) { eng.stop(); processor.midiPanic(); repaint(); return; }
 	if (playBounds.contains(p)) { eng.play(); repaint(); return; }
 	if (recBounds.contains(p)) {
 		if (eng.isRecording()) eng.stopRecording();

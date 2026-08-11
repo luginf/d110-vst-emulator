@@ -46,8 +46,16 @@ wheel, or the field shows the live value), a **time signature** field (click cyc
 - 4/4, 3/4, 6/8, 2/4, 5/4, 7/8 - right-click picks one directly), and bar navigation
 (prev/next buttons, a draggable **BAR n/total** readout).
 
-**Right-click STOP sends a MIDI panic** (all notes off on every channel) instead of stopping the
-transport - a quick way out of a stuck note without waiting for the take to end.
+**STOP** always sends a MIDI panic (all notes off on every channel) as well as halting the
+transport, so a note whose off was scheduled past the stop point (renderInto() stops walking the
+sequence the instant playback halts) never gets left stuck sounding, or stuck showing as an
+active voice on the Monitor tab.
+
+**Right-click STOP sends that same MIDI panic** without stopping the transport - a quick way out
+of a stuck note without waiting for the take to end.
+
+**Right-click PLAY starts from the beginning** (bar 1) instead of resuming from wherever the
+transport currently sits.
 
 Right-click the **BAR** readout for: *Go to bar...*, *Set punch in/out here* or *...*, and the
 all-tracks forms of **Delete bar(s)**, **Copy bar(s) to...** and **Transpose bar(s)** (see

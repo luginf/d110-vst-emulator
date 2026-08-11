@@ -69,7 +69,10 @@ behaviour. Don't duplicate that here; this file is about how to work in the repo
   `d110_native_editor_shot` render the whole editor UI to a PNG headlessly - the fast
   way to visually check UI changes without opening a DAW.
 - `munt/` - vendored sound engine with a couple of local fixes for D-110 (LCD
-  buffer/part-count, see `munt/mt32emu/src/Display.cpp`).
+  buffer/part-count, see `munt/mt32emu/src/Display.cpp`; single-assign/POLY-1-2 retrigger
+  drop, see `munt/mt32emu/src/Part.cpp`'s `playPoly()` - `Synth::abortingPoly` is a single
+  synth-wide flag, so it used to block a retrigger on partials that were already free, not
+  just ones genuinely still busy fading - see `plugin/native_assign_mode_probe.cpp`).
 - `docs/` - measured ground truth (panel pixel geometry, SysEx address map, factory
   defaults, memory card protocol). Code comments reference these; check here before
   guessing at firmware behaviour.

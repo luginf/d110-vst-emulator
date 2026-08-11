@@ -517,10 +517,22 @@ void Part::playPoly(const PatchCache cache[4], const MemParams::RhythmTemp *rhyt
 		return;
 	}
 
+	// D-110 local patch: isAbortingPoly() is a single synth-wide flag (Synth.h), not scoped
+	// to which partials it's actually fading - so below, it can't tell "the partials THIS
+	// note needs are still busy" from "some unrelated poly (possibly this very note's own
+	// same-key predecessor, see abortFirstPoly() below) happens to be fading somewhere
+	// else". If the pool already had enough free partials before any of that, this note's
+	// own allocPartial() calls further down are guaranteed to succeed regardless of what
+	// else is aborting - real hardware doesn't make a retriggered note wait out a fade it
+	// doesn't actually need partials from. Only fall back to waiting on isAbortingPoly()
+	// (matching freePartials()'s own hardware-confirmed voice-stealing behaviour) when the
+	// pool genuinely didn't have enough spare partials to begin with.
+	const bool hadEnoughFreePartials = synth->partialManager->getFreePartialCount() >= needPartials;
+
 	if ((patchTemp->patch.assignMode & 2) == 0) {
 		// Single-assign mode
 		abortFirstPoly(key);
-		if (synth->isAbortingPoly()) return;
+		if (!hadEnoughFreePartials && synth->isAbortingPoly()) return;
 	}
 
 	if (!synth->partialManager->freePartials(needPartials, partNum)) {
@@ -530,7 +542,7 @@ void Part::playPoly(const PatchCache cache[4], const MemParams::RhythmTemp *rhyt
 #endif
 		return;
 	}
-	if (synth->isAbortingPoly()) return;
+	if (!hadEnoughFreePartials && synth->isAbortingPoly()) return;
 
 	Poly *poly = synth->partialManager->assignPolyToPart(this);
 	if (poly == NULL) {
