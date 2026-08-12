@@ -1769,6 +1769,19 @@ target_include_directories(Nonet-Seq PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(Nonet-Seq PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)
 target_link_libraries(Nonet-Seq PRIVATE juce::juce_gui_extra juce::juce_audio_devices juce::juce_audio_basics)
 
+# D110KeyboardHost::isNoteActive() (the on-screen keyboard's "remote activity" LEDs) against
+# NonetSeqHost - no GUI, but still needs juce_events' message loop (see the probe's own
+# comment) for NonetSeqHost's juce::Timer fallback path.
+add_executable(d110_keyboard_activity_probe keyboard_activity_probe.cpp
+    Source/sequencer/NonetSeqHost.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp)
+target_include_directories(d110_keyboard_activity_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_keyboard_activity_probe PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(d110_keyboard_activity_probe PRIVATE
+    juce::juce_audio_devices juce::juce_audio_basics juce::juce_events juce::juce_core)
+
 if(D110_BUILD_MAME_BACKEND)
 
 # One-shot MAME-backed helper: produces a properly factory-reset nvram folder for

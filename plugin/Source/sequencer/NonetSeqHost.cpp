@@ -9,9 +9,15 @@ NonetSeqHost::NonetSeqHost() {
 	// map live off the firmware's own SYSTEM page), this app has no firmware, so
 	// trackChannels is real per-track state here, editable via setTrackChannel() - the
 	// panel's CH readout, clickable only when supportsTrackChannelEdit() is true.
+	// Tracks 9-15 (the extra 7, only reachable with extra tracks enabled - see
+	// D110SequencerHost::supportsExtraTracks()) get whatever channels the 9 above don't
+	// already use: 1, then 11-16.
 	for (int t = 0; t < d110seq::D110SequencerEngine::kNumTracks; ++t)
 		trackChannels[static_cast<size_t>(t)] =
 			t == d110seq::D110SequencerEngine::kRhythmTrack ? 10 : t + 2;
+	for (int t = d110seq::D110SequencerEngine::kNumTracks; t < d110seq::D110SequencerEngine::kMaxTracks; ++t)
+		trackChannels[static_cast<size_t>(t)] = t == d110seq::D110SequencerEngine::kNumTracks ? 1 : t + 1;
+	trackPrograms.fill(-1);
 	engine.setChannelSource([this](int trackIndex) { return trackChannels[static_cast<size_t>(trackIndex)]; });
 	// No live "current program" to report for saveMidiFile() - see setProgramSource()'s
 	// own comment on what returning < 0 means.
@@ -67,10 +73,38 @@ void NonetSeqHost::timerCallback() {
 void NonetSeqHost::advance(int numSamples) {
 	if (numSamples <= 0) return;
 
+	// PLAY/REC edge (precount included, on purpose - see the header comment): send whichever
+	// tracks have a Program Change set, once, before anything else this block might send, so
+	// an external synth on that channel has already switched patch by the time real notes
+	// (thru or sequenced) reach it.
+	const bool nowPlaying = engine.isPlaying();
+	if (nowPlaying && !wasPlayingForProgramSend) {
+		juce::MidiBuffer pcOut;
+		for (int t = 0; t < engine.activeTrackCount(); ++t) {
+			const int program = trackPrograms[static_cast<size_t>(t)];
+			if (program < 0) continue;
+			pcOut.addEvent(juce::MidiMessage::programChange(engine.channelForTrack(t), program), 0);
+		}
+		const juce::ScopedLock lock(osMidiLock);
+		if (osMidiOut != nullptr && pcOut.getNumEvents() > 0) osMidiOut->sendBlockOfMessagesNow(pcOut);
+	}
+	wasPlayingForProgramSend = nowPlaying;
+
 	// Whatever arrived on the system MIDI In port since the last block - the standalone
 	// app's only source of live notes, there being no host and no on-screen keyboard here.
 	juce::MidiBuffer fromPort;
 	midiCollector.removeNextBlockOfMessages(fromPort, numSamples);
+
+	// On-screen keyboard's remote-activity LEDs - see D110KeyboardHost::isNoteActive(). Both
+	// halves of what this app can hear go through here: fromPort is the system MIDI In port
+	// AND the on-screen keyboard's own notes (injectTestNote feeds the same midiCollector),
+	// sequencerOut (marked further below, once rendered) is playback.
+	for (const auto meta : fromPort) {
+		const auto &msg = meta.getMessage();
+		if (!msg.isNoteOnOrOff()) continue;
+		const int note = msg.getNoteNumber();
+		if (note >= 0 && note < 128) remoteNoteActive[static_cast<size_t>(note)].store(msg.isNoteOn());
+	}
 
 	// Thru'd straight to MIDI Out, unlike the plugin's own (sequencer-only) MIDI Out: the
 	// plugin always has its internal D-110 emulation to hear what you're playing while you
@@ -108,6 +142,12 @@ void NonetSeqHost::advance(int numSamples) {
 	juce::MidiBuffer sequencerOut;
 	engine.renderInto(sequencerOut, numSamples, currentSampleRate,
 	                   engine.getMetronomeEnabled() ? &clicks : nullptr);
+	for (const auto meta : sequencerOut) {
+		const auto &msg = meta.getMessage();
+		if (!msg.isNoteOnOrOff()) continue;
+		const int note = msg.getNoteNumber();
+		if (note >= 0 && note < 128) remoteNoteActive[static_cast<size_t>(note)].store(msg.isNoteOn());
+	}
 	// The metronome's audible click itself is not synthesized here - there is no audio
 	// output in this app worth the name (see the class header comment) - so only the
 	// visual LED strip and the "use rhythm channel" MIDI click (already inside
@@ -118,12 +158,34 @@ void NonetSeqHost::advance(int numSamples) {
 }
 
 void NonetSeqHost::handleIncomingMidiMessage(juce::MidiInput *, const juce::MidiMessage &m) {
+	// Rechannelized onto the on-screen keyboard's own selected channel first, same as
+	// D110AudioProcessor::handleIncomingMidiMessage() - otherwise an external USB controller
+	// keeps whatever channel it was sending on (usually 1) regardless of the CH picker here,
+	// while the virtual/PC keyboard (injectTestNote, always stamped with keyboardMidiChannel)
+	// looked like it worked fine.
+	lastMidiInActivityMs.store(juce::Time::getMillisecondCounter());
+	if (!keyboardOmni && m.getChannel() > 0) {
+		auto msg = m;
+		msg.setChannel(keyboardMidiChannel);
+		midiCollector.addMessageToQueue(msg);
+		return;
+	}
 	midiCollector.addMessageToQueue(m);
 }
 
 void NonetSeqHost::setTrackChannel(int track, int channel) {
-	if (track < 0 || track >= d110seq::D110SequencerEngine::kNumTracks) return;
+	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return;
 	trackChannels[static_cast<size_t>(track)] = juce::jlimit(1, 16, channel);
+}
+
+int NonetSeqHost::getTrackProgram(int track) const {
+	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return -1;
+	return trackPrograms[static_cast<size_t>(track)];
+}
+
+void NonetSeqHost::setTrackProgram(int track, int program) {
+	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return;
+	trackPrograms[static_cast<size_t>(track)] = program < 0 ? -1 : juce::jlimit(0, 127, program);
 }
 
 void NonetSeqHost::injectTestNote(int channel, int note, float velocity, bool on) {
@@ -150,11 +212,12 @@ void NonetSeqHost::setMidiOutputDevice(const juce::String &id) {
 }
 
 void NonetSeqHost::exportSequencerSongs(const juce::File &file) {
-	d110seq::exportSongsFile(engine, file);
+	// kMaxTracks unconditionally - see D110SequencerSongsFile.h's own comment on why.
+	d110seq::exportSongsFile(engine, file, d110seq::D110SequencerEngine::kMaxTracks);
 }
 
 void NonetSeqHost::importSequencerSongs(const juce::File &file) {
-	d110seq::importSongsFile(engine, file);
+	d110seq::importSongsFile(engine, file, d110seq::D110SequencerEngine::kMaxTracks);
 }
 
 void NonetSeqHost::midiPanic() {
@@ -165,6 +228,12 @@ void NonetSeqHost::midiPanic() {
 	}
 	const juce::ScopedLock lock(osMidiLock);
 	if (osMidiOut != nullptr) osMidiOut->sendBlockOfMessagesNow(panicOut);
+
+	// CC 123 above is an "all notes off" CONTROLLER message, not a literal note-off per note -
+	// isNoteActive()'s array only ever gets touched by real note-on/off (see advance()), so
+	// without this, the keyboard's remote-activity LEDs would stay lit forever after STOP/
+	// panic instead of clearing along with everything else.
+	for (auto &a : remoteNoteActive) a.store(false);
 }
 
 juce::File NonetSeqHost::settingsFile() {
@@ -194,6 +263,11 @@ void NonetSeqHost::loadSettings() {
 	engine.setLoopMode(static_cast<d110seq::LoopMode>(xml->getIntAttribute("seqLoopMode", 0)));
 	engine.setPunchIn(xml->getIntAttribute("seqPunchIn", engine.getPunchIn()));
 	engine.setPunchOut(xml->getIntAttribute("seqPunchOut", engine.getPunchOut()));
+	// Read before readSongsXml() below - setExtraTracksEnabled(false) would otherwise disarm
+	// a track >= kNumTracks that a stale "seqArmedTrack"-less state might still imply, though
+	// in practice armedTrack itself isn't persisted at all (transport state, deliberately not
+	// saved - see D110SequencerEngine::pushUndoSnapshot()'s own comment on the same point).
+	engine.setExtraTracksEnabled(xml->getIntAttribute("seqExtraTracks", 0) != 0);
 
 	keyboardMidiChannel = juce::jlimit(1, 16, xml->getIntAttribute("kbdMidiChannel", keyboardMidiChannel));
 	keyboardOmni = xml->getIntAttribute("kbdOmni", keyboardOmni ? 1 : 0) != 0;
@@ -201,10 +275,13 @@ void NonetSeqHost::loadSettings() {
 	keyboardPcLayout = juce::jlimit(0, 1, xml->getIntAttribute("kbdPcLayout", keyboardPcLayout));
 	uiThemeLight = xml->getIntAttribute("uiThemeLight", uiThemeLight ? 1 : 0) != 0;
 
-	for (int t = 0; t < d110seq::D110SequencerEngine::kNumTracks; ++t)
+	for (int t = 0; t < d110seq::D110SequencerEngine::kMaxTracks; ++t) {
 		setTrackChannel(t, xml->getIntAttribute("chTrack" + juce::String(t), trackChannels[static_cast<size_t>(t)]));
+		setTrackProgram(t, xml->getIntAttribute("pcTrack" + juce::String(t), -1));
+	}
 
-	d110seq::readSongsXml(engine, *xml);
+	// kMaxTracks unconditionally - see D110SequencerSongsFile.h's own comment on why.
+	d110seq::readSongsXml(engine, *xml, d110seq::D110SequencerEngine::kMaxTracks);
 }
 
 void NonetSeqHost::saveSettings() const {
@@ -226,6 +303,7 @@ void NonetSeqHost::saveSettings() const {
 	xml.setAttribute("seqLoopMode", static_cast<int>(engine.getLoopMode()));
 	xml.setAttribute("seqPunchIn", engine.getPunchIn());
 	xml.setAttribute("seqPunchOut", engine.getPunchOut());
+	xml.setAttribute("seqExtraTracks", engine.getExtraTracksEnabled() ? 1 : 0);
 
 	xml.setAttribute("kbdMidiChannel", keyboardMidiChannel);
 	xml.setAttribute("kbdOmni", keyboardOmni ? 1 : 0);
@@ -233,10 +311,13 @@ void NonetSeqHost::saveSettings() const {
 	xml.setAttribute("kbdPcLayout", keyboardPcLayout);
 	xml.setAttribute("uiThemeLight", uiThemeLight ? 1 : 0);
 
-	for (int t = 0; t < d110seq::D110SequencerEngine::kNumTracks; ++t)
+	for (int t = 0; t < d110seq::D110SequencerEngine::kMaxTracks; ++t) {
 		xml.setAttribute("chTrack" + juce::String(t), trackChannels[static_cast<size_t>(t)]);
+		xml.setAttribute("pcTrack" + juce::String(t), trackPrograms[static_cast<size_t>(t)]);
+	}
 
-	d110seq::writeSongsXml(engine, xml);
+	// kMaxTracks unconditionally - see D110SequencerSongsFile.h's own comment on why.
+	d110seq::writeSongsXml(engine, xml, d110seq::D110SequencerEngine::kMaxTracks);
 
 	settingsFile().getParentDirectory().createDirectory();
 	xml.writeTo(settingsFile());

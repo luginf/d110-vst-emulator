@@ -19,7 +19,7 @@
 // one octave above it. QWERTY and AZERTY differ only in which CHARACTER a given physical
 // key sends, not in the note it plays, so trackerKeys() carries both and the chosen layout
 // just picks which column to compare incoming key text against.
-class D110Keyboard : public juce::Component {
+class D110Keyboard : public juce::Component, private juce::Timer {
 public:
 	explicit D110Keyboard(D110KeyboardHost &);
 	~D110Keyboard() override;
@@ -57,6 +57,8 @@ private:
 	void sendNote(int note, float velocity, bool on); // honours channel/omni
 	void showContextMenu();
 	void releaseAllPcNotes();
+	bool isPcKeyDownForNote(int note) const;
+	void timerCallback() override; // polls host.isNoteActive() for remote/incoming activity
 
 	D110KeyboardHost &host;
 	int octaveShift = 0;

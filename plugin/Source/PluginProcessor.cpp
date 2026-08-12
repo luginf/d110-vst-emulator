@@ -127,7 +127,17 @@ D110AudioProcessor::D110AudioProcessor()
 }
 
 D110AudioProcessor::~D110AudioProcessor() {
+	flushLiveNvramToDisk();
 	closeSynth();
+}
+
+void D110AudioProcessor::flushLiveNvramToDisk() {
+	if (!core.isRunning()) return;
+	juce::MemoryBlock rams(D110CoreType::kRamSize);
+	juce::MemoryBlock memcs(D110CoreType::kCardSize);
+	if (core.getRam(static_cast<juce::uint8 *>(rams.getData()))
+	    && core.getCardImage(static_cast<juce::uint8 *>(memcs.getData())))
+		writeNvramFiles(rams, memcs);
 }
 
 void D110AudioProcessor::closeSynth() {
@@ -1165,6 +1175,16 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 }
 
 void D110AudioProcessor::handleIncomingMidiMessage(const juce::MidiMessage &message) {
+	// On-screen keyboard's remote-activity LEDs - see D110KeyboardHost::isNoteActive(). This
+	// runs once per event in the merged stream (see processBlock()'s own comment on why this
+	// one function already sees everything: host MIDI, the Standalone port, the on-screen
+	// keyboard's own notes, and sequencer playback), so a single check here covers all of
+	// them without needing a separate hook at each of those sources.
+	if (message.isNoteOnOrOff()) {
+		const int note = message.getNoteNumber();
+		if (note >= 0 && note < 128) remoteNoteActive[static_cast<size_t>(note)].store(message.isNoteOn());
+	}
+
 	// The control board gets its own copy first. On the real instrument one MIDI cable
 	// feeds both the CPU and the voice circuitry; here the CPU is MAME and the voice
 	// circuitry is mt32emu, so both have to be told. Without this the firmware never
@@ -1632,6 +1652,14 @@ void D110AudioProcessor::midiPanic() {
 		}
 		osMidiOut->sendBlockOfMessagesNow(panicOut);
 	}
+
+	// CC 123 above is an "all notes off" CONTROLLER message, not a literal note-off per note -
+	// isNoteActive()'s array only ever gets touched by real note-on/off (see
+	// handleIncomingMidiMessage(const juce::MidiMessage&)), so without this, the keyboard's
+	// remote-activity LEDs would stay lit forever after STOP/panic instead of clearing along
+	// with everything else. Safe to write here, on the message thread: plain atomics, same as
+	// every other writer of this array.
+	for (auto &a : remoteNoteActive) a.store(false);
 }
 
 // ---- the extended editor -----------------------------------------------------
@@ -1951,28 +1979,39 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	// recalls the sounds it was saved with instead of whatever the shared folder happens
 	// to hold now.
 	//
-	// While the machine is running the FILE on disk is stale: MAME only writes its NVRAM
-	// out when the machine exits. So take the live image straight from the core, and fall
-	// back to the file only when powered off.
-	juce::MemoryBlock rams;
-	if (core.isRunning()) {
-		rams.setSize(D110CoreType::kRamSize);
-		if (!core.getRam(static_cast<juce::uint8 *>(rams.getData()))) rams.reset();
-	}
-	if (rams.getSize() == 0) rams = readNvramFile("rams");
+	// Standalone deliberately skips this round trip: there is no "project" there beyond this
+	// one settings blob, which JUCE only re-saves on a clean window close - so a cached copy
+	// from days ago could, and did, silently overwrite fresher on-disk RAM the next time the
+	// app launched (setStateInformation runs unconditionally at startup, before the user does
+	// anything). The shared nvram files are already the single, always-current source of
+	// truth for Standalone (written on POWER OFF and, now, on quit - see
+	// flushLiveNvramToDisk()), so there is nothing for this blob to usefully add there.
+	// Kept for VST3/AU/etc, where a saved host project genuinely should carry the
+	// instrument's exact state with it.
+	if (wrapperType != wrapperType_Standalone) {
+		// While the machine is running the FILE on disk is stale: MAME only writes its NVRAM
+		// out when the machine exits. So take the live image straight from the core, and fall
+		// back to the file only when powered off.
+		juce::MemoryBlock rams;
+		if (core.isRunning()) {
+			rams.setSize(D110CoreType::kRamSize);
+			if (!core.getRam(static_cast<juce::uint8 *>(rams.getData()))) rams.reset();
+		}
+		if (rams.getSize() == 0) rams = readNvramFile("rams");
 
-	// Карта - по тому же правилу, что и батарейное ОЗУ: пока машина работает, файл на диске
-	// отстал, а живое содержимое лежит в ядре. Оно же отдаётся и для извлечённой карты, у
-	// которой в разделяемой памяти машины сейчас одни 0xFF.
-	juce::MemoryBlock memcs;
-	if (core.isRunning()) {
-		memcs.setSize(D110CoreType::kCardSize);
-		if (!core.getCardImage(static_cast<juce::uint8 *>(memcs.getData()))) memcs.reset();
-	}
-	if (memcs.getSize() == 0) memcs = readNvramFile("memcs");
+		// Карта - по тому же правилу, что и батарейное ОЗУ: пока машина работает, файл на
+		// диске отстал, а живое содержимое лежит в ядре. Оно же отдаётся и для извлечённой
+		// карты, у которой в разделяемой памяти машины сейчас одни 0xFF.
+		juce::MemoryBlock memcs;
+		if (core.isRunning()) {
+			memcs.setSize(D110CoreType::kCardSize);
+			if (!core.getCardImage(static_cast<juce::uint8 *>(memcs.getData()))) memcs.reset();
+		}
+		if (memcs.getSize() == 0) memcs = readNvramFile("memcs");
 
-	xml->setAttribute("nvramRams", packBlock(rams));
-	xml->setAttribute("nvramMemcs", packBlock(memcs));
+		xml->setAttribute("nvramRams", packBlock(rams));
+		xml->setAttribute("nvramMemcs", packBlock(memcs));
+	}
 	// Гнездо и движок защиты от записи - это положение вещей на приборе, такое же, как
 	// содержимое памяти: проект, сохранённый с вынутой картой, должен открыться с вынутой.
 	xml->setAttribute("cardInserted", core.cardInserted() ? 1 : 0);
@@ -2078,10 +2117,16 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 	// so loading a project sets it to what that project had, exactly as loading a bank into
 	// the hardware would. A plugin loaded WITHOUT a project touches none of this and simply
 	// finds the memory as it was last left.
-	const auto rams = unpackBlock(xml->getStringAttribute("nvramRams"));
-	const auto memcs = unpackBlock(xml->getStringAttribute("nvramMemcs"));
-	if (rams.getSize() > 0 || memcs.getSize() > 0)
-		writeNvramFiles(rams, memcs);
+	//
+	// Standalone never wrote this attribute to begin with (see getStateInformation) - guarded
+	// here too in case an older settings file still has one cached, so it can't clobber the
+	// shared nvram files with a stale snapshot on launch, which is what caused real data loss.
+	if (wrapperType != wrapperType_Standalone) {
+		const auto rams = unpackBlock(xml->getStringAttribute("nvramRams"));
+		const auto memcs = unpackBlock(xml->getStringAttribute("nvramMemcs"));
+		if (rams.getSize() > 0 || memcs.getSize() > 0)
+			writeNvramFiles(rams, memcs);
+	}
 
 	// Проект старше этой возможности карту не вынимал, поэтому по умолчанию она на месте.
 	// Содержимое её при этом уже лежит в файле выше, и ядро подхватит его при включении даже

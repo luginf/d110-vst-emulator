@@ -8,6 +8,7 @@
 // length.
 
 #include "Source/sequencer/D110SequencerEngine.h"
+#include "Source/sequencer/D110SequencerSongsFile.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1454,6 +1455,77 @@ void testUndo() {
 	}
 }
 
+// Nonet Sequencer's extra 7 tracks (kNumTracks..kMaxTracks-1) - never reachable in the D-110
+// plugin (nothing here ever calls setExtraTracksEnabled(true) unless the test does it itself,
+// exactly matching how the plugin's own code never does either).
+void testExtraTracks() {
+	std::printf("-- extra tracks --\n");
+	D110SequencerEngine engine;
+	engine.setChannelSource(defaultChannelForTrack);
+	engine.setTempo(120.0);
+	engine.setPrecountBars(0);
+
+	check(!engine.getExtraTracksEnabled(), "extra tracks off by default");
+	check(engine.activeTrackCount() == D110SequencerEngine::kNumTracks,
+	      "activeTrackCount is kNumTracks (9) by default");
+
+	const int extraTrack = D110SequencerEngine::kNumTracks + 2; // index 11, "TRACK 12"
+
+	// Recording into a track beyond kNumTracks works at the data level even before extra
+	// tracks are enabled - only renderInto()/saveMidiFile() respect activeTrackCount(), not
+	// armTrack()/captureEvent() themselves (kMaxTracks is the real physical bound - see their
+	// own jasserts).
+	engine.armTrack(extraTrack);
+	engine.startRecording();
+	engine.captureEvent(juce::MidiMessage::noteOn(1, (juce::uint8)60, (juce::uint8)100), 0.0);
+	engine.captureEvent(juce::MidiMessage::noteOff(1, (juce::uint8)60), 0.5);
+	engine.stopRecording();
+	check(engine.trackHasEvents(extraTrack), "extra track has the recorded note");
+
+	engine.gotoBar(1);
+	engine.play();
+	auto whileDisabled = renderBlock(engine, 44100, 44100.0); // 1s, well past the 0.5-beat note
+	bool soundedWhileDisabled =
+	    std::any_of(whileDisabled.begin(), whileDisabled.end(), [](const CapturedEvent &e) { return e.message.isNoteOn(); });
+	check(!soundedWhileDisabled, "extra track does NOT sound while extra tracks are disabled");
+	engine.stop();
+
+	engine.setExtraTracksEnabled(true);
+	check(engine.activeTrackCount() == D110SequencerEngine::kMaxTracks,
+	      "activeTrackCount is kMaxTracks (16) once enabled");
+	check(engine.trackHasEvents(extraTrack), "extra track's content survived while it was hidden");
+
+	engine.gotoBar(1);
+	engine.play();
+	auto whileEnabled = renderBlock(engine, 44100, 44100.0);
+	bool soundedWhileEnabled = std::any_of(whileEnabled.begin(), whileEnabled.end(), [](const CapturedEvent &e) {
+		return e.message.isNoteOn() && e.message.getNoteNumber() == 60;
+	});
+	check(soundedWhileEnabled, "extra track DOES sound once extra tracks are enabled");
+	engine.stop();
+
+	// Disabling while armed on a hidden track disarms it - see
+	// D110SequencerEngine::setExtraTracksEnabled()'s own comment on why.
+	engine.armTrack(extraTrack);
+	check(engine.getArmedTrack() == extraTrack, "extra track armed while enabled");
+	engine.setExtraTracksEnabled(false);
+	check(engine.getArmedTrack() == -1, "disabling extra tracks disarms a track beyond kNumTracks");
+
+	// D110SequencerSongsFile round-trips a track beyond kNumTracks when told to cover
+	// kMaxTracks, independent of activeTrackCount() at the time - Nonet Sequencer's own host
+	// always passes kMaxTracks (see D110SequencerSongsFile.h's own comment on why: a track's
+	// content must never depend on whether the toggle happened to be on at save time).
+	{
+		juce::XmlElement xml("Test");
+		d110seq::writeSongsXml(engine, xml, D110SequencerEngine::kMaxTracks);
+		D110SequencerEngine engine2;
+		engine2.setChannelSource(defaultChannelForTrack);
+		d110seq::readSongsXml(engine2, xml, D110SequencerEngine::kMaxTracks);
+		check(engine2.trackHasEvents(extraTrack),
+		      "extra track content round-trips through writeSongsXml/readSongsXml at kMaxTracks");
+	}
+}
+
 } // namespace
 
 int main() {
@@ -1485,6 +1557,7 @@ int main() {
 	testStepRecording();
 	testTransposeBars();
 	testUndo();
+	testExtraTracks();
 
 	if (failures == 0) {
 		std::printf("\nALL PASSED\n");

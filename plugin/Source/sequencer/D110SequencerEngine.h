@@ -60,9 +60,32 @@ class D110SequencerEngine {
 public:
 	static constexpr int kNumTracks = 9;      // 0-7 = D-110 parts 1-8, 8 = rhythm
 	static constexpr int kRhythmTrack = kNumTracks - 1;
+	// 7 more generic MIDI tracks (9-15, "TRACK 10".."TRACK 16") beyond the base 9 - Nonet
+	// Sequencer only (see D110SequencerHost::supportsExtraTracks()), never the D-110 plugin,
+	// which never calls setExtraTracksEnabled(true) and so never sees activeTrackCount() rise
+	// above kNumTracks. The tracks array is always physically sized to kMaxTracks regardless
+	// of host - the extra 7 empty Track slots cost nothing meaningful in the plugin, and
+	// keeping one array size (rather than a second, smaller one for "extra" tracks) means
+	// every existing per-track method just works unmodified once its own bound check is
+	// widened to kMaxTracks.
+	static constexpr int kMaxTracks = 16;
 	static constexpr int kNumSongSlots = 4;   // 4 independent songs, switchable in the UI
 
 	D110SequencerEngine();
+
+	// Nonet Sequencer only - see kMaxTracks above. Off by default and only ever turned on by
+	// a host with supportsExtraTracks() true, so activeTrackCount() stays kNumTracks (9) for
+	// the plugin forever. Disabling while a track >= kNumTracks is armed/recording disarms it
+	// first (same as armTrack(-1) would), so a hidden track can't keep silently capturing.
+	void setExtraTracksEnabled(bool enabled);
+	bool getExtraTracksEnabled() const { return extraTracksEnabled; }
+	// How many of the kMaxTracks physical track slots are currently "in play" - rendered by
+	// renderInto(), exported by saveMidiFile(), reachable by deleteBars()/copyBars()/
+	// transposeBars()'s trackIndex<0 "every track" form. kNumTracks normally, kMaxTracks once
+	// extra tracks are enabled. Content on a track beyond this is never lost (undo snapshots,
+	// song-slot switches and D110SequencerSongsFile's own persistence always cover the full
+	// kMaxTracks regardless of this flag) - just not currently playing/exported.
+	int activeTrackCount() const { return extraTracksEnabled ? kMaxTracks : kNumTracks; }
 
 	// Which live MIDI channel (1-16) a track plays on. The engine asks rather than
 	// stores this itself, so it stays decoupled from the D-110's own System-area
@@ -420,9 +443,10 @@ private:
 	juce::MemoryBlock serializeTrack(const juce::MidiMessageSequence &events) const;
 	void deserializeTrack(juce::MidiMessageSequence &events, const void *data, size_t size) const;
 
-	std::array<Track, kNumTracks> tracks;
+	std::array<Track, kMaxTracks> tracks;
 	std::function<int(int)> channelSource;
 	std::function<int(int)> programSource;
+	bool extraTracksEnabled = false;
 
 	// Storage for slots other than currentSlot - see selectSongSlot()'s own comment for why
 	// songs[currentSlot] itself is stale/unused (the live members above are authoritative
@@ -431,14 +455,14 @@ private:
 		double tempoBpm = 120.0;
 		int timeSigNum = 4;
 		int timeSigDen = 4;
-		std::array<Track, kNumTracks> tracks;
+		std::array<Track, kMaxTracks> tracks;
 	};
 	std::array<Song, kNumSongSlots> songs;
 	int currentSlot = 0;
 
 	// See pushUndoSnapshot()/undo() above.
 	struct UndoSnapshot {
-		std::array<Track, kNumTracks> tracks;
+		std::array<Track, kMaxTracks> tracks;
 		std::array<Song, kNumSongSlots> songs;
 		int currentSlot;
 	};

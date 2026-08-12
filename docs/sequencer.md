@@ -13,7 +13,8 @@ that talks to the rest of the plugin, through a `channelForTrack` callback.
 
 ## Tracks and channels
 
-9 tracks: **Part 1-8**, then **Rhythm**. A track is not free-standing - it always plays on
+9 tracks: **Part 1-8**, then **Rhythm** (16 in Nonet Sequencer, with extra tracks on - see
+below). A track is not free-standing - it always plays on
 whatever MIDI channel the corresponding D-110 part is *currently* set to on the SYSTEM page
 (Rhythm is fixed on channel 10). This is read live at playback time, not stored per event, so
 re-routing a part's channel on the Parts/System tab immediately changes which channel that
@@ -196,16 +197,21 @@ already needs no firmware loaded at all.
 ROMs, no plugin wrapper, not even a sound engine. Named apart from the D-110 on purpose:
 it's a plain 9-track MIDI sequencer (a nonet), not tied to any one instrument. It's the
 same `D110SequencerPanel` and `D110SequencerEngine` as inside the plugin, in a bare window
-with a three-field toolbar (**MIDI In**, **MIDI Out** - click either to pick a system MIDI
-port, same device lists as the plugin's own Options menu - and **THEME**, this app's mini
-utility field, click to flip the window's light/dark palette; its label always shows the
-theme actually in effect, never a fixed word). Every track defaults to the factory D-110
+with a three-field toolbar (a small LED, lit while a message is actually arriving on
+**MIDI In**; **MIDI In**, **MIDI Out** - click either to pick a system MIDI port, same
+device lists as the plugin's own Options menu - and **THEME**, this app's mini utility
+field, click to flip the window's light/dark palette; its label always shows the theme
+actually in effect, never a fixed word). Every track defaults to the factory D-110
 channel map (Part 1-8 -> MIDI channels 2-9, Rhythm -> 10) so a real D-110 on its own
 factory defaults just works from this app's MIDI Out without reconfiguring either side;
 driving something else, point its own parts/tracks at the same channels instead.
 Unlike the plugin's own MIDI Out (sequencer playback only, see above), this app also
 **thru's MIDI In straight to MIDI Out** - there's no internal synth here to hear what
 you're playing while you record, so without this a live controller would be silent.
+Whatever arrives on MIDI In is rechannelized onto the on-screen keyboard's own selected
+channel first (unless it's set to Omni), exactly like the plugin's Standalone MIDI In port
+does - so a physical USB controller follows the keyboard's CH picker the same way the
+virtual/PC keyboard already did, instead of always keeping whatever channel it sends on.
 
 Underneath the transport is the same on-screen test keyboard the plugin has
 (`D110Keyboard`, see `D110Keyboard.h`, extracted out of `PluginEditor.*` behind a small
@@ -215,6 +221,12 @@ routing menu (channel 1-16 or omni, i.e. which of the app's own MIDI Out channel
 key targets - independent of which channel a track records on). Notes played on it go
 through the same MIDI In collector a real port's notes do, so they thru to MIDI Out and get
 captured while a track is armed, exactly like a real controller plugged into MIDI In.
+Its keys light up for two independent reasons: struck directly here (mouse or PC-tracker
+key - instant, no polling) or any note reaching the app another way - external MIDI In or
+sequencer playback - polled from the same activity a small lock-free array records at ~30Hz,
+so a note played by a remote controller or by the sequencer itself shows on the keyboard the
+same as one played by hand. `midiPanic()` (STOP's all-notes-off) clears it along with
+everything else.
 
 Its own state (all 4 song slots, MIDI port choice, theme, keyboard routing, and the same
 transport preferences the plugin persists) lives in its own settings file, separate from
@@ -228,12 +240,40 @@ Everything else - recording, step recording, quantize, bar editing, undo, song s
 Load/Save - works exactly as described above, since it's the same panel and engine code.
 Deliberately Standalone only: there's no VST3/plugin-format build of this one.
 
+### Extra tracks (10-16)
+
+Nonet Sequencer only - the D-110 plugin's own sequencer stays fixed at 9 tracks (Parts 1-8 +
+Rhythm), since that's all a D-110 part-wise structure has any use for. **Right-click the blank
+strip right of BACK, above the track rows,** for **Activate extra tracks (16 total)** - once
+on, two buttons appear there, **1-9** and **10-16**, switching the track list between the
+original 9 and 7 more plain MIDI tracks (**TRACK 10** .. **TRACK 16**, defaulting to whatever
+channels the first 9 don't already use: 1, then 11-16). Both buttons stay hidden - and the
+track list stays the ordinary 9 rows - until extra tracks are turned on; turning them back off
+jumps the view back to the 1-9 page automatically. Extra tracks work exactly like the other 9
+- MUTE/SOLO/ARM, per-track channel (click the CH readout), rename, quantize, bar editing,
+recording, step recording, MIDI Out, `.mid`/`.midiseq` export-import - undo, song slots and
+`.midiseq` save/load always cover all 16 regardless of whether the toggle is on, so a track's
+own content is never lost by switching it off and back on, only hidden from view/playback
+meanwhile.
+
 Timing comes from a real (silent) audio device callback rather than a GUI timer, the same
 reasoning as the native CPU core's own move off MAME's non-audio-thread stepping (see
 `CLAUDE.md`) - this app's whole reason to exist is MIDI timing accuracy for external gear,
 and a hardware-clocked callback has far less jitter than the message thread does. If no
 output device is available at all, it falls back to a plain timer instead (degraded, but
 still usable).
+
+### Per-track Program Change
+
+Nonet Sequencer only, same reasoning as the per-track channel edit above: the plugin's
+tracks feed the live firmware directly, which already has its own patch per part, so
+there's nothing for a Program Change to usefully select there. Click a track's **CH**
+readout (same entry point as changing its channel) for a **Program Change...** item at the
+bottom of that menu - pick a program 1-128, or leave it blank for none (a trailing `*` on
+the CH readout marks a track that has one set). Whichever tracks have a program set get it
+sent, once, over MIDI Out the moment **PLAY** or **REC** starts (precount included, so an
+external synth has already switched patch before any notes arrive) - not re-sent mid-song,
+since a track only ever holds one fixed program for the whole song slot.
 
 ## Load / Save
 

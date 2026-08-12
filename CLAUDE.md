@@ -37,9 +37,17 @@ behaviour. Don't duplicate that here; this file is about how to work in the repo
   `D110MemoryCard` = the memory card slot widget.
 - `plugin/Source/D110Keyboard.h/.cpp` - the on-screen test keyboard drawer (mouse piano +
   tracker-style PC keyboard input, MIDI channel/omni via right-click), independently
-  foldable in the plugin, open by default. Lives outside `PluginEditor.*` and talks to its
-  owner only through `plugin/Source/D110KeyboardHost.h` (note injection + its own persisted
-  config), so it's also embedded, unfoldable, in `Nonet-Seq` (see below) - `D110AudioProcessor`
+  foldable in the plugin, open by default. Keys light up for two independent reasons: struck
+  directly here (mouse/PC keyboard - instant, no polling) or `D110KeyboardHost::isNoteActive()`
+  (any note reaching the app another way - external MIDI In, sequencer playback, a DAW host
+  track - a small lock-free per-note array the host's audio/MIDI thread writes to, polled by
+  this component's own 30Hz timer). `midiPanic()` clears that whole array, since its CC
+  64/123 "all notes off" is a controller message, not literal note-offs the array would
+  otherwise ever see. `plugin/keyboard_activity_probe.cpp` covers both write paths (direct
+  injection and sequencer playback) against `NonetSeqHost`. Lives outside `PluginEditor.*`
+  and talks to its owner only through `plugin/Source/D110KeyboardHost.h` (note injection + its
+  own persisted config), so it's also embedded, unfoldable, in `Nonet-Seq` (see below) -
+  `D110AudioProcessor`
   implements that interface for the plugin, `NonetSeqHost` for Nonet Sequencer.
 - `plugin/Source/sequencer/` - a D-20-style multitrack MIDI sequencer, added 2026-08-05,
   since grown to also cover step recording, undo, bar-range delete/copy/transpose, a MIDI
@@ -48,7 +56,7 @@ behaviour. Don't duplicate that here; this file is about how to work in the repo
   model - deliberately D-110-agnostic (own internal clock, note-only
   `juce::MidiMessageSequence` per track, MIDI-file, quantize and step-recording logic),
   talking to whatever embeds it only through a `channelForTrack` callback. `D110SequencerPanel`
-  is the JUCE UI drawer, talking to its host only through `D110SequencerHost` (6 methods) -
+  is the JUCE UI drawer, talking to its host only through `D110SequencerHost` (12 methods) -
   `D110AudioProcessor` implements that interface for the plugin, `NonetSeqHost` implements
   it for `Nonet-Seq` (**Nonet Sequencer** - CMake target and binary both `Nonet-Seq`), the
   independent sequencer app, deliberately named apart from the D-110 - Standalone-only, no
@@ -56,7 +64,13 @@ behaviour. Don't duplicate that here; this file is about how to work in the repo
   the plugin has (for direct test-play/MIDI-routing, no fold - always visible), direct
   system MIDI In/Out, and its own settings file. 9 tracks (D-110 Parts 1-8 by their
   live SYSTEM-area channel inside the plugin, or a fixed factory-default channel map in the
-  independent app, plus a rhythm track fixed on channel 10); state persists in
+  independent app, plus a rhythm track fixed on channel 10) - Nonet Sequencer only
+  (`supportsExtraTracks()`) can go up to `kMaxTracks` (16): right-click above the track rows
+  for "Activate extra tracks", see `docs/sequencer.md`. The plugin's own engine instance
+  never enables this, so it stays exactly 9 tracks/`kRhythmTrack` pinned at index 8
+  regardless. Nonet Sequencer only, also, (`supportsProgramChange()`) can give any track a
+  fixed Program Change (click its CH readout), sent once over MIDI Out when PLAY/REC starts.
+  State persists in
   `getStateInformation`/`setStateInformation` the same way the firmware NVRAM does (plugin)
   or its own settings file (independent app), both via the shared `D110SequencerSongsFile.h/.cpp`.
   `plugin/sequencer_probe.cpp` and `plugin/sequencer_state_probe.cpp` are its headless tests

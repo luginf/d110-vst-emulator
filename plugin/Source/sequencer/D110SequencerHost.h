@@ -1,7 +1,7 @@
 #pragma once
 
 // The whole surface D110SequencerPanel actually needs from whatever it's embedded in -
-// six required methods plus two optional ones below, deliberately, so the panel (like the
+// six required methods plus six optional ones below, deliberately, so the panel (like the
 // engine underneath it) doesn't have to depend on the full D-110 plugin. D110AudioProcessor
 // implements this for the plugin; NonetSeqHost implements it for Nonet Sequencer, the
 // independent sequencer app, which has no firmware, no ROMs, and nothing else to power on.
@@ -41,4 +41,25 @@ public:
 	// default (Part 1-8 -> channels 2-9, Rhythm -> 10).
 	virtual bool supportsTrackChannelEdit() const { return false; }
 	virtual void setTrackChannel(int /*track*/, int /*channel*/) {}
+
+	// Optional: whether this host lets the panel offer D110SequencerEngine's extra 7 tracks
+	// (see D110SequencerEngine::kMaxTracks) at all. False by default - the D-110 plugin's
+	// sequencer is always exactly the 9 D-110-shaped tracks (Parts 1-8 + Rhythm); the actual
+	// enable/disable flag and track data live on the engine itself
+	// (setExtraTracksEnabled()/getExtraTracksEnabled(), reachable via getSequencer()), so
+	// this is purely a capability gate for the panel's own "activate extra tracks" right-click
+	// menu and page-switch buttons - NonetSeqHost is the only override, returning true.
+	virtual bool supportsExtraTracks() const { return false; }
+
+	// Optional: whether this host lets a track have its own MIDI Program Change (0-127,
+	// -1 = none), sent once over MIDI Out at the moment PLAY/REC starts - lets an external,
+	// non-D-110 synth on that track's channel pick the right patch without a separate manual
+	// step. False by default, same reasoning as supportsTrackChannelEdit(): the plugin's
+	// tracks feed the live firmware directly, which already has its own patch per part, so
+	// there's nothing for a Program Change to usefully select. NonetSeqHost is the only
+	// override; the values themselves are real per-track state there (see setTrackProgram()),
+	// not something read live off anything else.
+	virtual bool supportsProgramChange() const { return false; }
+	virtual int getTrackProgram(int /*track*/) const { return -1; }
+	virtual void setTrackProgram(int /*track*/, int /*program*/) {}
 };

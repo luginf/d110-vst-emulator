@@ -45,9 +45,18 @@ D110Keyboard::D110Keyboard(D110KeyboardHost &h) : host(h) {
 	pcKeyDown.assign(trackerKeys().size(), false);
 	setWantsKeyboardFocus(true);
 	rebuildKeys();
+
+	// Just fast enough that a short note visibly lights its key (see
+	// D110KeyboardHost::isNoteActive()) without repainting this small strip needlessly often -
+	// remote activity (external MIDI In, sequencer playback, a DAW host's own track) is
+	// asynchronous, so nothing else would otherwise trigger a repaint when it starts or stops.
+	// Mouse/PC-keyboard input on this component stays instant either way - those already
+	// repaint() on their own the moment the state actually changes, see setHeldNote()/
+	// keyStateChanged().
+	startTimerHz(30);
 }
 
-D110Keyboard::~D110Keyboard() { setHeldNote(-1); releaseAllPcNotes(); }
+D110Keyboard::~D110Keyboard() { stopTimer(); setHeldNote(-1); releaseAllPcNotes(); }
 
 void D110Keyboard::sendNote(int note, float velocity, bool on) {
 	if (omni) {
@@ -124,8 +133,21 @@ bool D110Keyboard::keyStateChanged(bool /*isKeyDown*/) {
 		sendNote(kLowestNote + octaveShift * 12 + keys[i].semitoneFromBase, 0.85f, down);
 		used = true;
 	}
+	if (used) repaint(); // a tracker key just lit/unlit - see isPcKeyDownForNote()
 	return used;
 }
+
+// Whether any currently-down PC-tracker key plays this exact note - two physical keys can
+// map to the same note (the lower/upper rows overlap by an octave), so this is a search
+// rather than a single lookup. Only ever called from paint(), over ~29 visible keys.
+bool D110Keyboard::isPcKeyDownForNote(int note) const {
+	const auto &keys = trackerKeys();
+	for (size_t i = 0; i < keys.size(); ++i)
+		if (pcKeyDown[i] && kLowestNote + octaveShift * 12 + keys[i].semitoneFromBase == note) return true;
+	return false;
+}
+
+void D110Keyboard::timerCallback() { repaint(); }
 
 void D110Keyboard::focusLost(juce::Component::FocusChangeType) { releaseAllPcNotes(); }
 
@@ -211,14 +233,21 @@ void D110Keyboard::paint(juce::Graphics &g) {
 	paintButton(octaveDownBounds, "-");
 	paintButton(octaveUpBounds, "+");
 
+	// Lit for three reasons, checked cheapest-first: held by the mouse, held by a PC-tracker
+	// key, or currently sounding somewhere else in the app (external MIDI In, sequencer
+	// playback, a DAW host track - see D110KeyboardHost::isNoteActive()). All three just mean
+	// "this note is on right now" as far as the key's colour is concerned.
+	auto isLit = [this](int note) {
+		return note == heldNote || isPcKeyDownForNote(note) || host.isNoteActive(note);
+	};
 	for (const auto &k : whiteKeys) {
-		g.setColour(k.note == heldNote ? pal.keyWhiteHeld : pal.keyWhite);
+		g.setColour(isLit(k.note) ? pal.keyWhiteHeld : pal.keyWhite);
 		g.fillRect(k.bounds.reduced(1.0f, 0.0f));
 		g.setColour(pal.keyWhiteBorder);
 		g.drawRect(k.bounds, 1.0f);
 	}
 	for (const auto &k : blackKeys) {
-		g.setColour(k.note == heldNote ? pal.keyBlackHeld : pal.keyBlack);
+		g.setColour(isLit(k.note) ? pal.keyBlackHeld : pal.keyBlack);
 		g.fillRect(k.bounds);
 	}
 

@@ -19,12 +19,22 @@
 
 namespace d110seq {
 
-void writeSongsXml(const D110SequencerEngine &engine, juce::XmlElement &xml);
-void readSongsXml(D110SequencerEngine &engine, const juce::XmlElement &xml);
+// numTracks defaults to D110SequencerEngine::kNumTracks (9, the D-110 plugin's own fixed
+// count) so every existing call site is unaffected. Nonet Sequencer's own callers pass
+// D110SequencerEngine::kMaxTracks explicitly, unconditionally - regardless of whether extra
+// tracks are currently enabled, so a track beyond kNumTracks is never silently dropped by a
+// save/export made while the toggle happened to be off (see
+// D110SequencerEngine::activeTrackCount()'s own comment on why hidden content is kept).
+void writeSongsXml(const D110SequencerEngine &engine, juce::XmlElement &xml,
+                    int numTracks = D110SequencerEngine::kNumTracks);
+void readSongsXml(D110SequencerEngine &engine, const juce::XmlElement &xml,
+                   int numTracks = D110SequencerEngine::kNumTracks);
 
 // Returns a short status string suitable for showing the user either way (success or
 // failure), the same wording D110AudioProcessor::lastImportMessage already used.
-juce::String exportSongsFile(const D110SequencerEngine &engine, const juce::File &file);
-juce::String importSongsFile(D110SequencerEngine &engine, const juce::File &file);
+juce::String exportSongsFile(const D110SequencerEngine &engine, const juce::File &file,
+                              int numTracks = D110SequencerEngine::kNumTracks);
+juce::String importSongsFile(D110SequencerEngine &engine, const juce::File &file,
+                              int numTracks = D110SequencerEngine::kNumTracks);
 
 } // namespace d110seq

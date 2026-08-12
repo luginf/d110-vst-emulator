@@ -22,4 +22,13 @@ public:
 	// 0 = QWERTY, 1 = AZERTY.
 	virtual int getKeyboardPcLayout() const = 0;
 	virtual void setKeyboardPcLayout(int layout) = 0;
+
+	// For the on-screen keyboard's own activity LEDs: true if `note` (0-127, any channel) is
+	// currently sounding anywhere in the app - external MIDI In, sequencer playback, or (in
+	// the plugin) the DAW host's own track - as opposed to what was struck directly on this
+	// keyboard, which it already tracks itself (held mouse/PC key state, lit instantly with
+	// no need to go through this). Backed by a small lock-free array the host's audio/MIDI
+	// thread writes to at the same point every one of those sources funnels through anyway;
+	// read here from the keyboard's own low-Hz timer, on the message thread.
+	virtual bool isNoteActive(int note) const = 0;
 };

@@ -20,10 +20,16 @@ constexpr int kToolbarHeight = 28;
 // always-visible since this app has no other menu to tuck them into) and a mini utility
 // field for THEME, the one setting this standalone app needs a way to change that the
 // D-110 plugin tucks into its Utility tab instead.
-class Toolbar : public juce::Component {
+class Toolbar : public juce::Component, private juce::Timer {
 public:
 	Toolbar(NonetSeqHost &h, std::function<void()> onThemeChangedIn)
-		: host(h), onThemeChanged(std::move(onThemeChangedIn)) {}
+		: host(h), onThemeChanged(std::move(onThemeChangedIn)) {
+		// Just fast enough that a single incoming note visibly flashes the LED (see
+		// isMidiInActive()'s own 120ms window) without repainting the whole toolbar needlessly
+		// often - MIDI activity is asynchronous (OS MIDI thread) so nothing else would
+		// otherwise trigger a repaint when it starts or stops.
+		startTimerHz(30);
+	}
 
 	void paint(juce::Graphics &g) override {
 		const auto &pal = d110ui::palette();
@@ -31,12 +37,24 @@ public:
 
 		auto b = getLocalBounds().toFloat().reduced(4.0f, 3.0f);
 		themeRect = b.removeFromRight(90.0f).reduced(3.0f, 0.0f);
+		auto ledStrip = b.removeFromLeft(10.0f);
+		midiInLedBounds = ledStrip.withSizeKeepingCentre(8.0f, 8.0f);
+		b.removeFromLeft(4.0f);
 		inRect = b.removeFromLeft(b.getWidth() * 0.5f).reduced(3.0f, 0.0f);
 		outRect = b.reduced(3.0f, 0.0f);
 
 		paintField(g, inRect, "MIDI In: " + labelFor(NonetSeqHost::midiInputs(), host.getMidiInputId()));
 		paintField(g, outRect, "MIDI Out: " + labelFor(NonetSeqHost::midiOutputs(), host.getMidiOutputId()));
 		paintField(g, themeRect, d110ui::getTheme() == d110ui::Theme::Light ? "LIGHT" : "DARK");
+
+		// Lit for real incoming MIDI on the system port only (see NonetSeqHost::isMidiInActive())
+		// - not the on-screen/PC keyboard, so it's a straight answer to "is anything actually
+		// reaching this app from my controller", the question that's hard to tell just from
+		// whether notes come out the other end.
+		g.setColour(host.getMidiInputId().isEmpty() ? pal.seqMetroBeat.withAlpha(0.12f)
+		                                             : (host.isMidiInActive() ? pal.seqMetroBeat
+		                                                                      : pal.seqMetroBeat.withAlpha(0.25f)));
+		g.fillEllipse(midiInLedBounds);
 	}
 
 	void mouseDown(const juce::MouseEvent &e) override {
@@ -51,6 +69,8 @@ public:
 	}
 
 private:
+	void timerCallback() override { repaint(); }
+
 	static juce::String labelFor(const juce::Array<juce::MidiDeviceInfo> &devs, const juce::String &id) {
 		if (id.isEmpty()) return "(none)";
 		for (const auto &d : devs)
@@ -95,7 +115,7 @@ private:
 
 	NonetSeqHost &host;
 	std::function<void()> onThemeChanged;
-	juce::Rectangle<float> inRect, outRect, themeRect;
+	juce::Rectangle<float> inRect, outRect, themeRect, midiInLedBounds;
 };
 
 class MainComponent : public juce::Component {

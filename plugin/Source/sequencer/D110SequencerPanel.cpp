@@ -8,6 +8,15 @@ using d110seq::D110SequencerEngine;
 
 namespace {
 constexpr int kNumTracks = D110SequencerEngine::kNumTracks;
+constexpr int kMaxTracks = D110SequencerEngine::kMaxTracks;
+
+// "PART N" for the 8 D-110 parts, "RHYTHM" for track 8, "TRACK N" for the 7 extra tracks (9-15,
+// Nonet Sequencer only) - shared by paint() and every dialog/menu below that names a track.
+juce::String defaultTrackLabel(int t) {
+	if (t == D110SequencerEngine::kRhythmTrack) return "RHYTHM";
+	if (t < kNumTracks) return "PART " + juce::String(t + 1);
+	return "TRACK " + juce::String(t + 1);
+}
 
 // enabled=false dims the button (used only by UNDO, greyed out while its stack is empty) -
 // distinct from active, which picks the on/off colour pair rather than an alpha.
@@ -361,10 +370,62 @@ void D110SequencerPanel::showTrackChannelMenu(int track) {
 	const int current = engine().channelForTrack(track);
 	juce::PopupMenu m;
 	for (int ch = 1; ch <= 16; ++ch) m.addItem(ch, "Channel " + juce::String(ch), true, ch == current);
+	// Item IDs 1-16 are channels (above); 100 is the Program Change prompt, out of that range
+	// so the two never collide - see promptForTrackProgram().
+	if (processor.supportsProgramChange()) {
+		const int program = processor.getTrackProgram(track);
+		m.addSeparator();
+		m.addItem(100, "Program Change: " + (program < 0 ? juce::String("none") : juce::String(program + 1)) + "...");
+	}
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
 	                 [this, track](int result) {
+		                 if (result == 100) { promptForTrackProgram(track); return; }
 		                 if (result < 1 || result > 16) return;
 		                 processor.setTrackChannel(track, result);
+		                 repaint();
+	                 });
+}
+
+// Only ever called when processor.supportsProgramChange() - see D110SequencerHost.h. Values
+// entered/shown 1-128 (standard musician-facing patch numbering); stored/sent as raw MIDI
+// 0-127 - see NonetSeqHost::setTrackProgram()/getTrackProgram().
+void D110SequencerPanel::promptForTrackProgram(int track) {
+	const int current = processor.getTrackProgram(track);
+	auto *aw = new juce::AlertWindow(
+		"Program Change",
+		"Sent once on this track's channel when PLAY or REC starts, so an external synth "
+		"picks the right patch on its own. Leave blank to send none.",
+		juce::AlertWindow::NoIcon);
+	aw->addTextEditor("program", current < 0 ? juce::String() : juce::String(current + 1), "Program (1-128):");
+	aw->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
+	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track](int result) {
+		if (result == 1) {
+			const juce::String text = aw->getTextEditorContents("program").trim();
+			processor.setTrackProgram(track, text.isEmpty() ? -1 : juce::jlimit(1, 128, text.getIntValue()) - 1);
+			repaint();
+		}
+		delete aw;
+	}));
+}
+
+// Only reachable when processor.supportsExtraTracks() - see D110SequencerHost.h. Right-click
+// anywhere in extraTracksZoneBounds, whether or not extra tracks are currently on - this is
+// the only way to turn them on in the first place.
+void D110SequencerPanel::showExtraTracksMenu() {
+	auto &eng = engine();
+	const bool on = eng.getExtraTracksEnabled();
+	juce::PopupMenu m;
+	m.addItem(1, "Activate extra tracks (16 total)", true, on);
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
+	                 [this](int result) {
+		                 if (result != 1) return;
+		                 auto &e = engine();
+		                 e.setExtraTracksEnabled(!e.getExtraTracksEnabled());
+		                 // Switching off: page 1 would otherwise keep showing tracks that no
+		                 // longer play/export/undo as a group - jump back to the page that's
+		                 // always meaningful.
+		                 if (!e.getExtraTracksEnabled()) trackPage = 0;
 		                 repaint();
 	                 });
 }
@@ -372,8 +433,7 @@ void D110SequencerPanel::showTrackChannelMenu(int track) {
 // Empty input clears back to the default "PART N"/"RHYTHM" label (isNotEmpty() in
 // D110SequencerEngine::saveMidiFile()/paint() below both read an empty name as "not set").
 void D110SequencerPanel::promptForRenameTrack(int track) {
-	const bool isRhythm = track == d110seq::D110SequencerEngine::kRhythmTrack;
-	const juce::String defaultName = isRhythm ? "RHYTHM" : ("PART " + juce::String(track + 1));
+	const juce::String defaultName = defaultTrackLabel(track);
 	auto *aw = new juce::AlertWindow(
 		"Rename track", "Shown here and in the MIDI file this track is exported to. Leave blank for \""
 			+ defaultName + "\".",
@@ -392,8 +452,7 @@ void D110SequencerPanel::promptForRenameTrack(int track) {
 }
 
 void D110SequencerPanel::confirmClearTrack(int track) {
-	const bool isRhythm = track == d110seq::D110SequencerEngine::kRhythmTrack;
-	const juce::String name = isRhythm ? "RHYTHM" : ("PART " + juce::String(track + 1));
+	const juce::String name = defaultTrackLabel(track);
 	auto *aw = new juce::AlertWindow(
 		"Clear this track?",
 		"This clears every recorded event on " + name
@@ -496,9 +555,7 @@ void D110SequencerPanel::promptForPunchRange() {
 // warning icon the same way confirmClearTrack() does, rather than acting straight from the menu.
 void D110SequencerPanel::promptForDeleteBars(int track) {
 	auto &eng = engine();
-	const bool isRhythm = track == d110seq::D110SequencerEngine::kRhythmTrack;
-	const juce::String scope =
-		track < 0 ? "every track" : (isRhythm ? "RHYTHM" : ("PART " + juce::String(track + 1)));
+	const juce::String scope = track < 0 ? "every track" : defaultTrackLabel(track);
 	auto *aw = new juce::AlertWindow(
 		"Delete bar(s)",
 		"Removes the given bar range from " + scope
@@ -528,9 +585,7 @@ void D110SequencerPanel::promptForDeleteBars(int track) {
 // that reflow can't be undone either.
 void D110SequencerPanel::promptForCopyBars(int track) {
 	auto &eng = engine();
-	const bool isRhythm = track == d110seq::D110SequencerEngine::kRhythmTrack;
-	const juce::String scope =
-		track < 0 ? "every track, independently" : (isRhythm ? "RHYTHM" : ("PART " + juce::String(track + 1)));
+	const juce::String scope = track < 0 ? "every track, independently" : defaultTrackLabel(track);
 	auto *aw = new juce::AlertWindow(
 		"Copy bar(s)",
 		"Copies the given bar range and inserts it at the destination bar on " + scope
@@ -541,11 +596,12 @@ void D110SequencerPanel::promptForCopyBars(int track) {
 	aw->addTextEditor("dest", juce::String(eng.getBarCount() + 1), "Destination bar:");
 	// Only a single track's worth of notes can go to a chosen OTHER track - copying "every
 	// track" always keeps each one going to its own same track, so they stay aligned (see
-	// copyBars()'s own comment on srcTrack == destTrack == -1).
+	// copyBars()'s own comment on srcTrack == destTrack == -1). Offers every currently ACTIVE
+	// track as a destination, not just the base 9, so an extra track can be a copy target too
+	// once enabled.
 	if (track >= 0) {
 		juce::StringArray names;
-		for (int t = 0; t < d110seq::D110SequencerEngine::kNumTracks; ++t)
-			names.add(t == d110seq::D110SequencerEngine::kRhythmTrack ? "RHYTHM" : ("PART " + juce::String(t + 1)));
+		for (int t = 0; t < eng.activeTrackCount(); ++t) names.add(defaultTrackLabel(t));
 		aw->addComboBox("destTrack", names, "Destination track:");
 		aw->getComboBoxComponent("destTrack")->setSelectedItemIndex(track, juce::dontSendNotification);
 	}
@@ -572,9 +628,7 @@ void D110SequencerPanel::promptForCopyBars(int track) {
 // still checkpointed for UNDO since it can touch a lot of notes at once.
 void D110SequencerPanel::promptForTransposeBars(int track) {
 	auto &eng = engine();
-	const bool isRhythm = track == d110seq::D110SequencerEngine::kRhythmTrack;
-	const juce::String scope =
-		track < 0 ? "every track, independently" : (isRhythm ? "RHYTHM" : ("PART " + juce::String(track + 1)));
+	const juce::String scope = track < 0 ? "every track, independently" : defaultTrackLabel(track);
 	auto *aw = new juce::AlertWindow(
 		"Transpose bar(s)",
 		"Shifts the pitch of every note in the given bar range on " + scope
@@ -671,6 +725,14 @@ void D110SequencerPanel::confirmNewSong() {
 	}));
 }
 
+int D110SequencerPanel::trackForRow(int row) const {
+	return row + (trackPage == 0 ? 0 : kNumTracks);
+}
+
+int D110SequencerPanel::rowsOnCurrentPage() const {
+	return trackPage == 0 ? kNumTracks : (kMaxTracks - kNumTracks);
+}
+
 void D110SequencerPanel::layout() {
 	auto area = getLocalBounds().toFloat();
 	if (area.getWidth() < 1.0f || area.getHeight() < 1.0f) return;
@@ -730,32 +792,47 @@ void D110SequencerPanel::layout() {
 	stepDotBounds = colS(0.265f, 0.075f);
 	restBounds = colS(0.350f, 0.115f);
 	backBounds = colS(0.475f, 0.115f);
-	stepInfoBounds = colS(0.600f, 0.400f);
+	// Narrower than before (was 0.600-1.000) to leave room for the extra-tracks zone below,
+	// right of it - the "Bar N step M" text it shows rarely needs the full width it used to
+	// have.
+	stepInfoBounds = colS(0.600f, 0.150f);
+	// Nonet Sequencer only (processor.supportsExtraTracks()) - right-click anywhere in
+	// extraTracksZoneBounds always opens "Activate extra tracks" (see showExtraTracksMenu());
+	// the two page buttons inside it only draw/hit-test once that's on (see paint()/
+	// mouseDown()). Computed unconditionally either way - cheap, and simpler than threading a
+	// capability check through layout() too.
+	extraTracksZoneBounds = colS(0.760f, 0.225f);
+	trackPage1Bounds = colS(0.760f, 0.110f);
+	trackPage2Bounds = colS(0.875f, 0.110f);
 	area.removeFromTop(juce::jmax(2.0f, area.getHeight() * 0.015f));
 
+	// Row height always divides by kNumTracks (9), even on page 1 (only 7 real tracks) - so
+	// switching pages never changes row height, just how many rows have a track behind them
+	// (rowsOnCurrentPage()). Page 1's 2 unused row slots simply stay blank at the bottom.
 	const float rowH = area.getHeight() / float(kNumTracks);
 	const float rw = area.getWidth();
 	auto colR = [&](juce::Rectangle<float> row, float frac, float widthFrac) {
 		return juce::Rectangle<float>(row.getX() + rw * frac, row.getY(), rw * widthFrac - 4.0f,
 		                               row.getHeight());
 	};
-	for (int t = 0; t < kNumTracks; ++t) {
-		auto row = area.removeFromTop(rowH);
+	for (int rowIdx = 0; rowIdx < rowsOnCurrentPage(); ++rowIdx) {
+		const int t = trackForRow(rowIdx);
+		auto rowArea = area.removeFromTop(rowH);
 		auto &r = rows[static_cast<size_t>(t)];
-		r.rowBounds = row;
-		r.label = colR(row, 0.000f, 0.190f);
-		r.channelReadout = colR(row, 0.195f, 0.100f);
+		r.rowBounds = rowArea;
+		r.label = colR(rowArea, 0.000f, 0.190f);
+		r.channelReadout = colR(rowArea, 0.195f, 0.100f);
 		// MUTE/SOLO narrower than before (Alan: too wide) and ARM down to a small square
 		// around its own record-style dot (see paintArmButton) rather than a text button -
 		// the freed width goes to the activity bar and the new part-number reminder below.
-		r.muteBounds = colR(row, 0.300f, 0.085f);
-		r.soloBounds = colR(row, 0.390f, 0.085f);
-		r.armBounds = colR(row, 0.480f, 0.065f);
-		r.activityBounds = colR(row, 0.555f, 0.340f);
+		r.muteBounds = colR(rowArea, 0.300f, 0.085f);
+		r.soloBounds = colR(rowArea, 0.390f, 0.085f);
+		r.armBounds = colR(rowArea, 0.480f, 0.065f);
+		r.activityBounds = colR(rowArea, 0.555f, 0.340f);
 		// Extreme right: just the bare digit ("1".."8") or "R" for rhythm - a compact
 		// reminder of which part this is, independent of whatever custom name/CH the rest
 		// of the row shows (see setTrackName()).
-		r.partNumberBounds = colR(row, 0.905f, 0.080f);
+		r.partNumberBounds = colR(rowArea, 0.905f, 0.080f);
 	}
 }
 
@@ -834,10 +911,19 @@ void D110SequencerPanel::paint(juce::Graphics &g) {
 		           stepInfoBounds, juce::Justification::centredLeft);
 	}
 
-	for (int t = 0; t < kNumTracks; ++t) {
+	// Page-switch buttons - Nonet Sequencer only, and only once extra tracks are actually on
+	// (see D110SequencerHost::supportsExtraTracks()/showExtraTracksMenu()). Right-clicking
+	// extraTracksZoneBounds to turn extras on/off works either way - see mouseDown().
+	if (processor.supportsExtraTracks() && eng.getExtraTracksEnabled()) {
+		paintToggleButton(g, trackPage1Bounds, "1-9", trackPage == 0);
+		paintToggleButton(g, trackPage2Bounds, "10-16", trackPage == 1);
+	}
+
+	for (int rowIdx = 0; rowIdx < rowsOnCurrentPage(); ++rowIdx) {
+		const int t = trackForRow(rowIdx);
 		const auto &r = rows[static_cast<size_t>(t)];
 		const bool isRhythm = t == D110SequencerEngine::kRhythmTrack;
-		const juce::String defaultLabel = isRhythm ? "RHYTHM" : ("PART " + juce::String(t + 1));
+		const juce::String defaultLabel = defaultTrackLabel(t);
 		const juce::String customName = eng.getTrackName(t);
 
 		g.setColour(pal.seqInactiveText);
@@ -850,7 +936,10 @@ void D110SequencerPanel::paint(juce::Graphics &g) {
 		// and a plain readout in the plugin, where the channel only ever follows the live
 		// firmware's own SYSTEM page.
 		g.setColour(processor.supportsTrackChannelEdit() ? pal.value : pal.handleLabel);
-		g.drawText("CH " + juce::String(eng.channelForTrack(t)), r.channelReadout,
+		// Trailing "*" = this track has a Program Change set (see showTrackChannelMenu()) -
+		// just a presence hint, the readout's too narrow for the actual program number.
+		const bool hasProgram = processor.supportsProgramChange() && processor.getTrackProgram(t) >= 0;
+		g.drawText("CH " + juce::String(eng.channelForTrack(t)) + (hasProgram ? "*" : ""), r.channelReadout,
 		           juce::Justification::centredLeft);
 
 		paintToggleButton(g, r.muteBounds, "MUTE", eng.isTrackMuted(t));
@@ -884,8 +973,14 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 		if (barNextBounds.contains(p)) { eng.gotoBar(eng.getBarCount()); repaint(); return; }
 		if (stopBounds.contains(p)) { processor.midiPanic(); return; }
 		if (playBounds.contains(p)) { eng.gotoBar(1); eng.play(); repaint(); return; }
-		for (int t = 0; t < kNumTracks; ++t)
+		if (processor.supportsExtraTracks() && extraTracksZoneBounds.contains(p)) {
+			showExtraTracksMenu();
+			return;
+		}
+		for (int rowIdx = 0; rowIdx < rowsOnCurrentPage(); ++rowIdx) {
+			const int t = trackForRow(rowIdx);
 			if (rows[static_cast<size_t>(t)].rowBounds.contains(p)) { showQuantizeMenu(t); return; }
+		}
 		for (int s = 0; s < D110SequencerEngine::kNumSongSlots; ++s)
 			if (slotBounds[static_cast<size_t>(s)].contains(p)) { showCopySongMenu(); return; }
 		return;
@@ -987,8 +1082,16 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 		tempoDragStartValue = eng.getTempo();
 		return;
 	}
+	if (processor.supportsExtraTracks() && eng.getExtraTracksEnabled()) {
+		// layout(), not just repaint(): rows[] only gets the OTHER page's bounds computed
+		// once layout() actually runs over it - a bare repaint() would paint page 1's rows
+		// with whatever stale (likely zero-sized, never laid out) bounds they last had.
+		if (trackPage1Bounds.contains(p)) { trackPage = 0; layout(); repaint(); return; }
+		if (trackPage2Bounds.contains(p)) { trackPage = 1; layout(); repaint(); return; }
+	}
 
-	for (int t = 0; t < kNumTracks; ++t) {
+	for (int rowIdx = 0; rowIdx < rowsOnCurrentPage(); ++rowIdx) {
+		const int t = trackForRow(rowIdx);
 		const auto &r = rows[static_cast<size_t>(t)];
 		if (r.muteBounds.contains(p)) { eng.setTrackMuted(t, !eng.isTrackMuted(t)); repaint(); return; }
 		if (r.soloBounds.contains(p)) { eng.setTrackSoloed(t, !eng.isTrackSoloed(t)); repaint(); return; }

@@ -170,6 +170,11 @@ public:
 	// enum, so this header doesn't need to know that type exists.
 	int getKeyboardPcLayout() const override { return keyboardPcLayout; }
 	void setKeyboardPcLayout(int layout) override { keyboardPcLayout = juce::jlimit(0, 1, layout); }
+	// See D110KeyboardHost.h and handleIncomingMidiMessage(const juce::MidiMessage &)'s own
+	// comment for where remoteNoteActive actually gets written.
+	bool isNoteActive(int note) const override {
+		return note >= 0 && note < 128 && remoteNoteActive[static_cast<size_t>(note)].load();
+	}
 
 	// The custom-drawn part of the interface's light/dark theme (Utility tab -> THEME) -
 	// the photographed panel and its LED-style indicators sit outside this, since those
@@ -544,6 +549,12 @@ private:
 	bool keyboardPcInput = false;
 	int keyboardPcLayout = 0;
 
+	// See isNoteActive() above - one flag per MIDI note number, written from the audio thread
+	// (handleIncomingMidiMessage(const juce::MidiMessage&), the single point every note
+	// reaching the firmware already passes through: host MIDI, the Standalone port, the
+	// on-screen keyboard's own notes, and sequencer playback), read from the message thread.
+	std::array<std::atomic<bool>, 128> remoteNoteActive{};
+
 	// See getUiThemeLight()/setUiThemeLight() above.
 	bool uiThemeLight = false;
 	bool debugModeEnabled = false;
@@ -589,6 +600,12 @@ private:
 	// to pick up next time it starts, and reads it back out again.
 	void writeNvramFiles(const juce::MemoryBlock &rams, const juce::MemoryBlock &memcs) const;
 	juce::MemoryBlock readNvramFile(const juce::String &name) const;
+
+	// core.stop() (called from setPoweredOn(false)) is normally the only place the shared
+	// nvram files get written - see setPoweredOn()'s own comment. That only fires on an
+	// explicit POWER OFF, so an instance destroyed while still powered on would otherwise
+	// lose every edit since the last power-off. Called from the destructor as a safety net.
+	void flushLiveNvramToDisk();
 
 	// The sequencer's 4-slot song content (tempo/timesig/tracks/mute/solo/quantize, NOT the
 	// workspace prefs) as XML attributes on whatever element is passed in - shared by

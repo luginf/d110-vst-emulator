@@ -12,13 +12,16 @@
   style PC keyboard input, MIDI channel/omni routing via right-click), extracted out of
   `PluginEditor.*` so it can be reused outside the plugin. Talks to its owner only through
   `plugin/Source/D110KeyboardHost.h` (note injection + its own persisted config); both
-  `D110AudioProcessor` and `NonetSeqHost` (below) implement it.
+  `D110AudioProcessor` and `NonetSeqHost` (below) implement it. Keys light up both instantly
+  when struck locally and, polled at ~30Hz, for any note reaching the app another way
+  (external MIDI In, sequencer playback, a DAW host track) via `D110KeyboardHost::isNoteActive()`.
+  `plugin/keyboard_activity_probe.cpp` is its headless test, against `NonetSeqHost`.
 - `plugin/Source/sequencer/` - the D-20-style multitrack sequencer (`D110SequencerEngine` +
   `D110SequencerPanel`), a third foldable drawer alongside the editor and test keyboard. See
   [`sequencer.md`](sequencer.md). `plugin/sequencer_probe.cpp` and
   `plugin/sequencer_state_probe.cpp` are its headless tests (engine timing/quantize/step-
   recording/undo/file-I/O, and the state-save round trip, respectively). `D110SequencerHost`
-  is the whole interface the panel needs from whatever embeds it (6 methods); `D110AudioProcessor`
+  is the whole interface the panel needs from whatever embeds it (12 methods); `D110AudioProcessor`
   implements it for the plugin, and `NonetSeqHost` + `NonetSeqMain.cpp` implement/wrap it (and
   `D110KeyboardHost`, for its own embedded `D110Keyboard`) for `Nonet-Seq` - **Nonet
   Sequencer**, the sequencer on its own, no firmware/ROMs/plugin wrapper, named apart from

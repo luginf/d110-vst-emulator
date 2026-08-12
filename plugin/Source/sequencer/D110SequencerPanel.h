@@ -44,7 +44,10 @@ private:
 	void showQuantizeMenu(int track);
 	void promptForRenameTrack(int track);
 	// Only ever called when processor.supportsTrackChannelEdit() - see D110SequencerHost.h.
+	// Also offers a "Program Change..." entry when processor.supportsProgramChange().
 	void showTrackChannelMenu(int track);
+	// Only ever called when processor.supportsProgramChange() - see D110SequencerHost.h.
+	void promptForTrackProgram(int track);
 	void showMetronomeModeMenu();
 	void confirmClearTrack(int track);
 	// Right-click any song-slot button: copy the CURRENT song into one of the other 3 slots -
@@ -56,6 +59,19 @@ private:
 	void showLoadMenu();
 	void showSaveMenu();
 	void cycleLoopMode();
+	// Right-click the extra-tracks zone (above the track rows, right of the step-recording
+	// strip) - only reachable when processor.supportsExtraTracks(). Toggles
+	// D110SequencerEngine::setExtraTracksEnabled(); switching it off also snaps trackPage
+	// back to 0, since page 1 would otherwise show tracks that no longer play/export/undo.
+	void showExtraTracksMenu();
+	// Which physical track index a given on-screen row (0-8) currently represents - row +
+	// (trackPage == 0 ? 0 : D110SequencerEngine::kNumTracks). Page 1 only has 7 rows worth of
+	// real tracks (9-15); rows 7-8 on that page have no backing track and are skipped by
+	// every loop that calls this, never dereferenced.
+	int trackForRow(int row) const;
+	// How many of the 9 on-screen rows are backed by a real track on the current page - 9 on
+	// page 0 always, 7 (kMaxTracks - kNumTracks) on page 1.
+	int rowsOnCurrentPage() const;
 	void showBarMenu();
 	void promptForBar();
 	void promptForPunchRange();
@@ -83,6 +99,13 @@ private:
 	// stepInfoBounds is a plain readout (current bar/step while active), not clickable.
 	juce::Rectangle<float> stepBounds, stepDurationBounds, stepDotBounds, restBounds, backBounds,
 		stepInfoBounds;
+	// "1-9" / "10-16" page-switch buttons, and the (wider, always-hit-testable-on-right-click)
+	// zone above the track rows that toggles extra tracks on/off - see showExtraTracksMenu().
+	// Only drawn/clickable when processor.supportsExtraTracks() && the engine's own
+	// getExtraTracksEnabled() (page buttons) - the right-click zone itself is always
+	// hit-testable when supportsExtraTracks(), even before extra tracks are turned on, since
+	// that's how they GET turned on.
+	juce::Rectangle<float> trackPage1Bounds, trackPage2Bounds, extraTracksZoneBounds;
 	// One button per song slot (see D110SequencerEngine::kNumSongSlots) - click to switch,
 	// highlighted on whichever is current, with a small dot for slots that have content.
 	std::array<juce::Rectangle<float>, d110seq::D110SequencerEngine::kNumSongSlots> slotBounds;
@@ -98,7 +121,13 @@ private:
 		juce::Rectangle<float> label, channelReadout, muteBounds, soloBounds, armBounds, activityBounds,
 			partNumberBounds;
 	};
-	std::array<TrackRow, d110seq::D110SequencerEngine::kNumTracks> rows;
+	// Sized to kMaxTracks so rows[] can be indexed directly by absolute track index on either
+	// page - only rowsOnCurrentPage() of them are laid out/painted/hit-tested at a time.
+	std::array<TrackRow, d110seq::D110SequencerEngine::kMaxTracks> rows;
+
+	// 0 = tracks 1-9, 1 = tracks 10-16 - see trackForRow(). Not persisted (pure navigation
+	// state, resets to page 0 on relaunch, like D-110 EditorPane's own PatchesSubTab).
+	int trackPage = 0;
 
 	// Precount's downbeat-LED flash (see paint()'s own comment) - edge-detected in
 	// timerCallback() against D110SequencerEngine::precountBeatsElapsed(), since positionBeats

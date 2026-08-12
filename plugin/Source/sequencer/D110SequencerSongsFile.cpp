@@ -29,14 +29,14 @@ static juce::MemoryBlock unpackBlock(const juce::String &text) {
 	return out;
 }
 
-void writeSongsXml(const D110SequencerEngine &engine, juce::XmlElement &xml) {
+void writeSongsXml(const D110SequencerEngine &engine, juce::XmlElement &xml, int numTracks) {
 	xml.setAttribute("seqCurrentSlot", engine.getCurrentSongSlot());
 	for (int slot = 0; slot < D110SequencerEngine::kNumSongSlots; ++slot) {
 		const juce::String slotSuffix = "Slot" + juce::String(slot);
 		xml.setAttribute("seqTempo" + slotSuffix, engine.slotTempo(slot));
 		xml.setAttribute("seqTimeSigNum" + slotSuffix, engine.slotTimeSigNumerator(slot));
 		xml.setAttribute("seqTimeSigDen" + slotSuffix, engine.slotTimeSigDenominator(slot));
-		for (int t = 0; t < D110SequencerEngine::kNumTracks; ++t) {
+		for (int t = 0; t < numTracks; ++t) {
 			const juce::String suffix = slotSuffix + juce::String(t);
 			xml.setAttribute("seqMute" + suffix, engine.slotTrackMuted(slot, t) ? 1 : 0);
 			xml.setAttribute("seqSolo" + suffix, engine.slotTrackSoloed(slot, t) ? 1 : 0);
@@ -49,7 +49,7 @@ void writeSongsXml(const D110SequencerEngine &engine, juce::XmlElement &xml) {
 
 // selectSongSlot() also stops/rewinds/disarms, which is fine here - every caller (project
 // load, .midiseq import) is a deliberate, explicit load, never something mid-transport.
-void readSongsXml(D110SequencerEngine &engine, const juce::XmlElement &xml) {
+void readSongsXml(D110SequencerEngine &engine, const juce::XmlElement &xml, int numTracks) {
 	engine.selectSongSlot(juce::jlimit(
 		0, D110SequencerEngine::kNumSongSlots - 1, xml.getIntAttribute("seqCurrentSlot", 0)));
 	for (int slot = 0; slot < D110SequencerEngine::kNumSongSlots; ++slot) {
@@ -58,7 +58,7 @@ void readSongsXml(D110SequencerEngine &engine, const juce::XmlElement &xml) {
 		engine.setSlotTimeSignature(
 			slot, xml.getIntAttribute("seqTimeSigNum" + slotSuffix, engine.slotTimeSigNumerator(slot)),
 			xml.getIntAttribute("seqTimeSigDen" + slotSuffix, engine.slotTimeSigDenominator(slot)));
-		for (int t = 0; t < D110SequencerEngine::kNumTracks; ++t) {
+		for (int t = 0; t < numTracks; ++t) {
 			const juce::String suffix = slotSuffix + juce::String(t);
 			const auto trackBytes = unpackBlock(xml.getStringAttribute("seqTrack" + suffix));
 			engine.slotTrackFromBytes(slot, t, trackBytes.getData(), trackBytes.getSize());
@@ -71,19 +71,19 @@ void readSongsXml(D110SequencerEngine &engine, const juce::XmlElement &xml) {
 	}
 }
 
-juce::String exportSongsFile(const D110SequencerEngine &engine, const juce::File &file) {
+juce::String exportSongsFile(const D110SequencerEngine &engine, const juce::File &file, int numTracks) {
 	juce::XmlElement xml("D110SequencerSongs");
 	xml.setAttribute("version", 1);
-	writeSongsXml(engine, xml);
+	writeSongsXml(engine, xml, numTracks);
 	if (!xml.writeTo(file)) return "Could not write songs file: " + file.getFullPathName();
 	return "Saved sequencer songs: " + file.getFileName();
 }
 
-juce::String importSongsFile(D110SequencerEngine &engine, const juce::File &file) {
+juce::String importSongsFile(D110SequencerEngine &engine, const juce::File &file, int numTracks) {
 	std::unique_ptr<juce::XmlElement> xml(juce::XmlDocument::parse(file));
 	if (xml == nullptr || !xml->hasTagName("D110SequencerSongs"))
 		return "Not a D-110 sequencer songs file: " + file.getFileName();
-	readSongsXml(engine, *xml);
+	readSongsXml(engine, *xml, numTracks);
 	return "Loaded sequencer songs: " + file.getFileName();
 }
 

@@ -72,10 +72,12 @@ Nine tabs, and everything on them is the instrument's own memory:
 - **RHYTHM** — the rhythm setup, one row per drum key, all 85 of them.
 - **PATCHES** — two sub-tabs. **ALL PATCHES** lists the 64 stored patches — **clicking a
   number selects that patch on the instrument**, by pressing its own PATCH / BANK / NUMBER
-  buttons, so the display, the parts and the sound follow exactly as they do by hand, and
-  switches to **PARTS OF PATCH**, that patch's own eight part assignments. Split into two
-  full-height sub-tabs (rather than a fixed vertical split of both) so neither is clipped
-  when the drawer is resized short.
+  buttons, so the display, the parts and the sound follow exactly as they do by hand.
+  Selecting a patch this way does **not** switch sub-tabs on its own (it used to; Alan found
+  the auto-jump disorienting while browsing patches by ear) — switch to **PARTS OF PATCH**
+  yourself to see or edit that patch's own eight part assignments. Split into two full-height
+  sub-tabs (rather than a fixed vertical split of both) so neither is clipped when the drawer
+  is resized short.
 - **TIMBRES** — the 128 stored timbres; clicking one sends that program change on the chosen
   part's own MIDI channel, as an external keyboard would.
 - **TONES** — the 64 internal tone slots, with STORE and RECALL against the part's tone.
@@ -108,10 +110,22 @@ program changes sent by the DAW.
 
 ## Firmware memory and plugin settings
 
-The firmware's memory is **one file beside the ROMs**, as the instrument has one battery RAM,
-and it is written when the plugin is switched off - so close the host and reopen it and your
-patches are where you left them. Your project saves a copy too, so reloading a session brings
-back the sounds it was saved with rather than whatever the file has since become.
+The firmware's memory is **one file beside the ROMs**, as the instrument has one battery RAM.
+It is written on an explicit POWER OFF, and (Standalone only, since 2026-08-12) also on plain
+quit even if you never powered off - so close the app or the host and reopen it and your
+patches are where you left them either way. In a DAW host, your project saves a copy of that
+same memory too, so reloading a session brings back the sounds it was saved with rather than
+whatever the shared file has since become.
+
+**The Standalone app deliberately does *not* do the same project-style round trip.** Its own
+settings file used to also embed a firmware-RAM copy, restored unconditionally at every
+launch - which meant a settings file that hadn't been re-saved in a while (any quit path that
+skipped JUCE's own save-state hook) could silently overwrite fresher on-disk memory the moment
+the app next started, before you touched anything. Real data loss, reported and fixed
+2026-08-12: the Standalone now relies solely on the battery-RAM file above (kept current by
+the POWER OFF/quit flush described above), and never round-trips memory through its own
+settings file at all. A DAW project, by contrast, genuinely should carry the instrument's
+exact state with it, so this round trip is unchanged there.
 
 **Moving to a different machine also means copying a second, separate file.** The battery RAM
 above only holds the firmware's own memory - patches, timbres, system settings, the memory
@@ -123,12 +137,11 @@ in the Standalone build's own settings file, which the NVRAM folder does not inc
 - macOS: `~/Library/Application Support/D-110 Emulator.settings`
 - Windows: `%APPDATA%\D-110 Emulator.settings`
 
-(In a DAW host instead of the Standalone app, this same data is saved inside the DAW's own
-project file, so this only matters for the Standalone.) If a song written on one machine isn't
-showing up on another after copying the NVRAM folder over, this file is almost certainly why -
-copy it too, or use the sequencer's own right-click **LOAD**/**SAVE** on the transport strip to
-export/import all 4 song slots as a single portable `.midiseq` file instead (a plain click
-there still saves/loads just the current song as a standard `.mid`).
+If a song written on one machine isn't showing up on another after copying the NVRAM folder
+over, check that this settings file (theme/song slots, not the instrument's own memory - see
+above) made the trip too, or use the sequencer's own right-click **LOAD**/**SAVE** on the
+transport strip to export/import all 4 song slots as a single portable `.midiseq` file instead
+(a plain click there still saves/loads just the current song as a standard `.mid`).
 
 ## The memory card slot
 

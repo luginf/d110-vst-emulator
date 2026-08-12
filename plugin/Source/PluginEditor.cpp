@@ -2118,10 +2118,9 @@ void D110EditorPane::paint(juce::Graphics &g) {
 		break;
 	case Tab::Patches:
 		footer = "Clicking a row puts that patch on the instrument itself, by pressing its own "
-		         "PATCH / BANK / NUMBER buttons, and switches to PARTS OF PATCH. Editing the "
-		         "parts there is audible at once while it is the patch being played - the "
-		         "stored record and the live areas are both written. Click a row's name to "
-		         "rename it.";
+		         "PATCH / BANK / NUMBER buttons. Switch to PARTS OF PATCH to edit its parts - "
+		         "audible at once while it is the patch being played, the stored record and "
+		         "the live areas are both written. Click a row's name to rename it.";
 		break;
 	case Tab::Rhythm:
 		footer = "One row per drum key, 85 of them - roll the wheel over the list to scroll. "
@@ -2387,11 +2386,10 @@ void D110EditorPane::buttonPressed(int id) {
 		return;
 	}
 	if (id >= 200 && id < 300) {
-		// Щелчок по номеру патча делает три вещи: запоминает его как показанный на
-		// под-вкладке PARTS OF PATCH, переключается на неё (иначе результат было бы не
-		// увидеть, не кликая ещё раз по под-вкладке) и просит прибор на него перейти.
+		// Щелчок по номеру патча запоминает его как показанный на под-вкладке PARTS OF
+		// PATCH и просит прибор на него перейти - но не переключает саму под-вкладку,
+		// чтобы не сбивать пользователя, листающего ALL PATCHES.
 		patchSlot = id - 200;
-		patchesSubTab = PatchesSubTab::PartsOfPatch;
 		processor.selectPatch(id - 200);
 		layout();
 		repaint();
@@ -2588,15 +2586,16 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 		}
 	}
 	// На вкладке патчей попадание в строку - это и есть выбор патча: прибор переходит на
-	// него, и ниже показываются его партии. Ловится по всей строке, а не по одному номеру,
-	// потому что перебирать патчи на слух надо мышью, а не прицеливаясь в кнопку.
+	// него, готовый к показу на под-вкладке PARTS OF PATCH при переходе туда вручную.
+	// Ловится по всей строке, а не по одному номеру, потому что перебирать патчи на слух
+	// надо мышью, а не прицеливаясь в кнопку. Сама под-вкладка ALL PATCHES не переключается -
+	// иначе пролистывание патчей мышью выбрасывало бы из списка на каждом клике.
 	if (tab == Tab::Patches && patchesSubTab == PatchesSubTab::AllPatches
 	    && tableArea.contains(p) && rowHeight > 0.0f) {
 		const int row = int((p.y - tableArea.getY()) / rowHeight);
 		const int patch = patchScroll + row;
 		if (row >= 0 && patch >= 0 && patch < D110CoreType::kNumPatches && patch != patchSlot) {
 			patchSlot = patch;
-			patchesSubTab = PatchesSubTab::PartsOfPatch;
 			processor.selectPatch(patch);
 			layout();
 			repaint();

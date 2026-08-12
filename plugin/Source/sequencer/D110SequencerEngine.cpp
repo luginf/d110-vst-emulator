@@ -65,6 +65,12 @@ double D110SequencerEngine::barLengthBeats() const {
 	return timeSigNum * (4.0 / timeSigDen);
 }
 
+void D110SequencerEngine::setExtraTracksEnabled(bool enabled) {
+	if (extraTracksEnabled == enabled) return;
+	extraTracksEnabled = enabled;
+	if (!enabled && armedTrack >= kNumTracks) armTrack(-1);
+}
+
 void D110SequencerEngine::play() { playing = true; }
 
 void D110SequencerEngine::stop() {
@@ -157,13 +163,17 @@ int D110SequencerEngine::getCurrentBar() const {
 
 int D110SequencerEngine::getBarCount() const {
 	double lastBeat = 0.0;
-	for (const auto &tr : tracks) lastBeat = juce::jmax(lastBeat, tr.events.getEndTime());
+	// Only the currently active tracks - a hidden extra track's leftover content (kept, not
+	// wiped, when extra tracks get disabled - see activeTrackCount()'s own comment) shouldn't
+	// inflate the visible BAR N/total readout for a page that isn't showing it.
+	for (int t = 0; t < activeTrackCount(); ++t)
+		lastBeat = juce::jmax(lastBeat, tracks[static_cast<size_t>(t)].events.getEndTime());
 	const double bl = barLengthBeats();
 	return bl > 0.0 ? juce::jmax(1, static_cast<int>(std::ceil(lastBeat / bl))) : 1;
 }
 
 void D110SequencerEngine::armTrack(int index) {
-	jassert(index == -1 || (index >= 0 && index < kNumTracks));
+	jassert(index == -1 || (index >= 0 && index < kMaxTracks));
 	if (recording) stopRecording();
 	if (stepRecording) stopStepRecording();
 	armedTrack = index;
@@ -327,8 +337,8 @@ bool D110SequencerEngine::isTrackSoloed(int index) const { return trackAt(index)
 bool D110SequencerEngine::trackHasEvents(int index) const { return trackAt(index).events.getNumEvents() > 0; }
 
 bool D110SequencerEngine::anySoloed() const {
-	for (const auto &t : tracks)
-		if (t.soloed) return true;
+	for (int t = 0; t < activeTrackCount(); ++t)
+		if (tracks[static_cast<size_t>(t)].soloed) return true;
 	return false;
 }
 
@@ -384,19 +394,19 @@ void D110SequencerEngine::undo() {
 }
 
 void D110SequencerEngine::quantizeTrack(int index, QuantizeGrid grid) {
-	jassert(index >= 0 && index < kNumTracks);
+	jassert(index >= 0 && index < kMaxTracks);
 	snapTrackToGrid(trackAt(index), grid);
 }
 
 QuantizeGrid D110SequencerEngine::getTrackQuantize(int index) const { return trackAt(index).quantize; }
 
 void D110SequencerEngine::clearTrack(int index) {
-	jassert(index >= 0 && index < kNumTracks);
+	jassert(index >= 0 && index < kMaxTracks);
 	trackAt(index).events.clear();
 }
 
 void D110SequencerEngine::deleteBars(int trackIndex, int fromBar, int toBarInclusive) {
-	jassert(trackIndex == -1 || (trackIndex >= 0 && trackIndex < kNumTracks));
+	jassert(trackIndex == -1 || (trackIndex >= 0 && trackIndex < kMaxTracks));
 	const double bar = barLengthBeats();
 	const double fromBeats = double(juce::jmax(1, fromBar) - 1) * bar;
 	const double toBeats = double(juce::jmax(fromBar, toBarInclusive)) * bar; // exclusive
@@ -409,7 +419,7 @@ void D110SequencerEngine::deleteBars(int trackIndex, int fromBar, int toBarInclu
 			[&](double onBeat) { return onBeat >= toBeats ? -rangeLen : 0.0; });
 	};
 	if (trackIndex < 0)
-		for (auto &t : tracks) apply(t);
+		for (int t = 0; t < activeTrackCount(); ++t) apply(trackAt(t));
 	else
 		apply(trackAt(trackIndex));
 }
@@ -417,7 +427,7 @@ void D110SequencerEngine::deleteBars(int trackIndex, int fromBar, int toBarInclu
 void D110SequencerEngine::copyBars(int srcTrack, int destTrack, int fromBar, int toBarInclusive,
                                     int destBar) {
 	jassert((srcTrack == -1 && destTrack == -1) ||
-	        (srcTrack >= 0 && srcTrack < kNumTracks && destTrack >= 0 && destTrack < kNumTracks));
+	        (srcTrack >= 0 && srcTrack < kMaxTracks && destTrack >= 0 && destTrack < kMaxTracks));
 	const double bar = barLengthBeats();
 	const double fromBeats = double(juce::jmax(1, fromBar) - 1) * bar;
 	const double toBeats = double(juce::jmax(fromBar, toBarInclusive)) * bar; // exclusive
@@ -456,13 +466,13 @@ void D110SequencerEngine::copyBars(int srcTrack, int destTrack, int fromBar, int
 	};
 
 	if (srcTrack < 0)
-		for (auto &t : tracks) apply(t, t);
+		for (int t = 0; t < activeTrackCount(); ++t) apply(trackAt(t), trackAt(t));
 	else
 		apply(trackAt(srcTrack), trackAt(destTrack));
 }
 
 void D110SequencerEngine::transposeBars(int trackIndex, int fromBar, int toBarInclusive, int semitones) {
-	jassert(trackIndex == -1 || (trackIndex >= 0 && trackIndex < kNumTracks));
+	jassert(trackIndex == -1 || (trackIndex >= 0 && trackIndex < kMaxTracks));
 	if (semitones == 0) return;
 	const double bar = barLengthBeats();
 	const double fromBeats = double(juce::jmax(1, fromBar) - 1) * bar;
@@ -483,7 +493,7 @@ void D110SequencerEngine::transposeBars(int trackIndex, int fromBar, int toBarIn
 		}
 	};
 	if (trackIndex < 0)
-		for (auto &t : tracks) apply(t);
+		for (int t = 0; t < activeTrackCount(); ++t) apply(trackAt(t));
 	else
 		apply(trackAt(trackIndex));
 }
@@ -702,7 +712,7 @@ void D110SequencerEngine::renderInto(juce::MidiBuffer &midiMessages, int numSamp
 			windowEnd = windowStart + beatsPerSample * samplesThisPass;
 		}
 
-		for (int t = 0; t < kNumTracks; ++t) {
+		for (int t = 0; t < activeTrackCount(); ++t) {
 			// The armed track, mid-take, plays back its own already-committed content normally
 			// here - new captures go to recordBuffer (a separate sequence this loop never
 			// touches), not into the track itself, until stopRecording() folds them in. That's
@@ -796,16 +806,18 @@ bool D110SequencerEngine::saveMidiFile(const juce::File &file) const {
 	meta.addEvent(juce::MidiMessage::timeSignatureMetaEvent(timeSigNum, timeSigDen), 0.0);
 	mf.addTrack(meta);
 
-	for (int t = 0; t < kNumTracks; ++t) {
+	for (int t = 0; t < activeTrackCount(); ++t) {
 		juce::MidiMessageSequence seq;
 		const int channel = channelForTrack(t);
 		// Track Name meta-event (FF 03) - the user's own name if they set one (see
-		// setTrackName()), otherwise the same "PART N"/"RHYTHM" label the panel falls back
-		// to, so a track never reaches the exported file unnamed.
+		// setTrackName()), otherwise the same "PART N"/"RHYTHM"/"TRACK N" label the panel
+		// falls back to, so a track never reaches the exported file unnamed.
 		const auto &trackName = trackAt(t).name;
 		const juce::String label = trackName.isNotEmpty()
 			? trackName
-			: (t == kRhythmTrack ? juce::String("RHYTHM") : ("PART " + juce::String(t + 1)));
+			: (t == kRhythmTrack ? juce::String("RHYTHM")
+			                     : (t < kNumTracks ? ("PART " + juce::String(t + 1))
+			                                       : ("TRACK " + juce::String(t + 1))));
 		seq.addEvent(juce::MidiMessage::textMetaEvent(3, label), 0.0);
 		// A Program Change at time 0, ahead of the track's own notes, so a receiving synth
 		// (including this same plugin, reimporting the file) starts the piece on
@@ -862,11 +874,10 @@ bool D110SequencerEngine::loadMidiFile(const juce::File &file) {
 		}
 	}
 
-	// Our own saveMidiFile() writes a leading meta-only track before the 9 note
-	// tracks; detect and skip it so both our own files and a plain 9-track import
-	// line up with tracks[0..8].
+	// Our own saveMidiFile() writes a leading meta-only track before the note tracks; detect
+	// and skip it so both our own files and a plain N-track import line up with tracks[0..].
 	int startTrack = 0;
-	if (mf.getNumTracks() >= kNumTracks + 1) {
+	if (mf.getNumTracks() >= activeTrackCount() + 1) {
 		const auto *t0 = mf.getTrack(0);
 		bool track0HasNotes = false;
 		for (int i = 0; i < t0->getNumEvents(); ++i)
@@ -877,7 +888,7 @@ bool D110SequencerEngine::loadMidiFile(const juce::File &file) {
 		if (!track0HasNotes) startTrack = 1;
 	}
 
-	for (int t = 0; t < kNumTracks; ++t) {
+	for (int t = 0; t < activeTrackCount(); ++t) {
 		juce::MidiMessageSequence fresh;
 		juce::String newName; // stays empty if the source track carries no name of its own
 		const int srcIndex = startTrack + t;
@@ -949,12 +960,12 @@ void D110SequencerEngine::deserializeTrack(juce::MidiMessageSequence &events, co
 }
 
 juce::MemoryBlock D110SequencerEngine::trackToBytes(int index) const {
-	jassert(index >= 0 && index < kNumTracks);
+	jassert(index >= 0 && index < kMaxTracks);
 	return serializeTrack(trackAt(index).events);
 }
 
 void D110SequencerEngine::trackFromBytes(int index, const void *data, size_t size) {
-	jassert(index >= 0 && index < kNumTracks);
+	jassert(index >= 0 && index < kMaxTracks);
 	deserializeTrack(trackAt(index).events, data, size);
 }
 

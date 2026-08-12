@@ -19,6 +19,7 @@
 // fallback instead - degraded jitter, but still usable.
 
 #include <array>
+#include <atomic>
 #include <memory>
 #include <vector>
 
@@ -51,6 +52,16 @@ public:
 	bool supportsTrackChannelEdit() const override { return true; }
 	void setTrackChannel(int track, int channel) override;
 
+	// See D110SequencerHost.h - this is the only host that offers the 7 extra tracks at all.
+	bool supportsExtraTracks() const override { return true; }
+
+	// Per-track Program Change - see D110SequencerHost.h. Sent from advance() the moment
+	// engine.isPlaying() edges false->true (PLAY or REC, precount included - real gear wants
+	// the patch settled before notes start, not after).
+	bool supportsProgramChange() const override { return true; }
+	int getTrackProgram(int track) const override;
+	void setTrackProgram(int track, int program) override;
+
 	// D110KeyboardHost - the on-screen keyboard's notes go into midiCollector, exactly the
 	// queue a real MIDI In port's handleIncomingMidiMessage() feeds, so they thru to MIDI
 	// Out and get captured while recording by the same path a real controller would use.
@@ -63,6 +74,11 @@ public:
 	void setKeyboardPcInputEnabled(bool enabled) override { keyboardPcInput = enabled; }
 	int getKeyboardPcLayout() const override { return keyboardPcLayout; }
 	void setKeyboardPcLayout(int layout) override { keyboardPcLayout = juce::jlimit(0, 1, layout); }
+	// See D110KeyboardHost.h and advance()'s own comment for where remoteNoteActive actually
+	// gets written.
+	bool isNoteActive(int note) const override {
+		return note >= 0 && note < 128 && remoteNoteActive[static_cast<size_t>(note)].load();
+	}
 
 	// The mini utility panel's own THEME toggle (d110ui::Theme, see UiTheme.h) - persisted
 	// the same way the D-110 plugin's Standalone settings file keeps it.
@@ -77,6 +93,15 @@ public:
 	void setMidiOutputDevice(const juce::String &identifier);
 	juce::String getMidiInputId() const { return selInputId; }
 	juce::String getMidiOutputId() const { return selOutputId; }
+
+	// Toolbar's MIDI In LED - lit for a short window after the last message actually
+	// arrived on the system MIDI In port (handleIncomingMidiMessage(), MIDI thread). Not
+	// set by injectTestNote()/the on-screen keyboard - this is specifically "is a real
+	// external port sending", the thing Alan couldn't otherwise see was even reaching the
+	// app while chasing the channel-2 bug below.
+	bool isMidiInActive() const {
+		return juce::Time::getMillisecondCounter() - lastMidiInActivityMs.load() < 120;
+	}
 
 	// Whole-app state - the 4 song slots plus which MIDI ports were selected - persisted
 	// between runs the same way the D-110 plugin's own Standalone settings file works (see
@@ -111,11 +136,21 @@ private:
 	juce::CriticalSection osMidiLock;
 	juce::String selInputId, selOutputId;
 	juce::File lastDialogDir;
+	std::atomic<juce::uint32> lastMidiInActivityMs { 0 };
 
-	// Factory default (Part 1-8 -> channels 2-9, Rhythm -> 10) until setTrackChannel()
-	// overrides an entry - see the constructor, which points engine's channelSource at
-	// this array directly.
-	std::array<int, d110seq::D110SequencerEngine::kNumTracks> trackChannels;
+	// Factory default (Part 1-8 -> channels 2-9, Rhythm -> 10, extra tracks 10-16 -> whatever
+	// channels that leaves free: 1, 11-16) until setTrackChannel() overrides an entry - see
+	// the constructor, which points engine's channelSource at this array directly. Sized to
+	// kMaxTracks unconditionally (not just when extra tracks are enabled) so a channel chosen
+	// for an extra track before disabling them, or before this session, isn't lost.
+	std::array<int, d110seq::D110SequencerEngine::kMaxTracks> trackChannels;
+	// -1 = none, else a raw 0-127 MIDI program number - see setTrackProgram()/advance().
+	std::array<int, d110seq::D110SequencerEngine::kMaxTracks> trackPrograms;
+	bool wasPlayingForProgramSend = false;
+
+	// See isNoteActive() above - one flag per MIDI note number, written from advance() (the
+	// audio/timer thread), read from the message thread by D110Keyboard's own low-Hz timer.
+	std::array<std::atomic<bool>, 128> remoteNoteActive{};
 
 	// D110Keyboard's own config - see the accessors above.
 	int keyboardMidiChannel = 1;
