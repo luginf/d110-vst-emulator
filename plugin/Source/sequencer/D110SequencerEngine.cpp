@@ -498,6 +498,49 @@ void D110SequencerEngine::transposeBars(int trackIndex, int fromBar, int toBarIn
 		apply(trackAt(trackIndex));
 }
 
+std::vector<D110SequencerEngine::NoteEventInfo>
+D110SequencerEngine::eventsInBarRange(int trackIndex, int fromBar, int toBarInclusive) const {
+	std::vector<NoteEventInfo> out;
+	jassert(trackIndex >= 0 && trackIndex < kMaxTracks);
+	const double bar = barLengthBeats();
+	const double fromBeats = double(juce::jmax(1, fromBar) - 1) * bar;
+	const double toBeats = double(juce::jmax(fromBar, toBarInclusive)) * bar; // exclusive
+	const auto &events = trackAt(trackIndex).events;
+	for (int i = 0; i < events.getNumEvents(); ++i) {
+		const auto *ev = events.getEventPointer(i);
+		if (!ev->message.isNoteOn()) continue;
+		const double onBeat = ev->message.getTimeStamp();
+		if (onBeat < fromBeats || onBeat >= toBeats) continue;
+		// Bar-relative offset, regardless of which bar in [fromBar, toBarInclusive] this
+		// particular note actually falls in - correct even when the caller passes a
+		// multi-bar range, though D110SequencerPanel's own event-list dialog only ever
+		// passes a single bar today.
+		const double barStart = std::floor(onBeat / bar) * bar;
+		out.push_back({ i, onBeat - barStart, ev->message.getNoteNumber(), int(ev->message.getVelocity()),
+		                 ev->noteOffObject != nullptr
+		                     ? ev->noteOffObject->message.getTimeStamp() - onBeat : 0.0 });
+	}
+	return out;
+}
+
+void D110SequencerEngine::deleteNoteEvent(int trackIndex, int index) {
+	jassert(trackIndex >= 0 && trackIndex < kMaxTracks);
+	auto &events = trackAt(trackIndex).events;
+	if (index < 0 || index >= events.getNumEvents()) return;
+	events.deleteEvent(index, true); // true = also remove the matching note-off, if any
+}
+
+void D110SequencerEngine::setNoteEventPitch(int trackIndex, int index, int newNote) {
+	jassert(trackIndex >= 0 && trackIndex < kMaxTracks);
+	auto &events = trackAt(trackIndex).events;
+	if (index < 0 || index >= events.getNumEvents()) return;
+	auto *ev = events.getEventPointer(index);
+	if (!ev->message.isNoteOn()) return;
+	const int note = juce::jlimit(0, 127, newNote);
+	ev->message.setNoteNumber(note);
+	if (ev->noteOffObject != nullptr) ev->noteOffObject->message.setNoteNumber(note);
+}
+
 D110SequencerEngine::Track &D110SequencerEngine::songTrackAt(int slot, int track) {
 	if (slot == currentSlot) return trackAt(track);
 	return songs[static_cast<size_t>(slot)].tracks[static_cast<size_t>(track)];

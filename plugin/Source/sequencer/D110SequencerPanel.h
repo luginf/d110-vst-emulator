@@ -32,6 +32,12 @@ public:
 	// another 22 for the step-recording strip.
 	static constexpr float kRefH = 347.0f;
 
+	// Same toggle as right-clicking the extra-tracks zone (see showExtraTracksMenu()) - public
+	// so NonetSeqMain's Options dialog can offer the same switch without duplicating the
+	// trackPage-reset side effect. Only meaningful when processor.supportsExtraTracks();
+	// harmless no-op call site is on Nonet-Seq only anyway (the plugin has no Options dialog).
+	void toggleExtraTracks();
+
 private:
 	void timerCallback() override; // repaints the bar readout while the transport rolls
 
@@ -50,10 +56,13 @@ private:
 	void promptForTrackProgram(int track);
 	void showMetronomeModeMenu();
 	void confirmClearTrack(int track);
-	// Right-click any song-slot button: copy the CURRENT song into one of the other 3 slots -
-	// see D110SequencerEngine::copyCurrentSongTo().
-	void showCopySongMenu();
+	// Right-click any song-slot button: copy the CURRENT song into one of the other 3 slots
+	// (see D110SequencerEngine::copyCurrentSongTo()), plus - only when
+	// processor.supportsSoundSnapshots() - store/load the CLICKED slot's own sound
+	// snapshot (see D110SequencerHost.h).
+	void showCopySongMenu(int clickedSlot);
 	void confirmCopySongTo(int destSlot);
+	void confirmLoadSoundSnapshot(int slot);
 	// Right-click LOAD/SAVE: all 4 song slots at once (.midiseq), as opposed to the plain
 	// click's single current song (.mid) - see D110AudioProcessor::exportSequencerSongs().
 	void showLoadMenu();
@@ -75,6 +84,7 @@ private:
 	void showBarMenu();
 	void promptForBar();
 	void promptForPunchRange();
+	void promptForTimeSignature();
 	void confirmNewSong();
 	// STEP-strip controls - see D110SequencerEngine::setStepDuration()/startStepRecording().
 	void cycleStepDuration();
@@ -88,6 +98,12 @@ private:
 	// Same track==-1-means-every-track convention as the two above - see
 	// D110SequencerEngine::transposeBars().
 	void promptForTransposeBars(int track);
+	// A graphical, scrollable list of every note in the CURRENTLY NAVIGATED bar on this one
+	// track, each with its own delete button - "pas un piano roll", Alan's own framing, for
+	// removing a single wrong note without a bar-range operation or re-recording. Re-opens
+	// fresh each time (not kept in sync with gotoBar() while open) - see
+	// D110SequencerEngine::eventsInBarRange()/deleteNoteEvent().
+	void promptForEventList(int track);
 
 	D110SequencerHost &processor;
 

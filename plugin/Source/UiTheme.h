@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_graphics/juce_graphics.h>
+#include <juce_gui_basics/juce_gui_basics.h>
 
 // Single colour palette for the hand-drawn parts of the interface - the extended editor,
 // the test keyboard and the sequencer. NOT for the photographed panel itself: its
@@ -48,5 +49,19 @@ struct Palette {
 Theme getTheme();
 void setTheme(Theme theme);
 const Palette &palette();
+
+// A juce::LookAndFeel driven by palette() - keeps stock JUCE components (AlertWindow,
+// AudioDeviceSelectorComponent, PopupMenu, ComboBox, ...) themed consistently with the
+// hand-painted parts of the UI, which read palette() directly in their own paint()
+// instead of going through LookAndFeel at all. Not installed anywhere by default - an
+// app opts in with juce::LookAndFeel::setDefaultLookAndFeel(&sharedLookAndFeel());
+// setTheme() keeps its colours in sync automatically from then on, no separate refresh
+// call needed at the call site.
+class LookAndFeel : public juce::LookAndFeel_V4 {
+public:
+	LookAndFeel();
+	void refresh();
+};
+LookAndFeel &sharedLookAndFeel();
 
 } // namespace d110ui

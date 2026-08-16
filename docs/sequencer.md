@@ -44,8 +44,9 @@ bars, below).
 
 **STOP** / **PLAY** / **REC**, a draggable **TEMPO** field (20-300 BPM; drag vertically, mouse
 wheel, or the field shows the live value), a **time signature** field (click cycles six presets
-- 4/4, 3/4, 6/8, 2/4, 5/4, 7/8 - right-click picks one directly), and bar navigation
-(prev/next buttons, a draggable **BAR n/total** readout).
+- 4/4, 3/4, 6/8, 2/4, 5/4, 7/8 - right-click picks one directly, or picks **Custom...** to type
+any numerator/denominator from 1-32), and bar navigation (prev/next buttons, a draggable
+**BAR n/total** readout).
 
 **STOP** always sends a MIDI panic (all notes off on every channel) as well as halting the
 transport, so a note whose off was scheduled past the stop point (renderInto() stops walking the
@@ -156,6 +157,20 @@ From the same right-click menu (per-track) or the BAR readout's menu (every trac
 **NEW** clears every track in the current song slot (tempo/time signature/other transport
 settings are left alone) - "new song" within the slot you're on.
 
+## Editing single notes
+
+The operations above all work on a bar range. For fixing one specific note - a wrong pitch
+caught while listening back - **"Edit events in bar N..."**, at the bottom of the same
+per-track right-click menu, opens a plain scrollable list (not a piano roll) of every note in
+whichever bar is currently navigated (`gotoBar`/the BAR readout) on that one track: beat
+position, note name, velocity and duration, one row each. Click a row to change that note's
+pitch (typed as a MIDI number 0-127, clamped rather than wrapped - its beat position, velocity
+and duration are untouched), or its **X** to delete it outright. A **"< Bar N >"** strip above
+the list moves it to the previous/next bar without closing the dialog - the list refreshes in
+place, no need to reopen the menu from a different bar. The dialog stays open across edits, so
+several wrong notes can be fixed in one sitting; each one (a pitch change or a delete) is its
+own UNDO checkpoint, exactly like every other destructive edit here.
+
 ## Undo
 
 **UNDO** (dimmed when there's nothing to undo) reverts the most recent of: quantize, clear
@@ -256,12 +271,24 @@ recording, step recording, MIDI Out, `.mid`/`.midiseq` export-import - undo, son
 own content is never lost by switching it off and back on, only hidden from view/playback
 meanwhile.
 
-Timing comes from a real (silent) audio device callback rather than a GUI timer, the same
-reasoning as the native CPU core's own move off MAME's non-audio-thread stepping (see
-`CLAUDE.md`) - this app's whole reason to exist is MIDI timing accuracy for external gear,
-and a hardware-clocked callback has far less jitter than the message thread does. If no
-output device is available at all, it falls back to a plain timer instead (degraded, but
-still usable).
+Timing comes from a real audio device callback rather than a GUI timer, the same reasoning
+as the native CPU core's own move off MAME's non-audio-thread stepping (see `CLAUDE.md`) -
+this app's whole reason to exist is MIDI timing accuracy for external gear, and a
+hardware-clocked callback has far less jitter than the message thread does. Which device
+that is, is chosen via the standard JUCE Audio Settings dialog (device type, output
+device, sample rate, buffer size) opened from **Audio Device** in the **OPTIONS** dialog -
+the choice persists between runs, same as everything else in Options. There's still no
+synth here - tracks only ever reach a real instrument through **MIDI Out** - but since a
+real output stream is open anyway, the metronome's own click (METRO set to *Audio only* or
+*Both*, and not routed through the rhythm channel - see below) is synthesized straight
+into it, the same short decaying click as the plugin's own metronome, audible through
+whatever device is selected. If no output device is available at all, it falls back to a
+plain timer instead (still measuring real elapsed time each tick rather than assuming a
+fixed interval, so it doesn't drift over a long session - just more jitter than the
+audio-clocked path, since a message-thread timer is at the mercy of OS scheduling for
+exactly when each tick lands - and, having no audio stream to write into at all, silent:
+METRO's LED strip and/or its rhythm-channel MIDI note, if either is also on, are what
+carry the beat in that degraded mode).
 
 ### Per-track Program Change
 

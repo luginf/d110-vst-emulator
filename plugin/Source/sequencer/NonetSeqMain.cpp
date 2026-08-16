@@ -4,6 +4,7 @@
 // a real D-110, or any other synth, without the emulation/DAW in the loop at all) and
 // NonetSeqHost.h for what it does and doesn't do.
 
+#include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 
 #include "../D110Keyboard.h"
@@ -15,15 +16,120 @@ namespace {
 
 constexpr int kToolbarHeight = 28;
 
+// Options screen (AlertWindow::addCustomComponent(), same pattern as
+// D110SequencerPanel::promptForEventList()'s note-list dialog): the THEME toggle this
+// standalone app needs, that the D-110 plugin instead tucks into its Utility tab, plus a
+// correction for the Program Change/Bank Select bytes actually sent. Different synths'
+// manuals number these from 0 or from 1 inconsistently, and there's no way to know which
+// from here, so rather than guessing, +/- buttons let Alan nudge the outgoing byte until
+// playback matches what the manual says it should - see
+// NonetSeqHost::setProgramChangeOffset()/setBankOffset().
+class OptionsDialogContent : public juce::Component {
+public:
+	std::function<void()> onThemeToggled;
+	std::function<void(int)> onProgramOffsetChanged;
+	std::function<void(int)> onBankOffsetChanged;
+	std::function<void()> onExtraTracksToggled;
+	std::function<void()> onAudioSettingsRequested;
+
+	void setValues(bool themeLightIn, int programOffsetIn, int bankOffsetIn, bool extraTracksOnIn) {
+		themeLight = themeLightIn;
+		programOffset = programOffsetIn;
+		bankOffset = bankOffsetIn;
+		extraTracksOn = extraTracksOnIn;
+		repaint();
+	}
+
+	void paint(juce::Graphics &g) override {
+		const auto &pal = d110ui::palette();
+		g.fillAll(pal.box);
+
+		auto b = getLocalBounds().toFloat().reduced(6.0f);
+		themeRowBounds = b.removeFromTop(kRowH);
+		b.removeFromTop(kRowGap);
+		auto progRow = b.removeFromTop(kRowH);
+		b.removeFromTop(kRowGap);
+		auto bankRow = b.removeFromTop(kRowH);
+		b.removeFromTop(kRowGap);
+		extraTracksRowBounds = b.removeFromTop(kRowH);
+		b.removeFromTop(kRowGap);
+		audioRowBounds = b.removeFromTop(kRowH);
+
+		paintToggleRow(g, pal, themeRowBounds, "Theme", themeLight ? "LIGHT" : "DARK");
+		paintOffsetRow(g, pal, progRow, "Program Change offset", programOffset, progMinusBounds, progPlusBounds);
+		paintOffsetRow(g, pal, bankRow, "Bank offset", bankOffset, bankMinusBounds, bankPlusBounds);
+		paintToggleRow(g, pal, extraTracksRowBounds, "Extra tracks (16 total)", extraTracksOn ? "ON" : "OFF");
+		paintToggleRow(g, pal, audioRowBounds, "Audio Device", "Configure...");
+	}
+
+	void mouseDown(const juce::MouseEvent &e) override {
+		if (themeRowBounds.contains(e.position)) { if (onThemeToggled) onThemeToggled(); return; }
+		if (progMinusBounds.contains(e.position)) { if (onProgramOffsetChanged) onProgramOffsetChanged(programOffset - 1); return; }
+		if (progPlusBounds.contains(e.position)) { if (onProgramOffsetChanged) onProgramOffsetChanged(programOffset + 1); return; }
+		if (bankMinusBounds.contains(e.position)) { if (onBankOffsetChanged) onBankOffsetChanged(bankOffset - 1); return; }
+		if (bankPlusBounds.contains(e.position)) { if (onBankOffsetChanged) onBankOffsetChanged(bankOffset + 1); return; }
+		if (extraTracksRowBounds.contains(e.position)) { if (onExtraTracksToggled) onExtraTracksToggled(); return; }
+		if (audioRowBounds.contains(e.position)) { if (onAudioSettingsRequested) onAudioSettingsRequested(); return; }
+	}
+
+private:
+	static constexpr float kRowH = 30.0f;
+	static constexpr float kRowGap = 10.0f;
+	static constexpr float kButtonW = 32.0f;
+
+	// Shared by the Theme, Extra-tracks and Audio Device rows - a label on the left, a
+	// single clickable state/action box on the right (the whole row is the hit target,
+	// see mouseDown()).
+	void paintToggleRow(juce::Graphics &g, const d110ui::Palette &pal, juce::Rectangle<float> row,
+	                     const juce::String &label, const juce::String &stateText) {
+		g.setColour(pal.value);
+		g.setFont(juce::FontOptions(13.0f));
+		g.drawText(label, row.removeFromLeft(row.getWidth() * 0.5f), juce::Justification::centredLeft);
+		g.setColour(pal.boxBorder);
+		g.drawRoundedRectangle(row, 3.0f, 1.0f);
+		g.setColour(pal.value);
+		g.drawText(stateText, row, juce::Justification::centred);
+	}
+
+	void paintOffsetRow(juce::Graphics &g, const d110ui::Palette &pal, juce::Rectangle<float> row,
+	                     const juce::String &label, int value, juce::Rectangle<float> &minusBounds,
+	                     juce::Rectangle<float> &plusBounds) {
+		g.setColour(pal.value);
+		g.setFont(juce::FontOptions(13.0f));
+		g.drawText(label, row.removeFromLeft(row.getWidth() - 3.0f * kButtonW - 8.0f), juce::Justification::centredLeft);
+
+		plusBounds = row.removeFromRight(kButtonW);
+		auto valueBounds = row.removeFromRight(kButtonW);
+		minusBounds = row.removeFromRight(kButtonW);
+
+		auto paintButton = [&](juce::Rectangle<float> bounds, const juce::String &text) {
+			g.setColour(pal.boxBorder);
+			g.drawRoundedRectangle(bounds.reduced(2.0f), 3.0f, 1.0f);
+			g.setColour(pal.value);
+			g.drawText(text, bounds, juce::Justification::centred);
+		};
+		paintButton(minusBounds, "-");
+		paintButton(plusBounds, "+");
+		g.setColour(pal.value);
+		g.drawText((value > 0 ? "+" : "") + juce::String(value), valueBounds, juce::Justification::centred);
+	}
+
+	bool themeLight = false;
+	int programOffset = 0, bankOffset = 0;
+	bool extraTracksOn = false;
+	juce::Rectangle<float> themeRowBounds, progMinusBounds, progPlusBounds, bankMinusBounds, bankPlusBounds,
+		extraTracksRowBounds, audioRowBounds;
+};
+
 // Three clickable fields: MIDI In and MIDI Out (the same idea as
 // D110Panel::showOptionsMenu()'s own "MIDI In"/"MIDI Out" submenus, just promoted to
-// always-visible since this app has no other menu to tuck them into) and a mini utility
-// field for THEME, the one setting this standalone app needs a way to change that the
-// D-110 plugin tucks into its Utility tab instead.
+// always-visible since this app has no other menu to tuck them into) and OPTIONS, which
+// opens OptionsDialogContent above.
 class Toolbar : public juce::Component, private juce::Timer {
 public:
-	Toolbar(NonetSeqHost &h, std::function<void()> onThemeChangedIn)
-		: host(h), onThemeChanged(std::move(onThemeChangedIn)) {
+	Toolbar(NonetSeqHost &h, std::function<void()> onThemeChangedIn, std::function<void()> onExtraTracksToggledIn)
+		: host(h), onThemeChanged(std::move(onThemeChangedIn)),
+		  onExtraTracksToggled(std::move(onExtraTracksToggledIn)) {
 		// Just fast enough that a single incoming note visibly flashes the LED (see
 		// isMidiInActive()'s own 120ms window) without repainting the whole toolbar needlessly
 		// often - MIDI activity is asynchronous (OS MIDI thread) so nothing else would
@@ -36,7 +142,7 @@ public:
 		g.fillAll(pal.panelBg);
 
 		auto b = getLocalBounds().toFloat().reduced(4.0f, 3.0f);
-		themeRect = b.removeFromRight(90.0f).reduced(3.0f, 0.0f);
+		optionsRect = b.removeFromRight(90.0f).reduced(3.0f, 0.0f);
 		auto ledStrip = b.removeFromLeft(10.0f);
 		midiInLedBounds = ledStrip.withSizeKeepingCentre(8.0f, 8.0f);
 		b.removeFromLeft(4.0f);
@@ -45,7 +151,7 @@ public:
 
 		paintField(g, inRect, "MIDI In: " + labelFor(NonetSeqHost::midiInputs(), host.getMidiInputId()));
 		paintField(g, outRect, "MIDI Out: " + labelFor(NonetSeqHost::midiOutputs(), host.getMidiOutputId()));
-		paintField(g, themeRect, d110ui::getTheme() == d110ui::Theme::Light ? "LIGHT" : "DARK");
+		paintField(g, optionsRect, "OPTIONS");
 
 		// Lit for real incoming MIDI on the system port only (see NonetSeqHost::isMidiInActive())
 		// - not the on-screen/PC keyboard, so it's a straight answer to "is anything actually
@@ -60,16 +166,81 @@ public:
 	void mouseDown(const juce::MouseEvent &e) override {
 		if (inRect.contains(e.position)) showInMenu();
 		else if (outRect.contains(e.position)) showOutMenu();
-		else if (themeRect.contains(e.position)) {
-			const bool light = d110ui::getTheme() != d110ui::Theme::Light;
-			d110ui::setTheme(light ? d110ui::Theme::Light : d110ui::Theme::Dark);
-			host.setUiThemeLight(light);
-			if (onThemeChanged) onThemeChanged();
-		}
+		else if (optionsRect.contains(e.position)) showOptionsDialog();
 	}
 
 private:
 	void timerCallback() override { repaint(); }
+
+	void showOptionsDialog() {
+		auto *content = new OptionsDialogContent();
+		content->setSize(320, 5 * 30 + 4 * 10 + 12);
+		auto refresh = [this, content] {
+			content->setValues(d110ui::getTheme() == d110ui::Theme::Light, host.getProgramChangeOffset(),
+			                    host.getBankOffset(), host.getSequencer().getExtraTracksEnabled());
+		};
+		refresh();
+		content->onThemeToggled = [this, content, refresh] {
+			const bool light = d110ui::getTheme() != d110ui::Theme::Light;
+			d110ui::setTheme(light ? d110ui::Theme::Light : d110ui::Theme::Dark);
+			host.setUiThemeLight(light);
+			if (onThemeChanged) onThemeChanged();
+			refresh();
+		};
+		content->onProgramOffsetChanged = [this, content, refresh](int offset) {
+			host.setProgramChangeOffset(offset);
+			refresh();
+		};
+		content->onBankOffsetChanged = [this, content, refresh](int offset) {
+			host.setBankOffset(offset);
+			refresh();
+		};
+		content->onExtraTracksToggled = [this, refresh] {
+			if (onExtraTracksToggled) onExtraTracksToggled();
+			refresh();
+		};
+		content->onAudioSettingsRequested = [this] { showAudioSettingsDialog(); };
+
+		auto *aw = new juce::AlertWindow(
+			"Options",
+			"The offsets below correct the raw Program Change/Bank Select bytes actually sent, in "
+			"case an external synth's own manual numbers them differently (from 0 or from 1) than "
+			"this app's Program/Bank fields do. Extra tracks: same switch as right-clicking above "
+			"the track rows, see docs/sequencer.md. Audio Device opens the usual JUCE device "
+			"picker - this app doesn't output sound, but the device chosen there is what the "
+			"transport's low-jitter clock is tied to (see docs/sequencer.md's Timing section).",
+			juce::AlertWindow::NoIcon);
+		aw->addCustomComponent(content);
+		aw->addButton("Close", 0, juce::KeyPress(juce::KeyPress::returnKey), juce::KeyPress(juce::KeyPress::escapeKey));
+		aw->enterModalState(true, juce::ModalCallbackFunction::create([aw, content](int) {
+			delete content;
+			delete aw;
+		}));
+	}
+
+	// Standard JUCE Audio/MIDI Settings picker (device type/output device/sample rate/
+	// buffer size), same component juce_StandaloneFilterWindow.h uses for the plugin's own
+	// Standalone build's "Audio/MIDI Settings..." menu entry - this app never had an
+	// equivalent since it opens its audio device silently (see NonetSeqHost.h's own
+	// comment on why one is opened at all). No MIDI input/output pickers here - this app's
+	// own MIDI In/Out fields (left of OPTIONS) already cover that, a second control
+	// surface for the same thing would just be confusing. Input channels are 0/0 since
+	// nothing is ever recorded; output 0/2 matches what NonetSeqHost::deviceManager itself
+	// opens.
+	void showAudioSettingsDialog() {
+		auto *selector = new juce::AudioDeviceSelectorComponent(host.getAudioDeviceManager(), 0, 0, 0, 2, false,
+		                                                         false, true, true);
+		selector->setSize(500, 400);
+
+		juce::DialogWindow::LaunchOptions o;
+		o.content.setOwned(selector);
+		o.dialogTitle = "Audio Settings";
+		o.dialogBackgroundColour = d110ui::palette().panelBg;
+		o.escapeKeyTriggersCloseButton = true;
+		o.useNativeTitleBar = true;
+		o.resizable = false;
+		o.launchAsync();
+	}
 
 	static juce::String labelFor(const juce::Array<juce::MidiDeviceInfo> &devs, const juce::String &id) {
 		if (id.isEmpty()) return "(none)";
@@ -115,18 +286,22 @@ private:
 
 	NonetSeqHost &host;
 	std::function<void()> onThemeChanged;
-	juce::Rectangle<float> inRect, outRect, themeRect, midiInLedBounds;
+	std::function<void()> onExtraTracksToggled;
+	juce::Rectangle<float> inRect, outRect, optionsRect, midiInLedBounds;
 };
 
 class MainComponent : public juce::Component {
 public:
 	MainComponent()
-		: toolbar(host, [this] {
-			  toolbar.repaint();
-			  panel.repaint();
-			  keyboard.repaint();
-			  repaint();
-		  }),
+		: toolbar(
+			  host,
+			  [this] {
+				  toolbar.repaint();
+				  panel.repaint();
+				  keyboard.repaint();
+				  repaint();
+			  },
+			  [this] { panel.toggleExtraTracks(); }),
 		  panel(host), keyboard(host) {
 		d110ui::setTheme(host.getUiThemeLight() ? d110ui::Theme::Light : d110ui::Theme::Dark);
 		addAndMakeVisible(toolbar);
@@ -178,8 +353,19 @@ public:
 	const juce::String getApplicationVersion() override { return "1.0"; }
 	bool moreThanOneInstanceAllowed() override { return true; }
 
-	void initialise(const juce::String &) override { mainWindow = std::make_unique<MainWindow>(); }
-	void shutdown() override { mainWindow = nullptr; }
+	void initialise(const juce::String &) override {
+		// Installed before MainWindow so every stock JUCE component this app opens (this
+		// AlertWindow-based Options dialog, the Audio Settings dialog's
+		// AudioDeviceSelectorComponent, any PopupMenu) is themed from the start rather
+		// than needing a second pass - see UiTheme.h's own comment on why this exists and
+		// isn't installed by the plugin (which has no stock-JUCE-chrome dialogs to theme).
+		juce::LookAndFeel::setDefaultLookAndFeel(&d110ui::sharedLookAndFeel());
+		mainWindow = std::make_unique<MainWindow>();
+	}
+	void shutdown() override {
+		mainWindow = nullptr;
+		juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
+	}
 
 private:
 	std::unique_ptr<MainWindow> mainWindow;

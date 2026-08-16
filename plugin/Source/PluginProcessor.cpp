@@ -123,6 +123,9 @@ D110AudioProcessor::D110AudioProcessor()
 	sequencerEngine.setProgramSource(
 		[this](int track) { return sequencerLivePrograms[static_cast<size_t>(track)]; });
 
+	sequencerTrackPrograms.fill(-1);
+	sequencerTrackBanks.fill(1);
+
 	tryAutoLoadRoms();
 }
 
@@ -865,6 +868,26 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 		// sitting in midiMessages) can be told apart and also reach the direct MIDI Out port
 		// below - the first step towards the sequencer driving external gear on its own.
 		juce::MidiBuffer sequencerOut;
+
+		// Per-Part Program Change/Bank override (see getTrackProgram()/getTrackBank()), added
+		// ahead of renderInto() below so it lands at sample 0, on the PLAY/REC edge (precount
+		// included - same reasoning as NonetSeqHost::advance(), the D-110's own patch should be
+		// settled before any note this block might also render). Bank Select (CC0, MSB only)
+		// goes first, same pairing every synth expects.
+		const bool nowSequencerPlaying = sequencerEngine.isPlaying();
+		if (nowSequencerPlaying && !wasSequencerPlayingForProgramSend) {
+			for (int t = 0; t < d110seq::D110SequencerEngine::kRhythmTrack; ++t) {
+				const int program = sequencerTrackPrograms[static_cast<size_t>(t)];
+				if (program < 0) continue;
+				const int channel = sequencerEngine.channelForTrack(t);
+				const int bank = sequencerTrackBanks[static_cast<size_t>(t)];
+				sequencerOut.addEvent(juce::MidiMessage::controllerEvent(channel, 0, juce::jlimit(0, 127, bank - 1)),
+				                       0);
+				sequencerOut.addEvent(juce::MidiMessage::programChange(channel, program), 0);
+			}
+		}
+		wasSequencerPlayingForProgramSend = nowSequencerPlaying;
+
 		sequencerEngine.renderInto(sequencerOut, numSamples, currentSampleRate,
 		                            sequencerEngine.getMetronomeEnabled() ? &sequencerClicks : nullptr);
 		for (const auto meta : sequencerOut)
@@ -1768,6 +1791,96 @@ void D110AudioProcessor::selectTimbreForPart(int part, int timbre) {
 	pendingShortMessages.push_back(juce::uint32(bytes[0]) | (juce::uint32(bytes[1]) << 8));
 }
 
+int D110AudioProcessor::getTrackProgram(int track) const {
+	if (!supportsProgramChangeForTrack(track)) return -1;
+	return sequencerTrackPrograms[static_cast<size_t>(track)];
+}
+
+void D110AudioProcessor::setTrackProgram(int track, int program) {
+	if (!supportsProgramChangeForTrack(track)) return;
+	sequencerTrackPrograms[static_cast<size_t>(track)] = program < 0 ? -1 : juce::jlimit(0, 127, program);
+}
+
+int D110AudioProcessor::getTrackBank(int track) const {
+	if (!supportsProgramChangeForTrack(track)) return 1;
+	return sequencerTrackBanks[static_cast<size_t>(track)];
+}
+
+void D110AudioProcessor::setTrackBank(int track, int bank) {
+	if (!supportsProgramChangeForTrack(track)) return;
+	sequencerTrackBanks[static_cast<size_t>(track)] = juce::jlimit(1, 128, bank);
+}
+
+// sequencerLivePrograms already tracks each Part's live tone NUMBER (0-63) once per block for
+// MIDI-file export - see that array's own comment. Reused here as the Program Change dialog's
+// pre-fill: whatever's playing right now, so Alan doesn't have to know or guess the number.
+int D110AudioProcessor::getTrackProgramHint(int track) const {
+	if (!supportsProgramChangeForTrack(track)) return -1;
+	return sequencerLivePrograms[static_cast<size_t>(track)];
+}
+
+bool D110AudioProcessor::hasSoundSnapshot(int slot) const {
+	if (slot < 0 || slot >= d110seq::D110SequencerEngine::kNumSongSlots) return false;
+	return songSoundSnapshots[static_cast<size_t>(slot)].getSize() > 0;
+}
+
+// Captures the instrument's whole memory the same way exportMemorySnapshot() does (live RAM
+// if the instrument is on, otherwise whatever the NVRAM file already holds), keyed to one of
+// the sequencer's own 4 song slots instead of a file on disk.
+void D110AudioProcessor::storeSoundSnapshotForSlot(int slot) {
+	if (slot < 0 || slot >= d110seq::D110SequencerEngine::kNumSongSlots) return;
+
+	juce::MemoryBlock rams;
+	if (core.isRunning()) {
+		rams.setSize(D110CoreType::kRamSize);
+		if (!core.getRam(static_cast<juce::uint8 *>(rams.getData()))) rams.reset();
+	}
+	if (rams.getSize() == 0) rams = readNvramFile("rams");
+
+	if (rams.getSize() != size_t(D110CoreType::kRamSize)) {
+		lastImportMessage = "Nothing to store yet - switch the instrument on at least once first.";
+		return;
+	}
+	songSoundSnapshots[static_cast<size_t>(slot)] = std::move(rams);
+	lastImportMessage = "Stored the current sounds in Slot " + juce::String(slot + 1) + ".";
+}
+
+// Same power-cycle-and-replace-NVRAM approach as importMemorySnapshot() - the core only reads
+// NVRAM off disk at power-on, so the new memory needs a power cycle to actually take, done
+// here rather than left for the user. Near-instant (bounded by the emulated boot sequence,
+// not a MIDI-speed transfer), but still a real, audible/visible reboot - which is exactly why
+// this is only ever called from an explicit menu action (D110SequencerPanel's song-slot
+// right-click menu), never automatically just from switching which song slot is selected.
+// The memory card's own CONTENT is deliberately left untouched (writeNvramFiles only
+// writes memcs when given a non-empty block) - which sounds a song used is not something
+// the card should change to reflect. Its physical inserted/write-protect state, though, is
+// runtime bus state that core.start() (inside setPoweredOn(true)) always resets on a fresh
+// boot rather than reading back from anywhere - importMemorySnapshot() re-asserts it from
+// its own saved header for the same reason. There's no such header here, so this instead
+// just carries whatever was already true across the power cycle, the same way the card's
+// content itself is left alone.
+void D110AudioProcessor::loadSoundSnapshotForSlot(int slot) {
+	if (slot < 0 || slot >= d110seq::D110SequencerEngine::kNumSongSlots) return;
+	const auto &rams = songSoundSnapshots[static_cast<size_t>(slot)];
+	if (rams.getSize() != size_t(D110CoreType::kRamSize)) {
+		lastImportMessage = "Slot " + juce::String(slot + 1) + " has no stored sounds yet.";
+		return;
+	}
+
+	const bool wasOn = core.isRunning();
+	const bool wasCardInserted = wasOn && core.cardInserted();
+	const bool wasCardWriteProtect = wasOn && core.cardWriteProtect();
+	if (wasOn) setPoweredOn(false);
+	writeNvramFiles(rams, juce::MemoryBlock());
+	if (wasOn) setPoweredOn(true);
+	if (wasOn) {
+		core.setCardInserted(wasCardInserted);
+		core.setCardWriteProtect(wasCardWriteProtect);
+	}
+
+	lastImportMessage = "Loaded Slot " + juce::String(slot + 1) + "'s stored sounds.";
+}
+
 // Патч выбирается НАЖАТИЯМИ, а не записью в память: на D-110 патч - это не один
 // параметр, а целая раскладка, и раскладывает её по временным областям сама прошивка.
 // Записать её за прошивку значило бы держать вторую, свою реализацию смены патча, которая
@@ -2053,6 +2166,25 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	xml->setAttribute("seqPunchIn", sequencerEngine.getPunchIn());
 	xml->setAttribute("seqPunchOut", sequencerEngine.getPunchOut());
 
+	// Per-Part Program Change/Bank override - see getTrackProgram()/getTrackBank(). Workspace
+	// preference, same reasoning as the metronome/precount settings just above, not song
+	// content - a sequencer song plays the same notes regardless of which patches happen to
+	// be armed to auto-load when it starts.
+	for (int t = 0; t < d110seq::D110SequencerEngine::kRhythmTrack; ++t) {
+		xml->setAttribute("pcTrack" + juce::String(t), sequencerTrackPrograms[static_cast<size_t>(t)]);
+		xml->setAttribute("bankTrack" + juce::String(t), sequencerTrackBanks[static_cast<size_t>(t)]);
+	}
+
+	// Per-song sound snapshot - see hasSoundSnapshot()/storeSoundSnapshotForSlot(). Unlike
+	// the per-track override just above, this genuinely IS song content (that's the whole
+	// point of it), so it's keyed per slot, same as the tracks themselves - but only written
+	// when a slot actually has one stored, so a project that never uses the feature doesn't
+	// carry 4 empty base64 blobs around.
+	for (int s = 0; s < d110seq::D110SequencerEngine::kNumSongSlots; ++s) {
+		const auto &snap = songSoundSnapshots[static_cast<size_t>(s)];
+		if (snap.getSize() > 0) xml->setAttribute("soundSnapshotSlot" + juce::String(s), snap.toBase64Encoding());
+	}
+
 	// Tempo, time signature and the 9 tracks ARE song content, so all kNumSongSlots songs
 	// are saved, not just the one currently selected - see writeSequencerSongsXml()'s own
 	// comment. "seqCurrentSlot" being present at all is what tells setStateInformation this
@@ -2173,6 +2305,21 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 	sequencerEngine.setPunchOut(xml->getIntAttribute("seqPunchOut", sequencerEngine.getPunchOut()));
 	sequencerEngine.setLoopMode(static_cast<d110seq::LoopMode>(
 		xml->getIntAttribute("seqLoopMode", static_cast<int>(d110seq::LoopMode::off))));
+
+	for (int t = 0; t < d110seq::D110SequencerEngine::kRhythmTrack; ++t) {
+		setTrackProgram(t, xml->getIntAttribute("pcTrack" + juce::String(t), -1));
+		setTrackBank(t, xml->getIntAttribute("bankTrack" + juce::String(t), 1));
+	}
+
+	for (int s = 0; s < d110seq::D110SequencerEngine::kNumSongSlots; ++s) {
+		songSoundSnapshots[static_cast<size_t>(s)] = {};
+		if (xml->hasAttribute("soundSnapshotSlot" + juce::String(s))) {
+			juce::MemoryBlock block;
+			if (block.fromBase64Encoding(xml->getStringAttribute("soundSnapshotSlot" + juce::String(s)))
+			    && block.getSize() == size_t(D110CoreType::kRamSize))
+				songSoundSnapshots[static_cast<size_t>(s)] = std::move(block);
+		}
+	}
 
 	// "seqCurrentSlot" only exists in projects saved after the 4-song-slot feature - an
 	// older project has a single, unslotted song under the plain "seqTempo"/"seqTrack0"/...

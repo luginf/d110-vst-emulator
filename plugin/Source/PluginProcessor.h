@@ -215,6 +215,36 @@ public:
 	// plain getters/setters (no long-held references across a block boundary).
 	d110seq::D110SequencerEngine &getSequencer() override { return sequencerEngine; }
 
+	// Per-Part Program Change/Bank override, sent once over the firmware's own MIDI IN (and
+	// the direct MIDI Out port, same as any other sequencer note) when PLAY/REC starts - see
+	// D110SequencerHost.h and processBlock()'s own sequencer block. Rhythm excluded: Program
+	// Change picks one of the 128 stored Timbres for a melodic Part, and Rhythm has no
+	// equivalent single-number selection - see supportsProgramChangeForTrack().
+	bool supportsProgramChange() const override { return true; }
+	bool supportsProgramChangeForTrack(int track) const override {
+		return track >= 0 && track < d110seq::D110SequencerEngine::kRhythmTrack;
+	}
+	int getTrackProgram(int track) const override;
+	void setTrackProgram(int track, int program) override;
+	int getTrackBank(int track) const override;
+	void setTrackBank(int track, int bank) override;
+	// -1 = no hint. See sequencerLivePrograms's own comment for what this actually reads.
+	int getTrackProgramHint(int track) const override;
+
+	// Per-song sound snapshot - see D110SequencerHost.h's own comment on why this exists
+	// alongside (not instead of) the per-track Program Change override above. Captures/
+	// restores the instrument's ENTIRE memory (every Patch/Timbre/Tone/System byte), the
+	// same image getStateInformation/exportMemorySnapshot() already know how to carry -
+	// storeSoundSnapshotForSlot() just calls core.getRam() the same way
+	// exportMemorySnapshot() does, and loadSoundSnapshotForSlot() replays
+	// importMemorySnapshot()'s own power-cycle-and-replace-NVRAM approach (near-instant,
+	// felt as a brief reboot - not a MIDI-speed SysEx transfer) directly from the stored
+	// bytes instead of a file.
+	bool supportsSoundSnapshots() const override { return true; }
+	bool hasSoundSnapshot(int slot) const override;
+	void storeSoundSnapshotForSlot(int slot) override;
+	void loadSoundSnapshotForSlot(int slot) override;
+
 	// The plugin opens powered OFF, and clicking POWER boots the real Roland firmware live,
 	// in real time, exactly as the hardware does - the D110Core machine is started here and
 	// the front panel then shows its own LCD coming up. Switching off stops the machine.
@@ -582,6 +612,18 @@ private:
 	// Reused across blocks so refreshing sequencerLiveChannels/sequencerLivePrograms doesn't
 	// reallocate 32KB every time - see their use beside sequencerLiveChannels above.
 	std::vector<juce::uint8> sequencerRamScratch;
+	// Per-Part Program Change/Bank override - see getTrackProgram()/setTrackProgram()/
+	// getTrackBank()/setTrackBank(). -1 = no override (send nothing), same "none" meaning as
+	// NonetSeqHost's own trackPrograms. Bank has no "none" state - see D110SequencerHost.h.
+	// Index kRhythmTrack is never read/written - see supportsProgramChangeForTrack().
+	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerTrackPrograms{};
+	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerTrackBanks{};
+
+	// Per-song sound snapshot - see hasSoundSnapshot()/storeSoundSnapshotForSlot()/
+	// loadSoundSnapshotForSlot(). Empty MemoryBlock (default) = no snapshot stored for that
+	// slot yet. Indexed by song slot, not by track - unlike sequencerTrackPrograms above.
+	std::array<juce::MemoryBlock, d110seq::D110SequencerEngine::kNumSongSlots> songSoundSnapshots;
+	bool wasSequencerPlayingForProgramSend = false;
 	// Only active when debugModeEnabled (Utility tab -> DEBUG) - see processBlock()'s own
 	// diagnostic instrumentation comment. Tracks the hit/miss rate of individual per-part
 	// note-on attempts vs that SAME part actually showing up in the engine's own

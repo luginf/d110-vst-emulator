@@ -1,5 +1,7 @@
 #include "NonetSeqHost.h"
 
+#include <cmath>
+
 #include "D110SequencerSongsFile.h"
 
 NonetSeqHost::NonetSeqHost() {
@@ -18,6 +20,7 @@ NonetSeqHost::NonetSeqHost() {
 	for (int t = d110seq::D110SequencerEngine::kNumTracks; t < d110seq::D110SequencerEngine::kMaxTracks; ++t)
 		trackChannels[static_cast<size_t>(t)] = t == d110seq::D110SequencerEngine::kNumTracks ? 1 : t + 1;
 	trackPrograms.fill(-1);
+	trackBanks.fill(1);
 	engine.setChannelSource([this](int trackIndex) { return trackChannels[static_cast<size_t>(trackIndex)]; });
 	// No live "current program" to report for saveMidiFile() - see setProgramSource()'s
 	// own comment on what returning < 0 means.
@@ -25,16 +28,33 @@ NonetSeqHost::NonetSeqHost() {
 
 	midiCollector.reset(currentSampleRate);
 
+	// Read the settings file's saved audio-device state (if any) up front, so a
+	// previously-chosen device (see getAudioDeviceManager(), used by NonetSeqMain.cpp's
+	// Audio Settings dialog) is what initialise() opens directly below, rather than
+	// always the OS default followed by an audible/clock-glitching switch the moment
+	// loadSettings() ran. Everything else in the settings file is still read by
+	// loadSettings() further down, same as before.
+	std::unique_ptr<juce::XmlElement> savedDeviceState;
+	if (std::unique_ptr<juce::XmlElement> settingsXml = juce::XmlDocument::parse(settingsFile()))
+		if (auto *devXml = settingsXml->getChildByName("DEVICESETUP"))
+			savedDeviceState = std::make_unique<juce::XmlElement>(*devXml);
+
 	deviceManager.addAudioCallback(this);
 	// 0 in / 2 out: nothing is actually rendered (see this class's own header comment on
 	// why an audio device is opened at all) - 2 output channels is just the combination
 	// every backend this targets can always open, even with no interface plugged in.
-	if (deviceManager.initialise(0, 2, nullptr, true).isNotEmpty()) {
+	if (deviceManager.initialise(0, 2, savedDeviceState.get(), true).isNotEmpty()) {
 		usingAudioClock = false;
-		startTimerHz(100); // ~10ms ticks - degraded but keeps the transport moving
+		startFallbackTimer();
 	}
 
 	loadSettings();
+}
+
+void NonetSeqHost::startFallbackTimer() {
+	timerLastMs = juce::Time::getMillisecondCounterHiRes();
+	timerMsAccumulator = 0.0;
+	startTimerHz(100); // ~10ms ticks - see timerCallback() for why this doesn't drift
 }
 
 NonetSeqHost::~NonetSeqHost() {
@@ -53,7 +73,7 @@ void NonetSeqHost::audioDeviceAboutToStart(juce::AudioIODevice *device) {
 
 void NonetSeqHost::audioDeviceStopped() {
 	usingAudioClock = false;
-	startTimerHz(100);
+	startFallbackTimer();
 }
 
 void NonetSeqHost::audioDeviceIOCallbackWithContext(
@@ -61,29 +81,55 @@ void NonetSeqHost::audioDeviceIOCallbackWithContext(
 	const juce::AudioIODeviceCallbackContext &) {
 	for (int ch = 0; ch < numOutputChannels; ++ch)
 		if (outputChannelData[ch] != nullptr) juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
-	advance(numSamples);
+	advance(numSamples, outputChannelData, numOutputChannels);
 }
 
 void NonetSeqHost::timerCallback() {
-	// 100Hz -> 10ms/tick at the nominal sample rate. Only runs when audioDeviceAboutToStart
-	// never fired (no usable output device) - see the constructor's own comment.
-	advance(static_cast<int>(currentSampleRate * 0.01));
+	// Only runs when audioDeviceAboutToStart never fired (no usable output device) - see
+	// the constructor's own comment. Advances by however many samples' worth of REAL
+	// elapsed time have passed since the last tick, not a fixed 10ms - JUCE's Timer only
+	// promises "at least" the requested interval between calls, so a tick delayed by OS
+	// scheduling (CPU load, another app hogging the message thread, ...) would otherwise
+	// silently advance less than the wall-clock time that actually went by, and the
+	// transport would run measurably slow over a long session. timerMsAccumulator carries
+	// the sub-sample remainder forward each call (same reasoning as
+	// D110SequencerEngine::renderInto()'s own precountRemainingBeats residual) so the
+	// total samples advanced always converges on real elapsed time, never stalling short
+	// of it.
+	const double now = juce::Time::getMillisecondCounterHiRes();
+	timerMsAccumulator += now - timerLastMs;
+	timerLastMs = now;
+
+	const double msPerSample = 1000.0 / currentSampleRate;
+	const int samples = static_cast<int>(timerMsAccumulator / msPerSample);
+	if (samples <= 0) return;
+	timerMsAccumulator -= samples * msPerSample;
+	advance(samples);
 }
 
-void NonetSeqHost::advance(int numSamples) {
+void NonetSeqHost::advance(int numSamples, float *const *outputChannelData, int numOutputChannels) {
 	if (numSamples <= 0) return;
 
 	// PLAY/REC edge (precount included, on purpose - see the header comment): send whichever
 	// tracks have a Program Change set, once, before anything else this block might send, so
 	// an external synth on that channel has already switched patch by the time real notes
-	// (thru or sequenced) reach it.
+	// (thru or sequenced) reach it. Bank Select (CC0, MSB only) goes first, immediately before
+	// its track's Program Change, same pairing every synth expects. programChangeOffset/
+	// bankOffset (see their own comment) are applied here, at the very last moment, so
+	// trackPrograms/trackBanks themselves always stay in the plain musician-facing numbering
+	// the dialog shows, regardless of what correction is currently dialled in.
 	const bool nowPlaying = engine.isPlaying();
 	if (nowPlaying && !wasPlayingForProgramSend) {
 		juce::MidiBuffer pcOut;
 		for (int t = 0; t < engine.activeTrackCount(); ++t) {
 			const int program = trackPrograms[static_cast<size_t>(t)];
 			if (program < 0) continue;
-			pcOut.addEvent(juce::MidiMessage::programChange(engine.channelForTrack(t), program), 0);
+			const int channel = engine.channelForTrack(t);
+			const int bank = trackBanks[static_cast<size_t>(t)];
+			const int rawProgram = juce::jlimit(0, 127, program + programChangeOffset);
+			const int rawBank = juce::jlimit(0, 127, (bank - 1) + bankOffset);
+			pcOut.addEvent(juce::MidiMessage::controllerEvent(channel, 0, rawBank), 0);
+			pcOut.addEvent(juce::MidiMessage::programChange(channel, rawProgram), 0);
 		}
 		const juce::ScopedLock lock(osMidiLock);
 		if (osMidiOut != nullptr && pcOut.getNumEvents() > 0) osMidiOut->sendBlockOfMessagesNow(pcOut);
@@ -148,10 +194,40 @@ void NonetSeqHost::advance(int numSamples) {
 		const int note = msg.getNoteNumber();
 		if (note >= 0 && note < 128) remoteNoteActive[static_cast<size_t>(note)].store(msg.isNoteOn());
 	}
-	// The metronome's audible click itself is not synthesized here - there is no audio
-	// output in this app worth the name (see the class header comment) - so only the
-	// visual LED strip and the "use rhythm channel" MIDI click (already inside
-	// sequencerOut when that mode is on) are how this app's own metronome is heard.
+	// Metronome click: same short decaying sine as PluginProcessor.cpp's identically-
+	// shaped block (see its own comment there for why metronomeSamplesRemaining is
+	// checked even on blocks with no NEW click - the ~30ms decay usually outlives one
+	// audio block). outputChannelData is only non-null from the real audio callback
+	// (never the timer fallback, which has nothing to write into - the click is simply
+	// inaudible in that degraded mode, same as everything else about it). Skipped when
+	// the metronome is routed through the rhythm channel instead - that real MIDI note
+	// (already inside sequencerOut, sent below) IS the click sound in that mode.
+	if (outputChannelData != nullptr && (!clicks.empty() || metronomeSamplesRemaining > 0)
+	    && !engine.getMetronomeUseChannel10()) {
+		constexpr double kClickSeconds = 0.03;
+		const int clickTotalSamples = juce::jmax(1, static_cast<int>(currentSampleRate * kClickSeconds));
+		const float volume = engine.getMetronomeVolume();
+		int cursor = 0;
+		auto ringUpTo = [&](int endSample) {
+			for (int i = cursor; i < endSample; ++i) {
+				if (metronomeSamplesRemaining <= 0) continue;
+				const float amp = static_cast<float>(metronomeSamplesRemaining) / static_cast<float>(clickTotalSamples);
+				const float s = static_cast<float>(std::sin(metronomePhase)) * amp * 0.25f * volume;
+				metronomePhase += juce::MathConstants<double>::twoPi * metronomeFreq / currentSampleRate;
+				for (int ch = 0; ch < numOutputChannels; ++ch)
+					if (outputChannelData[ch] != nullptr) outputChannelData[ch][i] += s;
+				--metronomeSamplesRemaining;
+			}
+		};
+		for (const auto &click : clicks) {
+			ringUpTo(click.samplePosition);
+			cursor = click.samplePosition;
+			metronomeSamplesRemaining = clickTotalSamples;
+			metronomeFreq = click.downbeat ? 1500.0 : 1000.0;
+			metronomePhase = 0.0;
+		}
+		ringUpTo(numSamples);
+	}
 
 	const juce::ScopedLock lock(osMidiLock);
 	if (osMidiOut != nullptr && sequencerOut.getNumEvents() > 0) osMidiOut->sendBlockOfMessagesNow(sequencerOut);
@@ -186,6 +262,16 @@ int NonetSeqHost::getTrackProgram(int track) const {
 void NonetSeqHost::setTrackProgram(int track, int program) {
 	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return;
 	trackPrograms[static_cast<size_t>(track)] = program < 0 ? -1 : juce::jlimit(0, 127, program);
+}
+
+int NonetSeqHost::getTrackBank(int track) const {
+	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return 1;
+	return trackBanks[static_cast<size_t>(track)];
+}
+
+void NonetSeqHost::setTrackBank(int track, int bank) {
+	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return;
+	trackBanks[static_cast<size_t>(track)] = juce::jlimit(1, 128, bank);
 }
 
 void NonetSeqHost::injectTestNote(int channel, int note, float velocity, bool on) {
@@ -274,10 +360,13 @@ void NonetSeqHost::loadSettings() {
 	keyboardPcInput = xml->getIntAttribute("kbdPcInput", keyboardPcInput ? 1 : 0) != 0;
 	keyboardPcLayout = juce::jlimit(0, 1, xml->getIntAttribute("kbdPcLayout", keyboardPcLayout));
 	uiThemeLight = xml->getIntAttribute("uiThemeLight", uiThemeLight ? 1 : 0) != 0;
+	setProgramChangeOffset(xml->getIntAttribute("pcOffset", 0));
+	setBankOffset(xml->getIntAttribute("bankOffset", 0));
 
 	for (int t = 0; t < d110seq::D110SequencerEngine::kMaxTracks; ++t) {
 		setTrackChannel(t, xml->getIntAttribute("chTrack" + juce::String(t), trackChannels[static_cast<size_t>(t)]));
 		setTrackProgram(t, xml->getIntAttribute("pcTrack" + juce::String(t), -1));
+		setTrackBank(t, xml->getIntAttribute("bankTrack" + juce::String(t), 1));
 	}
 
 	// kMaxTracks unconditionally - see D110SequencerSongsFile.h's own comment on why.
@@ -310,14 +399,24 @@ void NonetSeqHost::saveSettings() const {
 	xml.setAttribute("kbdPcInput", keyboardPcInput ? 1 : 0);
 	xml.setAttribute("kbdPcLayout", keyboardPcLayout);
 	xml.setAttribute("uiThemeLight", uiThemeLight ? 1 : 0);
+	xml.setAttribute("pcOffset", programChangeOffset);
+	xml.setAttribute("bankOffset", bankOffset);
 
 	for (int t = 0; t < d110seq::D110SequencerEngine::kMaxTracks; ++t) {
 		xml.setAttribute("chTrack" + juce::String(t), trackChannels[static_cast<size_t>(t)]);
 		xml.setAttribute("pcTrack" + juce::String(t), trackPrograms[static_cast<size_t>(t)]);
+		xml.setAttribute("bankTrack" + juce::String(t), trackBanks[static_cast<size_t>(t)]);
 	}
 
 	// kMaxTracks unconditionally - see D110SequencerSongsFile.h's own comment on why.
 	d110seq::writeSongsXml(engine, xml, d110seq::D110SequencerEngine::kMaxTracks);
+
+	// Device type/output device/sample rate/buffer size chosen via the Audio Settings
+	// dialog (NonetSeqMain.cpp) - read back by the constructor, before initialise(), so
+	// next launch opens straight into the same device rather than the OS default.
+	// createStateXml() always tags the element "DEVICESETUP" itself (see
+	// AudioDeviceManager::updateXml()); the constructor looks it up by that same name.
+	if (auto deviceState = deviceManager.createStateXml()) xml.addChildElement(deviceState.release());
 
 	settingsFile().getParentDirectory().createDirectory();
 	xml.writeTo(settingsFile());

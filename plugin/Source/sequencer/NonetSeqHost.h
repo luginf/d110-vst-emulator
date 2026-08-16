@@ -9,14 +9,21 @@
 // D110AudioProcessor::setMidiInputDevice/setMidiOutputDevice) - just not beside anything
 // else here, since there is no host and no firmware to also feed.
 //
-// Driven by a real (silent) audio device callback rather than a GUI timer, on purpose:
-// this app's entire reason to exist is MIDI timing accuracy for external gear, and a
-// hardware-clocked audio callback has far less jitter than anything on the message
-// thread - the same reasoning that motivated the native CPU core's own move off MAME's
-// non-audio-thread stepping (see CLAUDE.md). Nothing is actually rendered to it; a real
-// device is opened purely to get that clock. If no output device is available at all
+// Driven by a real audio device callback rather than a GUI timer, on purpose: this app's
+// entire reason to exist is MIDI timing accuracy for external gear, and a hardware-
+// clocked audio callback has far less jitter than anything on the message thread - the
+// same reasoning that motivated the native CPU core's own move off MAME's non-audio-
+// thread stepping (see CLAUDE.md). The device is opened primarily to get that clock, not
+// to be an instrument - there's still no synth here - but since a real output stream is
+// already open, the sequencer's own metronome click (see advance()'s own comment) is
+// synthesized straight into it the same way PluginProcessor.cpp does for the plugin,
+// rather than staying silent the way the rest of this app's output is. If no output
+// device is available at all
 // (audioDeviceAboutToStart() never fires), the constructor starts a plain juce::Timer
-// fallback instead - degraded jitter, but still usable.
+// fallback instead - each tick still measures real elapsed time rather than assuming a
+// fixed 10ms (see timerCallback()), so it doesn't drift over a long session, but it's
+// still at the mercy of OS scheduling for when each tick actually lands, so more jitter
+// than the audio-clocked path.
 
 #include <array>
 #include <atomic>
@@ -61,6 +68,22 @@ public:
 	bool supportsProgramChange() const override { return true; }
 	int getTrackProgram(int track) const override;
 	void setTrackProgram(int track, int program) override;
+	int getTrackBank(int track) const override;
+	void setTrackBank(int track, int bank) override;
+
+	// Global correction applied to the raw Program Change/Bank Select bytes actually sent
+	// (advance()), on top of whatever getTrackProgram()/getTrackBank() already resolved to -
+	// separately, since only one of the two might need it. Different synths' manuals number
+	// these from 0 or from 1 inconsistently, and there's no way to know which from here, so
+	// rather than guessing this just nudges the outgoing byte until playback matches what the
+	// manual says it should. Set from the Options screen (NonetSeqMain.cpp's OptionsDialog),
+	// Nonet-Seq only - the plugin's own Program Change is self-contained (see
+	// D110AudioProcessor::selectTimbreForPart()'s own comment on where its channel/value come
+	// from), nothing external to disagree with.
+	int getProgramChangeOffset() const { return programChangeOffset; }
+	void setProgramChangeOffset(int offset) { programChangeOffset = juce::jlimit(-127, 127, offset); }
+	int getBankOffset() const { return bankOffset; }
+	void setBankOffset(int offset) { bankOffset = juce::jlimit(-127, 127, offset); }
 
 	// D110KeyboardHost - the on-screen keyboard's notes go into midiCollector, exactly the
 	// queue a real MIDI In port's handleIncomingMidiMessage() feeds, so they thru to MIDI
@@ -110,6 +133,15 @@ public:
 	void loadSettings();
 	void saveSettings() const;
 
+	// Exposed so NonetSeqMain.cpp's Options dialog can host a real
+	// juce::AudioDeviceSelectorComponent against it (device type/output device/sample
+	// rate/buffer size - the usual JUCE Audio/MIDI Settings picker). The device chosen
+	// here is what the transport's low-jitter clock is tied to (see this class's own
+	// header comment) AND, now, what the metronome's audible click actually plays
+	// through when it isn't routed via the rhythm channel instead - see advance()'s own
+	// comment.
+	juce::AudioDeviceManager &getAudioDeviceManager() { return deviceManager; }
+
 private:
 	void audioDeviceIOCallbackWithContext(const float *const *inputChannelData, int numInputChannels,
 	                                       float *const *outputChannelData, int numOutputChannels,
@@ -118,17 +150,35 @@ private:
 	void audioDeviceStopped() override;
 	void handleIncomingMidiMessage(juce::MidiInput *, const juce::MidiMessage &) override;
 	void timerCallback() override; // fallback clock, only running if no audio device opened
+	void startFallbackTimer(); // (re)starts timerCallback() ticking, resetting its clock state
 
 	// Shared by the real callback and the timer fallback - advances the engine by
 	// numSamples at currentSampleRate, capturing/step-recording live input the same way
 	// PluginProcessor::processBlock does, then forwards whatever the sequencer played to
 	// osMidiOut. See that method's own comment for why this mirrors it closely.
-	void advance(int numSamples);
+	// outputChannelData/numOutputChannels are non-null only when called from the real
+	// audio callback (never from the timer fallback, which has no buffer to write into)
+	// - when present, the metronome's audible click is synthesized straight into them.
+	void advance(int numSamples, float *const *outputChannelData = nullptr, int numOutputChannels = 0);
 
 	d110seq::D110SequencerEngine engine;
 	juce::AudioDeviceManager deviceManager;
 	bool usingAudioClock = false;
 	double currentSampleRate = 44100.0;
+
+	// Fallback-timer clock state (timerCallback(), only relevant while usingAudioClock is
+	// false) - see timerCallback()'s own comment for why this is a running real-time
+	// accumulator rather than a fixed samples-per-tick advance.
+	double timerLastMs = 0.0;
+	double timerMsAccumulator = 0.0;
+
+	// Metronome click synthesis state - see advance()'s own comment. Same short decaying
+	// sine approach and same member-variable-carried-decay reasoning as
+	// PluginProcessor.h's identically-named fields (a click's ~30ms decay usually outlives
+	// the audio block it started in).
+	int metronomeSamplesRemaining = 0;
+	double metronomePhase = 0.0;
+	double metronomeFreq = 1000.0;
 
 	juce::MidiMessageCollector midiCollector;
 	std::unique_ptr<juce::MidiInput> osMidiIn;
@@ -146,7 +196,13 @@ private:
 	std::array<int, d110seq::D110SequencerEngine::kMaxTracks> trackChannels;
 	// -1 = none, else a raw 0-127 MIDI program number - see setTrackProgram()/advance().
 	std::array<int, d110seq::D110SequencerEngine::kMaxTracks> trackPrograms;
+	// 1-128 musician-facing bank number (raw MIDI Bank Select MSB sent is bank-1) - see
+	// setTrackBank()/advance(). Always a real value, no "none" state - see D110SequencerHost.h.
+	std::array<int, d110seq::D110SequencerEngine::kMaxTracks> trackBanks;
 	bool wasPlayingForProgramSend = false;
+	// See getProgramChangeOffset()/getBankOffset() above.
+	int programChangeOffset = 0;
+	int bankOffset = 0;
 
 	// See isNoteActive() above - one flag per MIDI note number, written from advance() (the
 	// audio/timer thread), read from the message thread by D110Keyboard's own low-Hz timer.

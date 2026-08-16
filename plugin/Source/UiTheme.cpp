@@ -86,7 +86,66 @@ const Palette kLight {
 } // namespace
 
 Theme getTheme() { return currentTheme; }
-void setTheme(Theme theme) { currentTheme = theme; }
+void setTheme(Theme theme) {
+	currentTheme = theme;
+	sharedLookAndFeel().refresh();
+}
 const Palette &palette() { return currentTheme == Theme::Light ? kLight : kDark; }
+
+LookAndFeel::LookAndFeel() { refresh(); }
+
+void LookAndFeel::refresh() {
+	const auto &pal = palette();
+
+	setColour(juce::ResizableWindow::backgroundColourId, pal.panelBg);
+	setColour(juce::DocumentWindow::textColourId, pal.value);
+
+	setColour(juce::AlertWindow::backgroundColourId, pal.panelBg);
+	setColour(juce::AlertWindow::textColourId, pal.value);
+	setColour(juce::AlertWindow::outlineColourId, pal.boxBorder);
+
+	setColour(juce::TextButton::buttonColourId, pal.box);
+	setColour(juce::TextButton::buttonOnColourId, pal.seqActiveFill);
+	setColour(juce::TextButton::textColourOffId, pal.value);
+	setColour(juce::TextButton::textColourOnId, pal.seqActiveText);
+
+	setColour(juce::ComboBox::backgroundColourId, pal.box);
+	setColour(juce::ComboBox::textColourId, pal.value);
+	setColour(juce::ComboBox::outlineColourId, pal.boxBorder);
+	setColour(juce::ComboBox::arrowColourId, pal.value);
+
+	setColour(juce::PopupMenu::backgroundColourId, pal.box);
+	setColour(juce::PopupMenu::textColourId, pal.value);
+	setColour(juce::PopupMenu::highlightedBackgroundColourId, pal.seqActiveFill);
+	setColour(juce::PopupMenu::highlightedTextColourId, pal.seqActiveText);
+
+	setColour(juce::TextEditor::backgroundColourId, pal.box);
+	setColour(juce::TextEditor::textColourId, pal.value);
+	setColour(juce::TextEditor::outlineColourId, pal.boxBorder);
+	setColour(juce::TextEditor::focusedOutlineColourId, pal.label);
+
+	setColour(juce::Label::textColourId, pal.value);
+	setColour(juce::ToggleButton::textColourId, pal.value);
+
+	setColour(juce::Slider::thumbColourId, pal.seqActiveFill);
+	setColour(juce::Slider::trackColourId, pal.boxBorder);
+	setColour(juce::Slider::backgroundColourId, pal.box);
+
+	setColour(juce::ScrollBar::thumbColourId, pal.boxBorder);
+
+	// setColour() above only affects future painting - it doesn't by itself touch
+	// anything already on screen. Without this, a dialog that was already open at the
+	// moment the theme was toggled (Options itself, since that's exactly where the
+	// toggle lives) would keep its stale chrome colours until closed and reopened.
+	// sendLookAndFeelChange() is the standard JUCE way to push a LookAndFeel colour
+	// change out to a live component tree - repaints it and recurses into every child.
+	for (int i = 0; i < juce::TopLevelWindow::getNumTopLevelWindows(); ++i)
+		if (auto *tlw = juce::TopLevelWindow::getTopLevelWindow(i)) tlw->sendLookAndFeelChange();
+}
+
+LookAndFeel &sharedLookAndFeel() {
+	static LookAndFeel laf;
+	return laf;
+}
 
 } // namespace d110ui

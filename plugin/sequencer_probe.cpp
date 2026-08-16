@@ -1455,6 +1455,132 @@ void testUndo() {
 	}
 }
 
+// D110SequencerPanel's event-list dialog (eventsInBarRange()/deleteNoteEvent()) - a plain
+// list, scoped to one bar, for removing a single wrong note (Alan's own request, 2026-08-12:
+// "pas un piano roll").
+void testEventList() {
+	std::printf("-- event list (eventsInBarRange/deleteNoteEvent) --\n");
+	D110SequencerEngine engine;
+	engine.setChannelSource(defaultChannelForTrack);
+	engine.setTempo(120.0);
+	engine.setPrecountBars(0);
+
+	engine.armTrack(0);
+	engine.startRecording();
+	// Bar 1 (4/4, beats 0-4): a right note at beat 0, a wrong one at beat 2, both 0.5 beats
+	// long. Bar 2 (beats 4-8): one more note, to prove it's excluded from bar 1's list.
+	engine.captureEvent(juce::MidiMessage::noteOn(1, (juce::uint8)60, (juce::uint8)100), 0.0);
+	engine.captureEvent(juce::MidiMessage::noteOff(1, (juce::uint8)60), 0.5);
+	engine.captureEvent(juce::MidiMessage::noteOn(1, (juce::uint8)61, (juce::uint8)90), 2.0);
+	engine.captureEvent(juce::MidiMessage::noteOff(1, (juce::uint8)61), 2.5);
+	engine.captureEvent(juce::MidiMessage::noteOn(1, (juce::uint8)72, (juce::uint8)110), 4.5);
+	engine.captureEvent(juce::MidiMessage::noteOff(1, (juce::uint8)72), 5.0);
+	engine.stopRecording();
+
+	auto bar1 = engine.eventsInBarRange(0, 1, 1);
+	check(bar1.size() == 2, "bar 1 lists exactly its own 2 notes, not bar 2's");
+	// Sequence order is time-sorted (see D110SequencerEngine.cpp's own established sort()/
+	// updateMatchedPairs() convention), so index 0 is the beat-0 note, index 1 the beat-2 one.
+	check(bar1[0].note == 60 && bar1[0].beatInBar == 0.0 && bar1[0].velocity == 100
+	          && bar1[0].durationBeats == 0.5,
+	      "first entry: right note, correct beat/velocity/duration");
+	check(bar1[1].note == 61 && bar1[1].beatInBar == 2.0 && bar1[1].velocity == 90,
+	      "second entry: wrong note, correct beat/velocity");
+
+	auto bar2 = engine.eventsInBarRange(0, 2, 2);
+	check(bar2.size() == 1 && bar2[0].note == 72 && bar2[0].beatInBar == 0.5,
+	      "bar 2 lists only its own note, beat-in-bar relative to bar 2's own start");
+
+	// Delete the wrong note (index from bar1[1] above) - the right note and bar 2's note must
+	// both survive untouched.
+	engine.deleteNoteEvent(0, bar1[1].index);
+	auto afterDelete = engine.eventsInBarRange(0, 1, 1);
+	check(afterDelete.size() == 1 && afterDelete[0].note == 60,
+	      "wrong note gone, right note still there after deleteNoteEvent()");
+	check(engine.eventsInBarRange(0, 2, 2).size() == 1, "bar 2's note untouched by bar 1's delete");
+
+	// Confirmed by playback too, not just the list API: the deleted note's pitch never sounds.
+	engine.gotoBar(1);
+	engine.play();
+	auto notes = renderBlock(engine, 96000, 48000.0); // 2s at 120bpm covers both bars
+	bool sawWrongNote = false, sawRightNote = false;
+	for (const auto &e : notes) {
+		if (!e.message.isNoteOn() || e.message.getChannel() != 2) continue;
+		if (e.message.getNoteNumber() == 61) sawWrongNote = true;
+		if (e.message.getNoteNumber() == 60) sawRightNote = true;
+	}
+	check(!sawWrongNote, "deleted note never sounds during playback");
+	check(sawRightNote, "the note that wasn't deleted still sounds");
+
+	// Undo brings a deleted note back, same as every other destructive edit here.
+	{
+		D110SequencerEngine engine2;
+		engine2.setChannelSource(defaultChannelForTrack);
+		engine2.setPrecountBars(0);
+		engine2.armTrack(0);
+		engine2.startRecording();
+		engine2.captureEvent(juce::MidiMessage::noteOn(1, (juce::uint8)60, (juce::uint8)100), 0.0);
+		engine2.captureEvent(juce::MidiMessage::noteOff(1, (juce::uint8)60), 0.5);
+		engine2.stopRecording();
+
+		const auto before = engine2.eventsInBarRange(0, 1, 1);
+		check(before.size() == 1, "undo/eventList: one note before deleting");
+		engine2.pushUndoSnapshot();
+		engine2.deleteNoteEvent(0, before[0].index);
+		check(engine2.eventsInBarRange(0, 1, 1).empty(), "undo/eventList: note gone right after delete");
+		engine2.undo();
+		check(engine2.eventsInBarRange(0, 1, 1).size() == 1, "undo/eventList: note is back after undo()");
+	}
+
+	// setNoteEventPitch() - retuning a note in place, same list-edit dialog ("modifier la
+	// valeur de la note", Alan's own request alongside delete).
+	{
+		D110SequencerEngine engine3;
+		engine3.setChannelSource(defaultChannelForTrack);
+		engine3.setPrecountBars(0);
+		engine3.armTrack(0);
+		engine3.startRecording();
+		engine3.captureEvent(juce::MidiMessage::noteOn(1, (juce::uint8)61, (juce::uint8)90), 2.0);
+		engine3.captureEvent(juce::MidiMessage::noteOff(1, (juce::uint8)61), 2.5);
+		engine3.stopRecording();
+
+		const auto before = engine3.eventsInBarRange(0, 1, 1);
+		check(before.size() == 1 && before[0].note == 61, "pitch edit: wrong note there before the edit");
+
+		engine3.pushUndoSnapshot();
+		engine3.setNoteEventPitch(0, before[0].index, 60);
+		const auto after = engine3.eventsInBarRange(0, 1, 1);
+		check(after.size() == 1 && after[0].note == 60, "pitch edit: same slot, corrected pitch");
+		check(after[0].beatInBar == before[0].beatInBar && after[0].velocity == before[0].velocity
+		          && after[0].durationBeats == before[0].durationBeats,
+		      "pitch edit: beat/velocity/duration untouched, only the pitch changed");
+
+		// Clamped, not wrapped, same convention as transposeBars().
+		engine3.setNoteEventPitch(0, after[0].index, 999);
+		check(engine3.eventsInBarRange(0, 1, 1)[0].note == 127, "pitch edit: clamps above 127 instead of wrapping");
+		engine3.setNoteEventPitch(0, after[0].index, -5);
+		check(engine3.eventsInBarRange(0, 1, 1)[0].note == 0, "pitch edit: clamps below 0 instead of wrapping");
+
+		// Confirmed by playback: the corrected pitch is what actually sounds, on the same beat.
+		engine3.setNoteEventPitch(0, engine3.eventsInBarRange(0, 1, 1)[0].index, 60);
+		engine3.gotoBar(1);
+		engine3.play();
+		auto notes = renderBlock(engine3, 96000, 48000.0); // 2s at 120bpm covers bar 1 (4 beats)
+		bool sawCorrectedNote = false, sawOriginalNote = false;
+		for (const auto &e : notes) {
+			if (!e.message.isNoteOn() || e.message.getChannel() != 2) continue;
+			if (e.message.getNoteNumber() == 60) sawCorrectedNote = true;
+			if (e.message.getNoteNumber() == 61) sawOriginalNote = true;
+		}
+		check(sawCorrectedNote, "pitch edit: corrected note sounds during playback");
+		check(!sawOriginalNote, "pitch edit: original wrong pitch never sounds again");
+
+		// Undo reverts a pitch edit too.
+		engine3.undo();
+		check(engine3.eventsInBarRange(0, 1, 1)[0].note == 61, "undo/pitch edit: back to the original wrong note");
+	}
+}
+
 // Nonet Sequencer's extra 7 tracks (kNumTracks..kMaxTracks-1) - never reachable in the D-110
 // plugin (nothing here ever calls setExtraTracksEnabled(true) unless the test does it itself,
 // exactly matching how the plugin's own code never does either).
@@ -1557,6 +1683,7 @@ int main() {
 	testStepRecording();
 	testTransposeBars();
 	testUndo();
+	testEventList();
 	testExtraTracks();
 
 	if (failures == 0) {

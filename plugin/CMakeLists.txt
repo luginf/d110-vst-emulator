@@ -1767,7 +1767,8 @@ add_executable(Nonet-Seq
     Source/UiTheme.cpp)
 target_include_directories(Nonet-Seq PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(Nonet-Seq PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)
-target_link_libraries(Nonet-Seq PRIVATE juce::juce_gui_extra juce::juce_audio_devices juce::juce_audio_basics)
+target_link_libraries(Nonet-Seq PRIVATE juce::juce_gui_extra juce::juce_audio_devices juce::juce_audio_basics
+    juce::juce_audio_utils)
 
 # D110KeyboardHost::isNoteActive() (the on-screen keyboard's "remote activity" LEDs) against
 # NonetSeqHost - no GUI, but still needs juce_events' message loop (see the probe's own

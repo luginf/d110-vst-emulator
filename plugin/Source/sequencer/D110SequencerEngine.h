@@ -338,6 +338,34 @@ public:
 	// checkpoints before calling this.
 	void transposeBars(int trackIndex, int fromBar, int toBarInclusive, int semitones);
 
+	// One note event, for D110SequencerPanel's event-list edit dialog - not used by
+	// playback/rendering, which reads a track's own MidiMessageSequence directly.
+	struct NoteEventInfo {
+		int index;            // this track's own MidiMessageSequence index - pass to deleteNoteEvent()
+		double beatInBar;     // 0-indexed offset from the start of whichever bar this note is in
+		int note;
+		int velocity;
+		double durationBeats; // 0 if no matching note-off was found (shouldn't normally happen)
+	};
+
+	// Every note-on landing in [fromBar, toBarInclusive] (1-indexed, inclusive) on one track -
+	// for a graphical, list-based way to remove a single wrong note without touching the rest
+	// of the bar (Alan's own request: "pas un piano roll", scoped to the currently navigated
+	// bar). `index` in each entry is only valid until the next edit to this track - re-fetch
+	// after calling deleteNoteEvent(). Read-only: doesn't need pushUndoSnapshot() itself.
+	std::vector<NoteEventInfo> eventsInBarRange(int trackIndex, int fromBar, int toBarInclusive) const;
+
+	// Deletes one note event (and its matching note-off, if any) - index as returned by
+	// eventsInBarRange(). No-op if out of range. See pushUndoSnapshot() above - the UI
+	// checkpoints before calling this, same as every other destructive edit.
+	void deleteNoteEvent(int trackIndex, int index);
+
+	// Retunes one note event (and its matching note-off, if any) to newNote, clamped to
+	// [0, 127] - index as returned by eventsInBarRange(). Its beat position and velocity are
+	// untouched. No-op if out of range. See pushUndoSnapshot() above - the UI checkpoints
+	// before calling this, same as every other destructive edit.
+	void setNoteEventPitch(int trackIndex, int index, int newNote);
+
 	// Clears every track in the CURRENT slot (events, mute/solo/quantize all reset) and
 	// stops/rewinds/disarms - "new song" within the currently selected slot. Transport
 	// preferences (tempo, time signature, loop/punch, precount, metronome) are left alone,

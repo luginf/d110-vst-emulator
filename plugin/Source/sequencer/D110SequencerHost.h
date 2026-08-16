@@ -62,4 +62,40 @@ public:
 	virtual bool supportsProgramChange() const { return false; }
 	virtual int getTrackProgram(int /*track*/) const { return -1; }
 	virtual void setTrackProgram(int /*track*/, int /*program*/) {}
+
+	// Optional narrowing of supportsProgramChange() to specific tracks - default mirrors the
+	// blanket flag. The D-110 plugin overrides this to exclude the Rhythm track: Program
+	// Change picks one of a melodic Part's 128 stored Timbres, and Rhythm has no equivalent
+	// single-number selection (each key already has its own sound) - see
+	// D110AudioProcessor::supportsProgramChangeForTrack().
+	virtual bool supportsProgramChangeForTrack(int track) const { return supportsProgramChange(); }
+
+	// Bank Select (CC0, MSB only), sent immediately before the Program Change above, same
+	// 1-128 musician-facing numbering. Only meaningful once a Program Change is actually set
+	// (see getTrackProgram()) - defaults to bank 1 rather than "none" since most synths treat
+	// bank 0/MSB-absent as bank 1 anyway, so there's no useful "unset" state to represent.
+	virtual int getTrackBank(int /*track*/) const { return 1; }
+	virtual void setTrackBank(int /*track*/, int /*bank*/) {}
+
+	// Optional convenience hint for the Program Change dialog's pre-fill: -1 = no hint (leave
+	// the field blank when no override is set yet - Nonet-Seq's original behaviour, since it
+	// has no sound engine of its own to read a "current" value from). The D-110 plugin
+	// overrides this to report the Part's own live tone number, so the dialog defaults to
+	// "whatever this Part is playing right now" - see
+	// D110AudioProcessor::getTrackProgramHint().
+	virtual int getTrackProgramHint(int /*track*/) const { return -1; }
+
+	// Per-song sound snapshot: the instrument's whole memory (every Patch, Timbre, Tone and
+	// System setting - see docs/sysex_address_map.md), captured/restored per song slot so
+	// switching which song is loaded can also recall which sounds it used, instead of the
+	// Program Change override above (which is one global value regardless of song). Plugin-
+	// only - Nonet-Seq has no firmware/memory of its own to snapshot, so these stay false/
+	// no-op there, same reasoning as supportsTrackChannelEdit(). See
+	// D110AudioProcessor::storeSoundSnapshotForSlot()/loadSoundSnapshotForSlot() and
+	// D110SequencerPanel::showCopySongMenu(), which offers both from the song-slot buttons'
+	// right-click menu.
+	virtual bool supportsSoundSnapshots() const { return false; }
+	virtual bool hasSoundSnapshot(int /*slot*/) const { return false; }
+	virtual void storeSoundSnapshotForSlot(int /*slot*/) {}
+	virtual void loadSoundSnapshotForSlot(int /*slot*/) {}
 };

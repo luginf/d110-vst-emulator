@@ -18,6 +18,27 @@ juce::String defaultTrackLabel(int t) {
 	return "TRACK " + juce::String(t + 1);
 }
 
+// Inverse of juce::MidiMessage::getMidiNoteName(note, true, true, 4) - the convention used
+// everywhere in this file, where "C4" is MIDI note 60. Accepts "C4", "C#4", "Db3", "E5", case-
+// insensitive, octave may be negative ("C-1" = note 0). Returns -1 if unparseable or out of range,
+// so the note-edit dialog can take a human note name instead of a meaningless raw MIDI number.
+int noteNameToNumber(const juce::String &nameIn) {
+	auto name = nameIn.trim().toUpperCase();
+	if (name.isEmpty()) return -1;
+	static const int pitchClassForLetter[] = { 9, 11, 0, 2, 4, 5, 7 }; // A B C D E F G
+	const int letterIndex = juce::String("ABCDEFG").indexOfChar(name[0]);
+	if (letterIndex < 0) return -1;
+	int pitchClass = pitchClassForLetter[letterIndex];
+	int pos = 1;
+	if (pos < name.length() && name[pos] == '#') { pitchClass += 1; ++pos; }
+	else if (pos < name.length() && name[pos] == 'B') { pitchClass -= 1; ++pos; }
+	auto octaveStr = name.substring(pos);
+	if (octaveStr.isEmpty() || !octaveStr.containsOnly("-0123456789")) return -1;
+	const int octave = octaveStr.getIntValue();
+	const int note = 12 * (octave + 1) + pitchClass;
+	return (note >= 0 && note <= 127) ? note : -1;
+}
+
 // enabled=false dims the button (used only by UNDO, greyed out while its stack is empty) -
 // distinct from active, which picks the on/off colour pair rather than an alpha.
 void paintToggleButton(juce::Graphics &g, juce::Rectangle<float> b, const juce::String &label, bool active,
@@ -108,6 +129,130 @@ juce::String stepDurationLabel(d110seq::QuantizeGrid grid) {
 		case QuantizeGrid::off: default: return "STEP 1/4";
 	}
 }
+
+// "Vel"/"Dur" spelled out (not "v"/a trailing "b") so the columns read on their own without
+// a separate header row - Alan couldn't tell what "v108"/"0.06b" meant at a glance.
+juce::String formatEventRow(const d110seq::D110SequencerEngine::NoteEventInfo &ev) {
+	return "Beat " + juce::String(ev.beatInBar + 1.0, 2) + "   "
+		+ juce::MidiMessage::getMidiNoteName(ev.note, true, true, 4) + "   Vel " + juce::String(ev.velocity)
+		+ "   Dur " + juce::String(ev.durationBeats, 2) + "b";
+}
+
+// promptForEventList()'s own list view: one row per note in the bar, each with a small
+// delete ("X") button - "pas un piano roll", just a plain scrollable list, since the point is
+// picking out a specific (usually wrong) note, not drawing/moving pitch or timing by hand.
+// Clicking anywhere else on a row prompts for a new pitch (see onEditPitch) - the note NAME
+// itself is the click target, not a separate icon, since the row's too narrow to spare one.
+// Lives inside a juce::Viewport (see promptForEventList()) so a busy bar (the rhythm track
+// especially) scrolls rather than growing the dialog without bound.
+class NoteEventListContent : public juce::Component {
+public:
+	struct Row {
+		int index; // D110SequencerEngine::NoteEventInfo::index - passed back to onDelete/onEditPitch
+		int note;  // current pitch - passed to onEditPitch so its prompt can default to it
+		juce::String text;
+	};
+
+	std::function<void(int index)> onDelete;
+	std::function<void(int index, int currentNote)> onEditPitch;
+
+	void setRows(std::vector<Row> newRows) {
+		rows = std::move(newRows);
+		setSize(getWidth() > 0 ? getWidth() : 380, juce::jmax(kRowH, int(rows.size()) * kRowH));
+		repaint();
+	}
+
+	void paint(juce::Graphics &g) override {
+		const auto &pal = d110ui::palette();
+		// Own opaque background, filled explicitly rather than left to whatever's behind this
+		// component (the AlertWindow it lives in doesn't itself follow d110ui's light/dark
+		// theme) - otherwise seqInactiveText below can land on a background it was never paired
+		// with (e.g. this component's dark-theme text on the AlertWindow's own fixed-dark
+		// background looked fine by accident, but the light-theme pairing didn't - see paint()'s
+		// own text colour, which is chosen to always be readable against THIS fill).
+		g.fillAll(pal.box);
+		if (rows.empty()) {
+			g.setColour(pal.seqInactiveText);
+			g.drawText("(no notes in this bar)", getLocalBounds().toFloat(), juce::Justification::centred);
+			return;
+		}
+		for (size_t i = 0; i < rows.size(); ++i) {
+			auto b = juce::Rectangle<float>(0.0f, float(i) * kRowH, float(getWidth()), float(kRowH));
+			if (i % 2 == 1) {
+				g.setColour(pal.seqInactiveFill.withAlpha(0.25f));
+				g.fillRect(b);
+			}
+			auto textArea = b;
+			auto del = textArea.removeFromRight(kRowH).reduced(6.0f);
+			// seqInactiveText, not seqActiveText: the latter is meant for text ON TOP of the
+			// green seqActiveFill (an active toggle button), not plain readout text - using it
+			// here was the actual cause of the low-contrast "black on dark grey" text.
+			g.setColour(pal.seqInactiveText);
+			g.setFont(juce::FontOptions(13.0f));
+			g.drawText(rows[i].text, textArea.reduced(6.0f, 0.0f), juce::Justification::centredLeft);
+			// A plain X, in the same red as the ARM dot - reads as destructive without needing
+			// a whole icon set for one button.
+			g.setColour(pal.seqArmDot);
+			g.drawLine(del.getX(), del.getY(), del.getRight(), del.getBottom(), 1.5f);
+			g.drawLine(del.getX(), del.getBottom(), del.getRight(), del.getY(), 1.5f);
+		}
+	}
+
+	void mouseDown(const juce::MouseEvent &e) override {
+		const int row = int(e.position.y / kRowH);
+		if (row < 0 || row >= int(rows.size())) return;
+		auto b = juce::Rectangle<float>(0.0f, float(row) * kRowH, float(getWidth()), float(kRowH));
+		const auto &r = rows[static_cast<size_t>(row)];
+		if (b.removeFromRight(kRowH).contains(e.position)) { if (onDelete) onDelete(r.index); return; }
+		if (onEditPitch) onEditPitch(r.index, r.note);
+	}
+
+private:
+	static constexpr int kRowH = 24;
+	std::vector<Row> rows;
+};
+
+// promptForEventList()'s own bar-nav strip - "< BAR N >", added as its own custom component
+// ABOVE the scrollable list (not inside the Viewport), so it stays put rather than scrolling
+// away, and switching bars never has to close and reopen the whole dialog. "<" dims rather
+// than disappearing below bar 1, matching paintToggleButton's enabled/disabled convention
+// elsewhere in this panel; ">" has no upper bound, same as gotoBar() itself.
+class NoteEventListHeader : public juce::Component {
+public:
+	std::function<void()> onPrev, onNext;
+
+	void setBar(int newBar) {
+		bar = newBar;
+		repaint();
+	}
+
+	void paint(juce::Graphics &g) override {
+		const auto &pal = d110ui::palette();
+		g.fillAll(pal.box); // see NoteEventListContent::paint()'s own comment on why
+		auto b = getLocalBounds().toFloat();
+		prevBounds = b.removeFromLeft(28.0f);
+		nextBounds = b.removeFromRight(28.0f);
+		g.setFont(juce::FontOptions(15.0f));
+		// Each arrow's own enabled state, not one colour shared by both - drawing them together
+		// meant "<" being dimmed on bar 1 also dimmed ">" right along with it, which read as
+		// though ">" (never actually bounded - any bar can be navigated to) had disappeared.
+		g.setColour(bar > 1 ? pal.seqInactiveText : pal.seqInactiveText.withAlpha(0.35f));
+		g.drawText("<", prevBounds, juce::Justification::centred);
+		g.setColour(pal.seqInactiveText);
+		g.drawText(">", nextBounds, juce::Justification::centred);
+		g.setFont(juce::FontOptions(13.0f));
+		g.drawText("Bar " + juce::String(bar), b, juce::Justification::centred);
+	}
+
+	void mouseDown(const juce::MouseEvent &e) override {
+		if (prevBounds.contains(e.position)) { if (bar > 1 && onPrev) onPrev(); return; }
+		if (nextBounds.contains(e.position)) { if (onNext) onNext(); return; }
+	}
+
+private:
+	int bar = 1;
+	juce::Rectangle<float> prevBounds, nextBounds;
+};
 } // namespace
 
 D110SequencerPanel::D110SequencerPanel(D110SequencerHost &p) : processor(p) { startTimerHz(15); }
@@ -154,7 +299,8 @@ void D110SequencerPanel::cycleTimeSignature() {
 }
 
 // Right-click: pick any of the presets directly instead of stepping through them one at a
-// time - handy once you're past the first couple of clicks of cycleTimeSignature().
+// time - handy once you're past the first couple of clicks of cycleTimeSignature() - plus
+// a "Custom..." entry (promptForTimeSignature()) for anything the six presets don't cover.
 void D110SequencerPanel::showTimeSignatureMenu() {
 	const auto &presets = timeSigPresets();
 	auto &eng = engine();
@@ -165,13 +311,40 @@ void D110SequencerPanel::showTimeSignatureMenu() {
 			presets[i].num == eng.getTimeSigNumerator() && presets[i].den == eng.getTimeSigDenominator();
 		m.addItem(int(i) + 1, juce::String(presets[i].num) + "/" + juce::String(presets[i].den), true, current);
 	}
+	m.addSeparator();
+	const int customItemId = int(presets.size()) + 1;
+	m.addItem(customItemId, "Custom...");
 
-	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [this](int result) {
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
+	                [this, customItemId](int result) {
+		if (result == customItemId) { promptForTimeSignature(); return; }
 		const auto &presets = timeSigPresets();
 		if (result < 1 || result > int(presets.size())) return;
 		engine().setTimeSignature(presets[size_t(result - 1)].num, presets[size_t(result - 1)].den);
 		repaint();
 	});
+}
+
+// "Custom..." entry on showTimeSignatureMenu() - the engine itself already accepts any
+// numerator/denominator in [1,32] (D110SequencerEngine::setTimeSignature() clamps to
+// that), the six presets above are purely a UI convenience for the common cases.
+void D110SequencerPanel::promptForTimeSignature() {
+	auto &eng = engine();
+	auto *aw = new juce::AlertWindow("Time signature", "Enter a custom time signature (1-32 over 1-32).",
+	                                  juce::AlertWindow::NoIcon);
+	aw->addTextEditor("num", juce::String(eng.getTimeSigNumerator()), "Numerator:");
+	aw->addTextEditor("den", juce::String(eng.getTimeSigDenominator()), "Denominator:");
+	aw->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
+	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw](int result) {
+		if (result == 1) {
+			const int num = aw->getTextEditorContents("num").getIntValue();
+			const int den = aw->getTextEditorContents("den").getIntValue();
+			if (num >= 1 && den >= 1) engine().setTimeSignature(num, den);
+			repaint();
+		}
+		delete aw;
+	}));
 }
 
 void D110SequencerPanel::cycleStepDuration() {
@@ -327,6 +500,17 @@ void D110SequencerPanel::showQuantizeMenu(int track) {
 
 	juce::PopupMenu m;
 	m.addItem(12, "Rename track...", true);
+	// Same dialog as the CH readout's own "Program Change..." submenu item (see
+	// showTrackChannelMenu()) - just a second way to reach it, since a right-click on the row
+	// itself is a more discoverable spot for it than the narrow channel readout.
+	if (processor.supportsProgramChangeForTrack(track)) {
+		const int program = processor.getTrackProgram(track);
+		m.addItem(14,
+		          program < 0 ? juce::String("Program Change: none...")
+		                      : "Program change " + juce::String(program + 1) + " / bank "
+		                            + juce::String(processor.getTrackBank(track)) + "...",
+		          true);
+	}
 	m.addSeparator();
 	m.addItem(1, "Quantize: Off", true, current == QuantizeGrid::off);
 	m.addItem(2, "Quantize: 1/4", true, current == QuantizeGrid::quarter);
@@ -340,6 +524,11 @@ void D110SequencerPanel::showQuantizeMenu(int track) {
 	m.addItem(9, "Delete bar(s) on this track...", engine().getBarCount() >= 1);
 	m.addItem(10, "Copy bar(s) on this track to...", engine().trackHasEvents(track));
 	m.addItem(11, "Transpose bar(s) on this track...", engine().trackHasEvents(track));
+	// Always enabled, even when the current bar itself is empty - the dialog's own "< Bar N >"
+	// strip can browse to a bar that does have notes without closing and reopening the menu,
+	// but only once it's actually open (Alan's own point: needing bar 3 or 4 while looking at
+	// an empty bar 1).
+	m.addItem(13, "Edit events in bar " + juce::String(engine().getCurrentBar()) + "...", true);
 
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [this, track](int result) {
 		using d110seq::QuantizeGrid;
@@ -348,6 +537,8 @@ void D110SequencerPanel::showQuantizeMenu(int track) {
 		if (result == 10) { promptForCopyBars(track); return; }
 		if (result == 11) { promptForTransposeBars(track); return; }
 		if (result == 12) { promptForRenameTrack(track); return; }
+		if (result == 13) { promptForEventList(track); return; }
+		if (result == 14) { promptForTrackProgram(track); return; }
 		QuantizeGrid grid;
 		switch (result) {
 			case 1: grid = QuantizeGrid::off; break;
@@ -372,10 +563,12 @@ void D110SequencerPanel::showTrackChannelMenu(int track) {
 	for (int ch = 1; ch <= 16; ++ch) m.addItem(ch, "Channel " + juce::String(ch), true, ch == current);
 	// Item IDs 1-16 are channels (above); 100 is the Program Change prompt, out of that range
 	// so the two never collide - see promptForTrackProgram().
-	if (processor.supportsProgramChange()) {
+	if (processor.supportsProgramChangeForTrack(track)) {
 		const int program = processor.getTrackProgram(track);
 		m.addSeparator();
-		m.addItem(100, "Program Change: " + (program < 0 ? juce::String("none") : juce::String(program + 1)) + "...");
+		m.addItem(100, program < 0 ? juce::String("Program Change: none...")
+		                           : "Program change " + juce::String(program + 1) + " / bank "
+		                                 + juce::String(processor.getTrackBank(track)) + "...");
 	}
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
 	                 [this, track](int result) {
@@ -386,23 +579,36 @@ void D110SequencerPanel::showTrackChannelMenu(int track) {
 	                 });
 }
 
-// Only ever called when processor.supportsProgramChange() - see D110SequencerHost.h. Values
-// entered/shown 1-128 (standard musician-facing patch numbering); stored/sent as raw MIDI
-// 0-127 - see NonetSeqHost::setTrackProgram()/getTrackProgram().
+// Only ever called when processor.supportsProgramChangeForTrack(track) - see
+// D110SequencerHost.h. Values entered/shown 1-128 (standard musician-facing patch/bank
+// numbering); stored/sent as raw MIDI 0-127 - see setTrackProgram()/getTrackProgram()/
+// setTrackBank()/getTrackBank() (NonetSeqHost.cpp or PluginProcessor.cpp, depending on host).
 void D110SequencerPanel::promptForTrackProgram(int track) {
 	const int current = processor.getTrackProgram(track);
+	const int currentBank = processor.getTrackBank(track);
+	// No override set yet - pre-fill from getTrackProgramHint() instead of an arbitrary blank
+	// field, when the host has one to offer (the D-110 plugin does: whatever this Part is
+	// playing right now - see its own override's comment). Still blank if the host has no
+	// hint (Nonet-Seq, or the plugin before the firmware/RAM has been read even once).
+	const int hint = processor.getTrackProgramHint(track);
+	const juce::String programDefault = current >= 0 ? juce::String(current + 1)
+	                                     : hint >= 0  ? juce::String(hint + 1)
+	                                                  : juce::String();
 	auto *aw = new juce::AlertWindow(
 		"Program Change",
-		"Sent once on this track's channel when PLAY or REC starts, so an external synth "
-		"picks the right patch on its own. Leave blank to send none.",
+		"Bank Select + Program Change, sent once on this track's channel when PLAY or REC "
+		"starts, so an external synth picks the right patch on its own. Leave Program blank "
+		"to send none (Bank is only sent along with a Program).",
 		juce::AlertWindow::NoIcon);
-	aw->addTextEditor("program", current < 0 ? juce::String() : juce::String(current + 1), "Program (1-128):");
+	aw->addTextEditor("bank", juce::String(currentBank), "Bank (1-128):");
+	aw->addTextEditor("program", programDefault, "Program (1-128):");
 	aw->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
 	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track](int result) {
 		if (result == 1) {
 			const juce::String text = aw->getTextEditorContents("program").trim();
 			processor.setTrackProgram(track, text.isEmpty() ? -1 : juce::jlimit(1, 128, text.getIntValue()) - 1);
+			processor.setTrackBank(track, aw->getTextEditorContents("bank").trim().getIntValue());
 			repaint();
 		}
 		delete aw;
@@ -420,14 +626,17 @@ void D110SequencerPanel::showExtraTracksMenu() {
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
 	                 [this](int result) {
 		                 if (result != 1) return;
-		                 auto &e = engine();
-		                 e.setExtraTracksEnabled(!e.getExtraTracksEnabled());
-		                 // Switching off: page 1 would otherwise keep showing tracks that no
-		                 // longer play/export/undo as a group - jump back to the page that's
-		                 // always meaningful.
-		                 if (!e.getExtraTracksEnabled()) trackPage = 0;
-		                 repaint();
+		                 toggleExtraTracks();
 	                 });
+}
+
+void D110SequencerPanel::toggleExtraTracks() {
+	auto &e = engine();
+	e.setExtraTracksEnabled(!e.getExtraTracksEnabled());
+	// Switching off: page 1 would otherwise keep showing tracks that no longer play/export/
+	// undo as a group - jump back to the page that's always meaningful.
+	if (!e.getExtraTracksEnabled()) trackPage = 0;
+	repaint();
 }
 
 // Empty input clears back to the default "PART N"/"RHYTHM" label (isNotEmpty() in
@@ -654,10 +863,93 @@ void D110SequencerPanel::promptForTransposeBars(int track) {
 	}));
 }
 
+// See the header comment - a plain list of the bar's own notes, each deletable on its own or
+// retunable to a new pitch, rather than a bar-range operation or a piano roll. The dialog
+// stays open across edits (so several wrong notes can be fixed in one sitting) and across bar
+// changes (the "< Bar N >" strip - see NoteEventListHeader), closing only on CLOSE/Escape.
+// Every edit is its own undo checkpoint, same as every other destructive edit here, so UNDO
+// reverts them one at a time regardless of how many happened in this one dialog session.
+void D110SequencerPanel::promptForEventList(int track) {
+	// Shared, mutable across every lambda below (refresh, the header's Prev/Next, the pitch
+	// prompt) - a shared_ptr rather than a raw captured int so its lifetime is tied to
+	// whichever of those closures outlives the others, with nothing here to free by hand.
+	auto barState = std::make_shared<int>(engine().getCurrentBar());
+
+	auto *header = new NoteEventListHeader();
+	header->setSize(380, 24);
+	header->setBar(*barState);
+
+	auto *content = new NoteEventListContent();
+	auto *viewport = new juce::Viewport();
+	viewport->setViewedComponent(content, true);
+	viewport->setSize(380, 220);
+	viewport->setScrollBarsShown(true, false);
+
+	auto refresh = [this, track, barState, content] {
+		std::vector<NoteEventListContent::Row> newRows;
+		for (const auto &ev : engine().eventsInBarRange(track, *barState, *barState))
+			newRows.push_back({ ev.index, ev.note, formatEventRow(ev) });
+		content->setRows(std::move(newRows));
+	};
+	content->onDelete = [this, track, refresh](int index) {
+		engine().pushUndoSnapshot();
+		engine().deleteNoteEvent(track, index);
+		refresh();
+		repaint();
+	};
+	content->onEditPitch = [this, track, refresh](int index, int currentNote) {
+		auto *aw2 = new juce::AlertWindow(
+			"Change note",
+			"Note name, e.g. E5 or C#4 (currently " + juce::MidiMessage::getMidiNoteName(currentNote, true, true, 4)
+				+ ").",
+			juce::AlertWindow::NoIcon);
+		aw2->addTextEditor("note", juce::MidiMessage::getMidiNoteName(currentNote, true, true, 4), "New note:");
+		aw2->addButton("Change", 1, juce::KeyPress(juce::KeyPress::returnKey));
+		aw2->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+		aw2->enterModalState(true, juce::ModalCallbackFunction::create([this, aw2, track, index, refresh](int result) {
+			const int newNote = noteNameToNumber(aw2->getTextEditorContents("note"));
+			if (result == 1 && newNote >= 0) {
+				engine().pushUndoSnapshot();
+				engine().setNoteEventPitch(track, index, newNote);
+				refresh();
+				repaint();
+			}
+			delete aw2;
+		}));
+	};
+	header->onPrev = [barState, header, refresh] {
+		*barState = juce::jmax(1, *barState - 1);
+		header->setBar(*barState);
+		refresh();
+	};
+	header->onNext = [barState, header, refresh] {
+		*barState += 1;
+		header->setBar(*barState);
+		refresh();
+	};
+	refresh();
+
+	auto *aw = new juce::AlertWindow("Events - " + defaultTrackLabel(track),
+	                                  "Click a note to change its pitch, or the X to delete it. Each edit can be "
+	                                  "undone with the main UNDO button.",
+	                                  juce::AlertWindow::NoIcon);
+	aw->addCustomComponent(header);
+	aw->addCustomComponent(viewport);
+	aw->addButton("Close", 0, juce::KeyPress(juce::KeyPress::returnKey), juce::KeyPress(juce::KeyPress::escapeKey));
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([aw, header, viewport](int) {
+		delete header;
+		delete viewport; // owns content (see setViewedComponent(content, true) above)
+		delete aw;
+	}));
+}
+
 // Right-click any of the 4 slot buttons: offers copying the CURRENT song into one of the
-// other 3, regardless of which slot's button was actually clicked - there's only one sensible
-// source (whichever song is live right now), so the menu doesn't need to distinguish.
-void D110SequencerPanel::showCopySongMenu() {
+// other 3 (regardless of which slot's button was actually clicked - there's only one sensible
+// source, whichever song is live right now, so that half of the menu doesn't need to
+// distinguish), plus - only when processor.supportsSoundSnapshots() - storing/loading the
+// CLICKED slot's own sound snapshot (unlike the copy items, these DO care which slot was
+// clicked: "store" and "load" only make sense against one specific slot).
+void D110SequencerPanel::showCopySongMenu(int clickedSlot) {
 	auto &eng = engine();
 	const int current = eng.getCurrentSongSlot();
 
@@ -669,10 +961,44 @@ void D110SequencerPanel::showCopySongMenu() {
 		m.addItem(s + 1, label);
 	}
 
-	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [this](int result) {
+	if (processor.supportsSoundSnapshots()) {
+		m.addSeparator();
+		m.addItem(100, "Store current sounds in Slot " + juce::String(clickedSlot + 1)
+		                   + (processor.hasSoundSnapshot(clickedSlot) ? " (overwrites it)" : juce::String()));
+		m.addItem(101, "Load Slot " + juce::String(clickedSlot + 1) + "'s stored sounds",
+		          processor.hasSoundSnapshot(clickedSlot));
+	}
+
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
+	                [this, clickedSlot](int result) {
+		if (result == 100) { processor.storeSoundSnapshotForSlot(clickedSlot); repaint(); return; }
+		if (result == 101) { confirmLoadSoundSnapshot(clickedSlot); return; }
 		if (result < 1) return;
 		confirmCopySongTo(result - 1);
 	});
+}
+
+// Loading a sound snapshot power-cycles the instrument and replaces its entire live memory
+// (see D110AudioProcessor::loadSoundSnapshotForSlot()) - a real, felt interruption and a real
+// loss of whatever sounds are live right now if they were never stored anywhere themselves,
+// so this confirms first, same reasoning as confirmCopySongTo().
+void D110SequencerPanel::confirmLoadSoundSnapshot(int slot) {
+	auto *aw = new juce::AlertWindow(
+		"Load Slot " + juce::String(slot + 1) + "'s stored sounds?",
+		"This replaces the instrument's entire current memory (every Patch, Timbre and Tone) "
+		"with what was stored for this slot, and power-cycles it to do so - a brief reboot, "
+		"felt immediately. Whatever sounds are live right now are lost unless they were "
+		"stored somewhere first.",
+		juce::AlertWindow::WarningIcon);
+	aw->addButton("Load", 1, juce::KeyPress(juce::KeyPress::returnKey));
+	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, slot](int result) {
+		if (result == 1) {
+			processor.loadSoundSnapshotForSlot(slot);
+			repaint();
+		}
+		delete aw;
+	}));
 }
 
 // Destructive to destSlot's existing content (see D110SequencerEngine::copyCurrentSongTo()), so
@@ -894,6 +1220,14 @@ void D110SequencerPanel::paint(juce::Graphics &g) {
 			g.setColour(pal.seqActiveFill);
 			g.fillEllipse(b.getRight() - 8.0f, b.getY() + 3.0f, 4.0f, 4.0f);
 		}
+		// Second, separate dot for a stored sound snapshot (see D110SequencerHost.h's own
+		// comment on why this is tracked apart from song content) - bottom-right so it never
+		// overlaps the content dot above, a different colour so the two are never confused at
+		// a glance.
+		if (processor.supportsSoundSnapshots() && processor.hasSoundSnapshot(s)) {
+			g.setColour(pal.seqMetroDownbeat);
+			g.fillEllipse(b.getRight() - 8.0f, b.getBottom() - 7.0f, 4.0f, 4.0f);
+		}
 	}
 	paintToggleButton(g, undoBounds, "UNDO", false, eng.canUndo());
 	paintToggleButton(g, loadBounds, "LOAD", false);
@@ -982,7 +1316,7 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 			if (rows[static_cast<size_t>(t)].rowBounds.contains(p)) { showQuantizeMenu(t); return; }
 		}
 		for (int s = 0; s < D110SequencerEngine::kNumSongSlots; ++s)
-			if (slotBounds[static_cast<size_t>(s)].contains(p)) { showCopySongMenu(); return; }
+			if (slotBounds[static_cast<size_t>(s)].contains(p)) { showCopySongMenu(s); return; }
 		return;
 	}
 
