@@ -11,7 +11,7 @@ dependency at all: Nonet Sequencer (binary `Nonet-Seq`).** Same engine, same pan
 feature set described below - see [Nonet Sequencer - the independent app](#nonet-sequencer---the-independent-app)
 further down for what's different about running it on its own.
 
-![screenshot](docs/nonet-seq.png)
+![screenshot](nonet-seq.png)
 
 The engine (`plugin/Source/sequencer/D110SequencerEngine.h/.cpp`) is deliberately D-110-agnostic:
 it only knows about MIDI channels, beats and note events, not firmware RAM, so none of this
