@@ -143,6 +143,17 @@ above) made the trip too, or use the sequencer's own right-click **LOAD**/**SAVE
 transport strip to export/import all 4 song slots as a single portable `.midiseq` file instead
 (a plain click there still saves/loads just the current song as a standard `.mid`).
 
+**The battery RAM above can also be captured as a standalone file directly**, independent of
+either the NVRAM folder or a DAW project: Utility tab -> **SAVE SNAPSHOT...**/**LOAD
+SNAPSHOT...** writes/reads the exact same image (every Patch, Timbre, Tone, System byte, plus
+the memory card) to a portable file you can keep or hand to someone else, loading one powers
+the instrument off and back on with that memory in place so the change is felt immediately.
+The sequencer's own **per-song sound snapshot** (see
+[`sequencer.md`](sequencer.md#per-song-sound-snapshot-d-110-plugin-only)) captures the exact
+same image, just keyed to one of the 4 song slots and stored inside the project instead of a
+separate file - so each song can carry its own instrument state, recalled with the same
+power-cycle-and-replace approach, without you needing a snapshot file per song on disk.
+
 ## The memory card slot
 
 **The memory card slot works.** A seated card shows its edge in the slot, so an occupied socket

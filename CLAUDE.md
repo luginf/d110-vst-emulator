@@ -56,7 +56,7 @@ behaviour. Don't duplicate that here; this file is about how to work in the repo
   model - deliberately D-110-agnostic (own internal clock, note-only
   `juce::MidiMessageSequence` per track, MIDI-file, quantize and step-recording logic),
   talking to whatever embeds it only through a `channelForTrack` callback. `D110SequencerPanel`
-  is the JUCE UI drawer, talking to its host only through `D110SequencerHost` (12 methods) -
+  is the JUCE UI drawer, talking to its host only through `D110SequencerHost` (20 methods) -
   `D110AudioProcessor` implements that interface for the plugin, `NonetSeqHost` implements
   it for `Nonet-Seq` (**Nonet Sequencer** - CMake target and binary both `Nonet-Seq`), the
   independent sequencer app, deliberately named apart from the D-110 - Standalone-only, no
@@ -68,9 +68,14 @@ behaviour. Don't duplicate that here; this file is about how to work in the repo
   (`supportsExtraTracks()`) can go up to `kMaxTracks` (16): right-click above the track rows
   for "Activate extra tracks", see `docs/sequencer.md`. The plugin's own engine instance
   never enables this, so it stays exactly 9 tracks/`kRhythmTrack` pinned at index 8
-  regardless. Nonet Sequencer only, also, (`supportsProgramChange()`) can give any track a
-  fixed Program Change (click its CH readout), sent once over MIDI Out when PLAY/REC starts.
-  State persists in
+  regardless. Both hosts now implement `supportsProgramChange()`: any track can get a fixed
+  Program Change/Bank (click its CH readout), sent once when PLAY/REC starts - over MIDI Out
+  in Nonet Sequencer, over the firmware's own MIDI IN (plus MIDI Out) in the plugin. That
+  override is a single workspace-wide value, not tied to a song slot, so it never changes
+  which instrument plays when you switch songs - the plugin-only per-song **sound snapshot**
+  (`supportsSoundSnapshots()`, right-click a song-slot button) is the real fix for that: each
+  of the 4 slots can store/recall the instrument's ENTIRE memory (every Patch/Timbre/Tone/
+  System byte), applied with a power cycle. State persists in
   `getStateInformation`/`setStateInformation` the same way the firmware NVRAM does (plugin)
   or its own settings file (independent app), both via the shared `D110SequencerSongsFile.h/.cpp`.
   `plugin/sequencer_probe.cpp` and `plugin/sequencer_state_probe.cpp` are its headless tests

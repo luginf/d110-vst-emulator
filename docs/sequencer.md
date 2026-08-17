@@ -1,10 +1,17 @@
 # The sequencer
 
-A D-20-style multitrack MIDI sequencer, the third foldable drawer under the panel (alongside
-the extended editor and the on-screen test keyboard), closed by default. It has its own
-internal clock - it is **not** synced to the host's tempo or transport, the same way the
-original hardware's own sequencer wasn't - so it behaves identically in the VST3 and the
+A D-20-style multitrack MIDI sequencer, the third foldable drawer under the D-110 panel
+(alongside the extended editor and the on-screen test keyboard), closed by default. It has
+its own internal clock - it is **not** synced to the host's tempo or transport, the same way
+the original hardware's own sequencer wasn't - so it behaves identically in the VST3 and the
 Standalone build.
+
+**It also exists as a fully independent standalone app, with no D-110/firmware/ROM
+dependency at all: Nonet Sequencer (binary `Nonet-Seq`).** Same engine, same panel, same
+feature set described below - see [Nonet Sequencer - the independent app](#nonet-sequencer---the-independent-app)
+further down for what's different about running it on its own.
+
+![screenshot](docs/nonet-seq.png)
 
 The engine (`plugin/Source/sequencer/D110SequencerEngine.h/.cpp`) is deliberately D-110-agnostic:
 it only knows about MIDI channels, beats and note events, not firmware RAM, so none of this
@@ -185,6 +192,45 @@ buttons - a small dot marks which slots have content. **Right-click any slot but
 the *current* song into one of the other three (flagged "(overwrites it)" if that slot already
 has content) - a shortcut for starting the next song from a copy of this one.
 
+### Per-song sound snapshot (D-110 plugin only)
+
+Different songs usually want different instruments, but the D-110's own sounds (Patches,
+Timbres, Tones, System settings) are a single, shared instrument-wide state, not something
+tied to a song slot - switching slots alone never changes what's playing. The same
+right-click menu on a song-slot button also offers **Store current sounds in Slot N** and
+**Load Slot N's stored sounds** (the latter greyed out until something's been stored) to
+close that gap: Store captures the instrument's *entire* memory - every Patch, Timbre, Tone
+and System byte, the same image [`exportMemorySnapshot()`](architecture.md#firmware-memory-and-plugin-settings)
+captures to a standalone file - into that slot; Load writes it straight back and power-cycles
+the instrument to apply it (a brief, felt reboot - Load asks for confirmation first, since
+it replaces whatever's live and isn't undoable through **UNDO**). The stored sounds
+themselves persist in the project's own saved state, right alongside that slot's tracks.
+
+This is genuinely separate from [Per-track Program Change](#per-track-program-change)
+below: that one is a single value good for nudging one Part to a different *already
+stored* Timbre, the same regardless of which song is loaded. A sound snapshot instead swaps
+the instrument's whole memory to match the song, exactly as if you'd reached for a different
+memory card.
+
+## Per-track Program Change
+
+Click a track's **CH** readout (same entry point as changing its channel) for a **Program
+Change...** item at the bottom of that menu - pick a program 1-128 and, alongside it, a bank
+1-128, or leave the program blank for none (a trailing `*` on the CH readout marks a track
+that has one set). Whichever tracks have a program set get Bank Select then Program Change
+sent, once, the moment **PLAY** or **REC** starts (precount included, so the patch has
+already switched before any notes arrive) - not re-sent mid-song, since a track only ever
+holds one fixed program for the whole song slot. Works in both apps: over the direct system
+**MIDI Out** port in Nonet Sequencer (there's no synth there to pick a patch on otherwise),
+and over the firmware's own MIDI IN (plus MIDI Out) in the D-110 plugin, exactly as an
+external keyboard sending Program Change would - the same live Part->Timbre lookup
+`TIMBRES` in the extended editor uses (see [`architecture.md`](architecture.md)).
+
+**This is one value per track, shared by every song slot - it is not song content**, so
+switching which song is loaded never changes it. In the D-110 plugin, if what you actually
+want is different instruments *per song*, see
+[Per-song sound snapshot](#per-song-sound-snapshot-d-110-plugin-only) above instead.
+
 ## MIDI Out (driving external gear)
 
 Whatever the sequencer plays back - the tracks themselves, plus the metronome click when it's
@@ -212,11 +258,14 @@ already needs no firmware loaded at all.
 ROMs, no plugin wrapper, not even a sound engine. Named apart from the D-110 on purpose:
 it's a plain 9-track MIDI sequencer (a nonet), not tied to any one instrument. It's the
 same `D110SequencerPanel` and `D110SequencerEngine` as inside the plugin, in a bare window
-with a three-field toolbar (a small LED, lit while a message is actually arriving on
-**MIDI In**; **MIDI In**, **MIDI Out** - click either to pick a system MIDI port, same
-device lists as the plugin's own Options menu - and **THEME**, this app's mini utility
-field, click to flip the window's light/dark palette; its label always shows the theme
-actually in effect, never a fixed word). Every track defaults to the factory D-110
+with a toolbar carrying a small LED (lit while a message is actually arriving on **MIDI
+In**), **MIDI In**/**MIDI Out** fields - click either to pick a system MIDI port, same
+device lists as the plugin's own Options menu - and **OPTIONS**, which opens this app's own
+settings dialog: **Theme** (click to flip the window's light/dark palette; its label always
+shows the theme actually in effect, never a fixed word), Program Change/Bank offset
+corrections (see [Per-track Program Change](#per-track-program-change) above), the extra-
+tracks toggle (below), and **Audio Device** - the standard JUCE Audio/MIDI Settings picker
+(device type, output device, sample rate, buffer size). Every track defaults to the factory D-110
 channel map (Part 1-8 -> MIDI channels 2-9, Rhythm -> 10) so a real D-110 on its own
 factory defaults just works from this app's MIDI Out without reconfiguring either side;
 driving something else, point its own parts/tracks at the same channels instead.
@@ -289,18 +338,6 @@ audio-clocked path, since a message-thread timer is at the mercy of OS schedulin
 exactly when each tick lands - and, having no audio stream to write into at all, silent:
 METRO's LED strip and/or its rhythm-channel MIDI note, if either is also on, are what
 carry the beat in that degraded mode).
-
-### Per-track Program Change
-
-Nonet Sequencer only, same reasoning as the per-track channel edit above: the plugin's
-tracks feed the live firmware directly, which already has its own patch per part, so
-there's nothing for a Program Change to usefully select there. Click a track's **CH**
-readout (same entry point as changing its channel) for a **Program Change...** item at the
-bottom of that menu - pick a program 1-128, or leave it blank for none (a trailing `*` on
-the CH readout marks a track that has one set). Whichever tracks have a program set get it
-sent, once, over MIDI Out the moment **PLAY** or **REC** starts (precount included, so an
-external synth has already switched patch before any notes arrive) - not re-sent mid-song,
-since a track only ever holds one fixed program for the whole song slot.
 
 ## Load / Save
 
