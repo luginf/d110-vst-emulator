@@ -10,6 +10,7 @@
 #include "../D110Keyboard.h"
 #include "../UiTheme.h"
 #include "D110SequencerPanel.h"
+#include "D110SequencerRetroPanel.h"
 #include "NonetSeqHost.h"
 
 namespace {
@@ -30,13 +31,16 @@ public:
 	std::function<void(int)> onProgramOffsetChanged;
 	std::function<void(int)> onBankOffsetChanged;
 	std::function<void()> onExtraTracksToggled;
+	std::function<void()> onRetroModeToggled;
 	std::function<void()> onAudioSettingsRequested;
 
-	void setValues(bool themeLightIn, int programOffsetIn, int bankOffsetIn, bool extraTracksOnIn) {
+	void setValues(bool themeLightIn, int programOffsetIn, int bankOffsetIn, bool extraTracksOnIn,
+	               bool retroModeOnIn) {
 		themeLight = themeLightIn;
 		programOffset = programOffsetIn;
 		bankOffset = bankOffsetIn;
 		extraTracksOn = extraTracksOnIn;
+		retroModeOn = retroModeOnIn;
 		repaint();
 	}
 
@@ -53,12 +57,15 @@ public:
 		b.removeFromTop(kRowGap);
 		extraTracksRowBounds = b.removeFromTop(kRowH);
 		b.removeFromTop(kRowGap);
+		retroModeRowBounds = b.removeFromTop(kRowH);
+		b.removeFromTop(kRowGap);
 		audioRowBounds = b.removeFromTop(kRowH);
 
 		paintToggleRow(g, pal, themeRowBounds, "Theme", themeLight ? "LIGHT" : "DARK");
 		paintOffsetRow(g, pal, progRow, "Program Change offset", programOffset, progMinusBounds, progPlusBounds);
 		paintOffsetRow(g, pal, bankRow, "Bank offset", bankOffset, bankMinusBounds, bankPlusBounds);
 		paintToggleRow(g, pal, extraTracksRowBounds, "Extra tracks (16 total)", extraTracksOn ? "ON" : "OFF");
+		paintToggleRow(g, pal, retroModeRowBounds, "Retro Sequencer (D-20 style)", retroModeOn ? "ON" : "OFF");
 		paintToggleRow(g, pal, audioRowBounds, "Audio Device", "Configure...");
 	}
 
@@ -69,6 +76,7 @@ public:
 		if (bankMinusBounds.contains(e.position)) { if (onBankOffsetChanged) onBankOffsetChanged(bankOffset - 1); return; }
 		if (bankPlusBounds.contains(e.position)) { if (onBankOffsetChanged) onBankOffsetChanged(bankOffset + 1); return; }
 		if (extraTracksRowBounds.contains(e.position)) { if (onExtraTracksToggled) onExtraTracksToggled(); return; }
+		if (retroModeRowBounds.contains(e.position)) { if (onRetroModeToggled) onRetroModeToggled(); return; }
 		if (audioRowBounds.contains(e.position)) { if (onAudioSettingsRequested) onAudioSettingsRequested(); return; }
 	}
 
@@ -117,8 +125,9 @@ private:
 	bool themeLight = false;
 	int programOffset = 0, bankOffset = 0;
 	bool extraTracksOn = false;
+	bool retroModeOn = false;
 	juce::Rectangle<float> themeRowBounds, progMinusBounds, progPlusBounds, bankMinusBounds, bankPlusBounds,
-		extraTracksRowBounds, audioRowBounds;
+		extraTracksRowBounds, retroModeRowBounds, audioRowBounds;
 };
 
 // Three clickable fields: MIDI In and MIDI Out (the same idea as
@@ -127,9 +136,11 @@ private:
 // opens OptionsDialogContent above.
 class Toolbar : public juce::Component, private juce::Timer {
 public:
-	Toolbar(NonetSeqHost &h, std::function<void()> onThemeChangedIn, std::function<void()> onExtraTracksToggledIn)
+	Toolbar(NonetSeqHost &h, std::function<void()> onThemeChangedIn, std::function<void()> onExtraTracksToggledIn,
+	        std::function<void()> onSequencerModeChangedIn)
 		: host(h), onThemeChanged(std::move(onThemeChangedIn)),
-		  onExtraTracksToggled(std::move(onExtraTracksToggledIn)) {
+		  onExtraTracksToggled(std::move(onExtraTracksToggledIn)),
+		  onSequencerModeChanged(std::move(onSequencerModeChangedIn)) {
 		// Just fast enough that a single incoming note visibly flashes the LED (see
 		// isMidiInActive()'s own 120ms window) without repainting the whole toolbar needlessly
 		// often - MIDI activity is asynchronous (OS MIDI thread) so nothing else would
@@ -174,10 +185,11 @@ private:
 
 	void showOptionsDialog() {
 		auto *content = new OptionsDialogContent();
-		content->setSize(320, 5 * 30 + 4 * 10 + 12);
+		content->setSize(320, 6 * 30 + 5 * 10 + 12);
 		auto refresh = [this, content] {
 			content->setValues(d110ui::getTheme() == d110ui::Theme::Light, host.getProgramChangeOffset(),
-			                    host.getBankOffset(), host.getSequencer().getExtraTracksEnabled());
+			                    host.getBankOffset(), host.getSequencer().getExtraTracksEnabled(),
+			                    host.getSequencerRetroMode());
 		};
 		refresh();
 		content->onThemeToggled = [this, content, refresh] {
@@ -197,6 +209,11 @@ private:
 		};
 		content->onExtraTracksToggled = [this, refresh] {
 			if (onExtraTracksToggled) onExtraTracksToggled();
+			refresh();
+		};
+		content->onRetroModeToggled = [this, refresh] {
+			host.setSequencerRetroMode(!host.getSequencerRetroMode());
+			if (onSequencerModeChanged) onSequencerModeChanged();
 			refresh();
 		};
 		content->onAudioSettingsRequested = [this] { showAudioSettingsDialog(); };
@@ -287,6 +304,7 @@ private:
 	NonetSeqHost &host;
 	std::function<void()> onThemeChanged;
 	std::function<void()> onExtraTracksToggled;
+	std::function<void()> onSequencerModeChanged;
 	juce::Rectangle<float> inRect, outRect, optionsRect, midiInLedBounds;
 };
 
@@ -298,14 +316,24 @@ public:
 			  [this] {
 				  toolbar.repaint();
 				  panel.repaint();
+				  retroPanel.repaint();
 				  keyboard.repaint();
 				  repaint();
 			  },
-			  [this] { panel.toggleExtraTracks(); }),
-		  panel(host), keyboard(host) {
+			  [this] { panel.toggleExtraTracks(); },
+			  [this] {
+				  panel.setVisible(!host.getSequencerRetroMode());
+				  retroPanel.setVisible(host.getSequencerRetroMode());
+				  panel.repaint();
+				  retroPanel.repaint();
+			  }),
+		  panel(host), retroPanel(host), keyboard(host) {
 		d110ui::setTheme(host.getUiThemeLight() ? d110ui::Theme::Light : d110ui::Theme::Dark);
 		addAndMakeVisible(toolbar);
-		addAndMakeVisible(panel);
+		addChildComponent(panel);
+		addChildComponent(retroPanel);
+		panel.setVisible(!host.getSequencerRetroMode());
+		retroPanel.setVisible(host.getSequencerRetroMode());
 		addAndMakeVisible(keyboard);
 		setSize(760, kToolbarHeight + static_cast<int>(D110SequencerPanel::kRefH)
 		                 + static_cast<int>(D110Keyboard::kRefH));
@@ -315,7 +343,10 @@ public:
 		auto b = getLocalBounds();
 		toolbar.setBounds(b.removeFromTop(kToolbarHeight));
 		keyboard.setBounds(b.removeFromBottom(static_cast<int>(D110Keyboard::kRefH)));
+		// Same bounds either way (D110SequencerRetroPanel::kRefH matches) - only the one
+		// host.getSequencerRetroMode() picked is actually visible.
 		panel.setBounds(b);
+		retroPanel.setBounds(b);
 	}
 
 private:
@@ -325,6 +356,7 @@ private:
 	NonetSeqHost host;
 	Toolbar toolbar;
 	D110SequencerPanel panel;
+	D110SequencerRetroPanel retroPanel;
 	D110Keyboard keyboard;
 };
 

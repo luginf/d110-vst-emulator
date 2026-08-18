@@ -108,6 +108,11 @@ public:
 	bool getUiThemeLight() const { return uiThemeLight; }
 	void setUiThemeLight(bool light) { uiThemeLight = light; }
 
+	// Same D-20-style retro sequencer view toggle as the D-110 plugin's
+	// D110AudioProcessor::getSequencerRetroMode() - see D110SequencerRetroPanel.h.
+	bool getSequencerRetroMode() const { return sequencerRetroMode; }
+	void setSequencerRetroMode(bool retro) { sequencerRetroMode = retro; }
+
 	// Direct MIDI ports - what the toolbar's "MIDI In"/"MIDI Out" menus list and pick
 	// from, the same idea as D110Panel::showOptionsMenu()'s own MIDI In/Out submenus.
 	static juce::Array<juce::MidiDeviceInfo> midiInputs() { return juce::MidiInput::getAvailableDevices(); }
@@ -215,4 +220,5 @@ private:
 	int keyboardPcLayout = 0;
 
 	bool uiThemeLight = false;
+	bool sequencerRetroMode = false;
 };

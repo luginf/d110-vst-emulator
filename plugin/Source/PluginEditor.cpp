@@ -624,6 +624,7 @@ void D110Panel::showOptionsMenu()
 	// отдельно от настроек эмулятора. Прошивка читает его как бит 0 порта состояния матрицы
 	// карты; см. docs/memory_card.md.
 	m.addItem(4, "Memory card write protect", true, processor.getCore().cardWriteProtect());
+	m.addItem(5, "Retro Sequencer (D-20 style LCD+buttons)", true, processor.getSequencerRetroMode());
 	// Пункта «пусть ноты озвучивает прошивка» здесь нет намеренно. Это не настройка, а
 	// единственное поведение: ноты идут в прошивку, она применяет свои диапазоны клавиш,
 	// раскладку по партиям и распределение голосов, зажигает индикаторы в верхней строке
@@ -727,6 +728,10 @@ void D110Panel::showOptionsMenu()
 				break;
 			case 4:
 				processor.getCore().setCardWriteProtect(!processor.getCore().cardWriteProtect());
+				break;
+			case 5:
+				processor.setSequencerRetroMode(!processor.getSequencerRetroMode());
+				if (onSequencerModeChanged) onSequencerModeChanged();
 				break;
 			default:
 				break;
@@ -2843,7 +2848,7 @@ void D110MemoryCard::timerCallback() {
 
 D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 	: juce::AudioProcessorEditor(&p), processor(p), panel(p), editorPane(p), card(p), keyboard(p),
-	  sequencerPanel(p)
+	  sequencerPanel(p), sequencerRetroPanel(p)
 {
 	// Synced here, not just read lazily by whichever drawer paints first: a project loaded
 	// with the light theme should look right the moment this editor appears, including on
@@ -2857,10 +2862,20 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 	addAndMakeVisible(editorPane);
 	addAndMakeVisible(keyboard);
 	addAndMakeVisible(sequencerPanel);
+	addChildComponent(sequencerRetroPanel); // shown instead of sequencerPanel in retro mode - see resized()
 	// Карта добавляется последней и потому лежит поверх обоих - и прибора, и ящика.
 	addAndMakeVisible(card);
 
+	sequencerPanel.setVisible(!processor.getSequencerRetroMode());
+	sequencerRetroPanel.setVisible(processor.getSequencerRetroMode());
+
 	panel.onCardSlotClicked = [this] { card.toggle(); };
+	panel.onSequencerModeChanged = [this] {
+		sequencerPanel.setVisible(!processor.getSequencerRetroMode());
+		sequencerRetroPanel.setVisible(processor.getSequencerRetroMode());
+		sequencerPanel.repaint();
+		sequencerRetroPanel.repaint();
+	};
 	card.onEjectNeedsDrawer = [this] {
 		expansion = expansionTarget = 1.0f;
 		applySize();
@@ -2889,6 +2904,7 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 		editorPane.repaint();
 		keyboard.repaint();
 		sequencerPanel.repaint();
+		sequencerRetroPanel.repaint();
 		repaint();
 	};
 }
@@ -3094,7 +3110,11 @@ void D110AudioProcessorEditor::resized()
 	// Third time: sequencer's own handle band right below the keyboard, drawer under that.
 	const int seqTop = kbTop + kbH + int(kSequencerHandleRefH * s + 0.5f);
 	const int seqH = int(sequencerExpansion * D110SequencerPanel::kRefH * s + 0.5f);
+	// Same bounds either way (D110SequencerRetroPanel::kRefH matches) - only the one
+	// processor.getSequencerRetroMode() picked is actually visible, see the constructor
+	// and panel.onSequencerModeChanged.
 	sequencerPanel.setBounds(0, seqTop, getWidth(), juce::jmax(0, seqH));
+	sequencerRetroPanel.setBounds(0, seqTop, getWidth(), juce::jmax(0, seqH));
 
 	// Карта живёт в тех же опорных точках, что и панель, поэтому ей нужен только масштаб и
 	// то, докуда сейчас доходит окно: по ним она сама поставит себе границы.

@@ -184,6 +184,12 @@ public:
 	bool getUiThemeLight() const { return uiThemeLight; }
 	void setUiThemeLight(bool light) { uiThemeLight = light; }
 
+	// Whether the sequencer drawer shows the classic graphical panel or the D-20-style
+	// LCD+9-button retro view - see D110SequencerRetroPanel.h. Toggled from D110Panel's
+	// Options menu, persisted the same way uiThemeLight is.
+	bool getSequencerRetroMode() const { return sequencerRetroMode; }
+	void setSequencerRetroMode(bool retro) { sequencerRetroMode = retro; }
+
 	// One shared "last used folder" for every file dialog in the app (SysEx bank import/
 	// export, memory snapshot save/load, the sequencer's own .mid/.midiseq dialogs) - set
 	// after each successful pick, offered as the starting point for the next one, so
@@ -587,6 +593,8 @@ private:
 
 	// See getUiThemeLight()/setUiThemeLight() above.
 	bool uiThemeLight = false;
+	// See getSequencerRetroMode()/setSequencerRetroMode() above.
+	bool sequencerRetroMode = false;
 	bool debugModeEnabled = false;
 	// See getLastDialogDir()/setLastDialogDir() above.
 	juce::File lastDialogDir;

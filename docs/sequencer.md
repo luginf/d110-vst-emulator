@@ -361,6 +361,46 @@ persists in the plugin's own project save the same way the firmware's NVRAM does
 data lives (and why it's a *separate* file from the firmware ROM/NVRAM one, in the Standalone
 build in particular).
 
+## Retro mode (D-20 style LCD)
+
+`D110SequencerRetroPanel.h/.cpp` is a second, complete UI for everything above - a small
+text LCD plus 9 hardware-style buttons (STOP/PLAY/REC, 4 direction arrows in a cross-shaped
+D-pad with ENTER at its centre, EXIT) instead of the mouse-driven grid `D110SequencerPanel`
+normally shows. It replaces the sequencer drawer entirely when switched on, rather than
+sitting beside it - toggle it from **Options** (the panel's right-click Options menu in the
+D-110 plugin; the OPTIONS dialog in Nonet Sequencer). The setting is per-app and persists the
+same way the light/dark THEME choice does. The LCD itself is a fixed 20x4 character grid,
+each glyph drawn dot by dot from a small hand-built 5x7 font - the same idea as the real
+LCD's own dot-matrix chargen (see `D110Panel::rebuildLcdImage()`), just with our own table
+since this screen shows arbitrary UI text rather than real firmware chip output. The four
+arrows also work from a real keyboard (arrow keys), and so do ENTER (Enter/Return) and EXIT
+(Backspace), once the panel has focus (click anywhere on it, or open its drawer).
+
+Everything reachable with the mouse in the normal view is also reachable here, through the
+same `D110SequencerEngine`/`D110SequencerHost` calls - nothing about the engine changes,
+this is purely an alternate view, and everything is reachable from just the 4 arrows, ENTER
+and EXIT (mouse or keyboard) - no other keys needed. HOME (the default screen) shows live
+transport/bar status plus five quick-adjust fields (**transport**, track, bar, tempo, song
+slot) that LEFT/RIGHT selects and UP/DOWN nudges directly, with no menu. TRANSPORT is
+selected by default and is what makes STOP/PLAY/REC reachable without a mouse: UP/DOWN
+dials through STOP/PLAY/REC (re-syncing to whatever's actually live each time the field is
+(re)selected), and ENTER fires whichever one is showing - the same `D110SequencerEngine`
+calls the physical STOP/PLAY/REC buttons make. ENTER on every other field instead opens MAIN
+MENU, which branches into TRACK, TRANSPORT, RECORD, SONG, FILE, UNDO and (Nonet Sequencer
+only) EXTRA TRACKS - each a list of the same operations the mouse menus/dialogs already
+offer (mute/solo/arm, rename, channel, quantize, clear/delete/copy/transpose bars, edit
+events, tempo/time signature/metronome/precount/loop/punch, record mode, step recording,
+song slots and sound snapshots, LOAD/SAVE - recording needs a track armed first, same as
+the mouse view, reachable from TRACK > *track* > ARM). EXIT always backs out one menu level.
+Renaming a track has no physical keyboard to type on, so it's a character-wheel instead:
+LEFT/RIGHT moves the caret, UP/DOWN cycles the character at that position.
+
+Two deliberate v1 differences from the mouse view: EDIT EVENTS operates on whatever bar HOME
+was navigated to when it was opened, without the mouse dialog's own in-place "< Bar N >"
+strip (EXIT back out, change HOME's bar field, re-enter for a different bar); and LOAD/SAVE
+still open the ordinary native file picker rather than a text-driven file browser, since
+reinventing one in a 4-line LCD would cost more than it's worth.
+
 ## Verification
 
 `plugin/sequencer_probe.cpp` (target `d110_sequencer_probe`) is the headless test suite: it

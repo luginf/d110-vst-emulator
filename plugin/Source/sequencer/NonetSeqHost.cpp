@@ -360,6 +360,7 @@ void NonetSeqHost::loadSettings() {
 	keyboardPcInput = xml->getIntAttribute("kbdPcInput", keyboardPcInput ? 1 : 0) != 0;
 	keyboardPcLayout = juce::jlimit(0, 1, xml->getIntAttribute("kbdPcLayout", keyboardPcLayout));
 	uiThemeLight = xml->getIntAttribute("uiThemeLight", uiThemeLight ? 1 : 0) != 0;
+	sequencerRetroMode = xml->getIntAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0) != 0;
 	setProgramChangeOffset(xml->getIntAttribute("pcOffset", 0));
 	setBankOffset(xml->getIntAttribute("bankOffset", 0));
 
@@ -399,6 +400,7 @@ void NonetSeqHost::saveSettings() const {
 	xml.setAttribute("kbdPcInput", keyboardPcInput ? 1 : 0);
 	xml.setAttribute("kbdPcLayout", keyboardPcLayout);
 	xml.setAttribute("uiThemeLight", uiThemeLight ? 1 : 0);
+	xml.setAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0);
 	xml.setAttribute("pcOffset", programChangeOffset);
 	xml.setAttribute("bankOffset", bankOffset);
 

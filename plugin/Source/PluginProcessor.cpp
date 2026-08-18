@@ -2139,6 +2139,8 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 
 	// Utility tab's THEME toggle - see getUiThemeLight().
 	xml->setAttribute("uiThemeLight", uiThemeLight ? 1 : 0);
+	// See getSequencerRetroMode().
+	xml->setAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0);
 	// See getLastDialogDir().
 	xml->setAttribute("lastDialogDir", lastDialogDir.getFullPathName());
 	// Editor drawer's own height, drag-resized via the keyboard handle band - see
@@ -2275,6 +2277,7 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 	setKeyboardPcLayout(xml->getIntAttribute("kbPcLayout", keyboardPcLayout));
 
 	setUiThemeLight(xml->getIntAttribute("uiThemeLight", uiThemeLight ? 1 : 0) != 0);
+	setSequencerRetroMode(xml->getIntAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0) != 0);
 	setLastDialogDir(juce::File(xml->getStringAttribute("lastDialogDir", lastDialogDir.getFullPathName())));
 	setEditorPaneRefH(float(xml->getDoubleAttribute("editorPaneRefH", double(editorPaneRefH))));
 

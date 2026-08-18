@@ -131,6 +131,7 @@ target_sources(D110Emulator PRIVATE
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp
     ${D110_DRIVLIST_SOURCE}
 )
 
@@ -240,6 +241,7 @@ target_sources(D110EmulatorNative PRIVATE
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
     Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp
 )
 
 target_compile_definitions(D110EmulatorNative PRIVATE D110_NATIVE_CORE=1)
@@ -275,7 +277,8 @@ add_executable(d110_audio_test audio_test.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_audio_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_audio_test PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -305,7 +308,8 @@ add_executable(d110_tone_probe tone_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_tone_probe PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_tone_probe PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -322,7 +326,8 @@ add_executable(d110_coldstart_test coldstart_test.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_coldstart_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_coldstart_test PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -339,7 +344,8 @@ add_executable(d110_state_test state_test.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_state_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_state_test PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -356,7 +362,8 @@ add_executable(d110_la32_probe la32_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_probe PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_la32_probe PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -373,7 +380,8 @@ add_executable(d110_la32_lifecycle la32_lifecycle_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_lifecycle PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_la32_lifecycle PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -391,7 +399,8 @@ add_executable(d110_la32_ctx la32_ctx_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_ctx PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_la32_ctx PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -408,7 +417,8 @@ add_executable(d110_la32_realistic la32_realistic_test.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_realistic PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_la32_realistic PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -427,7 +437,8 @@ add_executable(d110_demo_song_repro demo_song_repro.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_demo_song_repro PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_demo_song_repro PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -445,7 +456,8 @@ add_executable(d110_pan_verify pan_verify.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_pan_verify PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_pan_verify PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -463,7 +475,8 @@ add_executable(d110_note_source note_source_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_note_source PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_note_source PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -480,7 +493,8 @@ add_executable(d110_demo_wav demo_wav_render.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_demo_wav PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_demo_wav PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -498,7 +512,8 @@ add_executable(d110_part_audio part_audio_test.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_part_audio PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_part_audio PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -515,7 +530,8 @@ add_executable(d110_solo_level solo_level_test.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_solo_level PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_solo_level PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -533,7 +549,8 @@ add_executable(d110_part_state part_state_compare.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_part_state PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_part_state PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -551,7 +568,8 @@ add_executable(d110_tone_clobber tone_clobber_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_tone_clobber PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_tone_clobber PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -568,7 +586,8 @@ add_executable(d110_rhythm_map rhythm_map_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_rhythm_map PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_rhythm_map PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -585,7 +604,8 @@ add_executable(d110_reverb_path reverb_path_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_reverb_path PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_reverb_path PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -602,7 +622,8 @@ add_executable(d110_la32_regmap la32_regmap_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_regmap PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_la32_regmap PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -620,7 +641,8 @@ add_executable(d110_factory_bank factory_bank_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_factory_bank PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_factory_bank PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -639,7 +661,8 @@ add_executable(d110_editor_write editor_write_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_editor_write PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_editor_write PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -656,7 +679,8 @@ add_executable(d110_editor_shot editor_shot.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_editor_shot PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_editor_shot PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -677,7 +701,8 @@ add_executable(d110_editor_test editor_test.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_editor_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_editor_test PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -695,7 +720,8 @@ add_executable(d110_reverb_reg reverb_reg_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_reverb_reg PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_reverb_reg PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -714,7 +740,8 @@ add_executable(d110_tone_edit_survives tone_edit_survives_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_tone_edit_survives PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_tone_edit_survives PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -732,7 +759,8 @@ add_executable(d110_la32_render la32_render.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_render PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/../munt/mt32emu/src"
     "${CMAKE_CURRENT_BINARY_DIR}/mt32emu_build/src")
@@ -751,7 +779,8 @@ add_executable(d110_la32_stream la32_stream_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_la32_stream PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_la32_stream PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -767,7 +796,8 @@ add_executable(d110_panel_render panel_render.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_panel_render PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 # Ход карты двигает собственный таймер панели, поэтому стенду нужен настоящий цикл
 # сообщений; в плагине он не нужен и не включается.
@@ -786,7 +816,8 @@ add_executable(d110_card card_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_card PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_card PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -803,7 +834,8 @@ add_executable(d110_so_trace so_trace_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_so_trace PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_so_trace PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -828,7 +860,8 @@ add_executable(d110_sysex_test sysex_test.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_sysex_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_sysex_test PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -854,7 +887,8 @@ add_executable(d110_hang_probe hang_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_hang_probe PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_hang_probe PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -871,7 +905,8 @@ add_executable(d110_longrun_test longrun_test.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_longrun_test PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_longrun_test PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -906,7 +941,8 @@ add_executable(d110_polyphony polyphony_test.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_polyphony PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_polyphony PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -923,7 +959,8 @@ add_executable(d110_multi_part_polyphony multi_part_polyphony_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_multi_part_polyphony PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_multi_part_polyphony PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -940,7 +977,8 @@ add_executable(d110_partial_count_cpu partial_count_cpu_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_partial_count_cpu PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_partial_count_cpu PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -958,7 +996,8 @@ add_executable(d110_mame_stuck_note_repro mame_stuck_note_repro.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_mame_stuck_note_repro PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_mame_stuck_note_repro PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -976,7 +1015,8 @@ add_executable(d110_slot_life slot_life_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_slot_life PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_slot_life PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -995,7 +1035,8 @@ add_executable(d110_nvram_recovery nvram_recovery.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_nvram_recovery PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_nvram_recovery PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -1014,7 +1055,8 @@ add_executable(d110_panel_factory_init panel_factory_init_test.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_panel_factory_init PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_panel_factory_init PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -1032,7 +1074,8 @@ add_executable(d110_midi_congestion midi_congestion_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_midi_congestion PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_midi_congestion PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -1050,7 +1093,8 @@ add_executable(d110_bank_import bank_import.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_bank_import PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_bank_import PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -1068,7 +1112,8 @@ add_executable(d110_stuck_notes stuck_notes_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_stuck_notes PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_stuck_notes PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -1085,7 +1130,8 @@ add_executable(d110_mame_ramp_edge_stress mame_ramp_edge_stress_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_mame_ramp_edge_stress PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_mame_ramp_edge_stress PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -1103,7 +1149,8 @@ add_executable(d110_rhythm_key rhythm_key_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_rhythm_key PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_rhythm_key PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -1121,7 +1168,8 @@ add_executable(d110_pan_resync pan_resync_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_pan_resync PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_pan_resync PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -1148,7 +1196,8 @@ add_executable(d110_rhythm_ctx rhythm_ctx_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_rhythm_ctx PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_rhythm_ctx PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -1167,7 +1216,8 @@ add_executable(d110_demo_patch demo_patch_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_demo_patch PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_demo_patch PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -1185,7 +1235,8 @@ add_executable(d110_note_latency note_latency_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_note_latency PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_note_latency PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -1203,7 +1254,8 @@ add_executable(d110_boss_reverb boss_reverb_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_boss_reverb PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_boss_reverb PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -1220,7 +1272,8 @@ add_executable(d110_boss_reverb_iso boss_reverb_isolated_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_boss_reverb_iso PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_boss_reverb_iso PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -1238,7 +1291,8 @@ add_executable(d110_multi_output multi_output_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_multi_output PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_multi_output PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -1256,7 +1310,8 @@ add_executable(d110_rhythm_hint_bleed rhythm_hint_bleed_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_rhythm_hint_bleed PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_rhythm_hint_bleed PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -1275,7 +1330,8 @@ add_executable(d110_pan_verify_diag pan_verify_diag_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_pan_verify_diag PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_pan_verify_diag PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -1292,7 +1348,8 @@ add_executable(d110_rhythm_pan_audio rhythm_pan_audio_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp "${MAME_DRIVLIST}")
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp "${MAME_DRIVLIST}")
 target_include_directories(d110_rhythm_pan_audio PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_rhythm_pan_audio PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
@@ -1410,7 +1467,8 @@ add_executable(d110_native_plugin_smoke native_plugin_smoke_test.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
 target_include_directories(d110_native_plugin_smoke PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_plugin_smoke PRIVATE
     D110_NATIVE_CORE=1
@@ -1430,7 +1488,8 @@ add_executable(d110_native_timbre_group_number native_timbre_group_number_probe.
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
 target_include_directories(d110_native_timbre_group_number PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_timbre_group_number PRIVATE
     D110_NATIVE_CORE=1
@@ -1450,7 +1509,8 @@ add_executable(d110_native_single_part_stuck native_single_part_stuck_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
 target_include_directories(d110_native_single_part_stuck PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_single_part_stuck PRIVATE
     D110_NATIVE_CORE=1
@@ -1471,7 +1531,8 @@ add_executable(d110_native_retrigger_silence native_retrigger_silence_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
 target_include_directories(d110_native_retrigger_silence PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_retrigger_silence PRIVATE
     D110_NATIVE_CORE=1
@@ -1491,7 +1552,8 @@ add_executable(d110_native_long_session_stress native_long_session_stress_probe.
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
 target_include_directories(d110_native_long_session_stress PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_long_session_stress PRIVATE
     D110_NATIVE_CORE=1
@@ -1512,7 +1574,8 @@ add_executable(d110_native_cumulative_drift native_cumulative_drift_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
 target_include_directories(d110_native_cumulative_drift PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_cumulative_drift PRIVATE
     D110_NATIVE_CORE=1
@@ -1534,7 +1597,8 @@ add_executable(d110_native_editor_race native_editor_race_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
 target_include_directories(d110_native_editor_race PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_editor_race PRIVATE
     D110_NATIVE_CORE=1
@@ -1555,7 +1619,8 @@ add_executable(d110_native_patch_select_race native_patch_select_race_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
 target_include_directories(d110_native_patch_select_race PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_patch_select_race PRIVATE
     D110_NATIVE_CORE=1
@@ -1575,7 +1640,8 @@ add_executable(d110_native_chord_patch native_chord_patch_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
 target_include_directories(d110_native_chord_patch PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_chord_patch PRIVATE
     D110_NATIVE_CORE=1
@@ -1595,7 +1661,8 @@ add_executable(d110_native_snapshot_repro native_snapshot_repro_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
 target_include_directories(d110_native_snapshot_repro PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_snapshot_repro PRIVATE
     D110_NATIVE_CORE=1
@@ -1615,7 +1682,8 @@ add_executable(d110_native_duplicate_channel native_duplicate_channel_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
 target_include_directories(d110_native_duplicate_channel PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_duplicate_channel PRIVATE
     D110_NATIVE_CORE=1
@@ -1635,7 +1703,8 @@ add_executable(d110_native_editor_tone_repro native_editor_tone_repro_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
 target_include_directories(d110_native_editor_tone_repro PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_editor_tone_repro PRIVATE
     D110_NATIVE_CORE=1
@@ -1657,7 +1726,8 @@ add_executable(d110_native_realtime_collector native_realtime_collector_probe.cp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
 target_include_directories(d110_native_realtime_collector PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_realtime_collector PRIVATE
     D110_NATIVE_CORE=1
@@ -1677,7 +1747,8 @@ add_executable(d110_native_assign_mode native_assign_mode_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
 target_include_directories(d110_native_assign_mode PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_assign_mode PRIVATE
     D110_NATIVE_CORE=1
@@ -1696,7 +1767,8 @@ add_executable(d110_native_master_tune native_master_tune_probe.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
 target_include_directories(d110_native_master_tune PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_master_tune PRIVATE
     D110_NATIVE_CORE=1
@@ -1713,7 +1785,8 @@ add_executable(d110_sequencer_state_probe sequencer_state_probe.cpp
     Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
     Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
     Source/sequencer/D110SequencerEngine.cpp
-    Source/sequencer/D110SequencerSongsFile.cpp Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerSongsFile.cpp Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
 target_include_directories(d110_sequencer_state_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_sequencer_state_probe PRIVATE
     D110_NATIVE_CORE=1
@@ -1733,7 +1806,8 @@ add_executable(d110_native_editor_shot editor_shot.cpp
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/UiTheme.cpp
-    Source/sequencer/D110SequencerPanel.cpp)
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
 target_include_directories(d110_native_editor_shot PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_native_editor_shot PRIVATE
     D110_NATIVE_CORE=1
@@ -1763,6 +1837,7 @@ add_executable(Nonet-Seq
     Source/sequencer/D110SequencerEngine.cpp
     Source/sequencer/D110SequencerSongsFile.cpp
     Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp
     Source/D110Keyboard.cpp
     Source/UiTheme.cpp)
 target_include_directories(Nonet-Seq PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")

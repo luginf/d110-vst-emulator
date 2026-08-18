@@ -4,6 +4,7 @@
 #include "D110Keyboard.h"
 #include "PluginProcessor.h"
 #include "sequencer/D110SequencerPanel.h"
+#include "sequencer/D110SequencerRetroPanel.h"
 
 #include <array>
 #include <vector>
@@ -46,6 +47,11 @@ public:
 	// всему окну, включая ящик, и потому живёт отдельным компонентом (D110MemoryCard). А вот
 	// ЩЕЛЬ - часть фотографии прибора, и ловить попадание в неё должна панель.
 	std::function<void()> onCardSlotClicked;
+	// Options menu's Retro Sequencer toggle - the editor swaps which sequencer view is
+	// visible in response (see D110AudioProcessorEditor's own resized()); this panel has
+	// no reference to the sequencer drawer itself, hence the callback rather than a
+	// direct call.
+	std::function<void()> onSequencerModeChanged;
 	// Обрамление щели, а не сам проём: попасть мышью в полоску высотой тридцать точек трудно,
 	// а обрамление - это ровно то, что человек видит как «щель».
 	static constexpr float kSlotHitX = 1588.0f, kSlotHitY = 109.0f;
@@ -534,6 +540,10 @@ private:
 	D110Keyboard keyboard;
 	// Stacked below the keyboard, third drawer down, same independent-fold treatment.
 	D110SequencerPanel sequencerPanel;
+	// D-20-style alternate view of the same drawer - see processor.getSequencerRetroMode()
+	// and D110Panel::onSequencerModeChanged below. Both are always constructed (cheap,
+	// stateless views over the same host/engine); resized() shows exactly one of the two.
+	D110SequencerRetroPanel sequencerRetroPanel;
 	juce::ComponentBoundsConstrainer constrainer;
 
 	float expansion = 0.0f;        // сглаженное 0..1
