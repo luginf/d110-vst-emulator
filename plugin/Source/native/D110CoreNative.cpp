@@ -135,9 +135,21 @@ void D110CoreNative::runForSeconds(double seconds) {
 		tickPhase_ += slice;
 		if (tickPhase_ >= kTickPeriodSeconds) {
 			tickPhase_ -= kTickPeriodSeconds;
-			// One byte per elapsed tick, no readiness gate - matches D110Osd::midiTick()
-			// exactly (bytes arrive spaced as they would down a real MIDI cable).
-			if (!midiInQueue_.empty()) {
+			// One byte per elapsed tick - matches D110Osd::midiTick() (bytes arrive spaced
+			// as they would down a real MIDI cable). Originally no readiness gate at all
+			// here (deliberately, matching that same real-cable timing), but that let a
+			// byte the firmware hadn't read yet get silently clobbered by the next one -
+			// SBUF (Mcs96Cpu) only models a single holding register, one byte deep, with
+			// no shift-register buffering the way real 8097BH silicon likely has. Measured
+			// on Alan's own machine (2026-08-19, see
+			// project_sequencer_channel_collision_fix memory): 31 overruns in under 2400
+			// bytes during ONE short passage - not a rare corner case. Waiting a tick
+			// instead of overwriting can only cost a little extra latency (at most a
+			// couple of byte periods, ~0.6ms, in the rare case the firmware is genuinely
+			// still busy) - never loses data outright, which silently corrupting whatever
+			// MIDI message happened to be next (a note-off often enough to matter) is
+			// strictly worse than.
+			if (!midiInQueue_.empty() && cpu_.serialRxReady()) {
 				cpu_.serialWrite(midiInQueue_.front());
 				midiInQueue_.pop_front();
 				++midiDelivered_;

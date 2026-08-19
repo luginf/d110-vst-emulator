@@ -2,10 +2,34 @@
 #include "UiTheme.h"
 #include <BinaryData.h>
 
+// Only used standalone (see showOptionsMenu's cases 900-903) - guarded like this because the
+// header assumes juce_audio_utils' AudioDeviceSelectorComponent/AudioProcessorPlayer are
+// already visible, which is only true in the Standalone format's own compile of this file (the
+// VST3 format target compiles PluginEditor.cpp too, without that module pulled in).
+#include <juce_core/system/juce_TargetPlatform.h>
+#if JucePlugin_Build_Standalone
+ #include <juce_audio_utils/juce_audio_utils.h>
+ #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
+#endif
+
 #include <cmath>
 #include <cstring>
 
 namespace {
+
+#if JucePlugin_Build_Standalone
+// Shared by D110Panel's right-click menu and D110EditorPane's OPTIONS button (see
+// D110Panel::showOptionsMenu and D110EditorPane::showOptionsButtonMenu) - action is one of
+// the 900-903 IDs both menus use for these four items.
+void performStandaloneAppAction(juce::Component &anchor, int action) {
+	if (auto *win = dynamic_cast<juce::StandaloneFilterWindow *>(anchor.getTopLevelComponent())) {
+		if (action == 900) win->getPluginHolder()->showAudioSettingsDialog();
+		else if (action == 901) win->getPluginHolder()->askUserToSaveState();
+		else if (action == 902) win->getPluginHolder()->askUserToLoadState();
+		else if (action == 903) win->resetToDefaultState();
+	}
+}
+#endif
 
 // --- geometry, all in the reference photograph's own pixels -------------------
 // Measured by profiling the image rather than by eye; every number below is
@@ -633,6 +657,20 @@ void D110Panel::showOptionsMenu()
 	// панель, - в 0.9.6 это исправлено.
 	m.addSeparator();
 
+	// The standalone window now uses the OS's own native title bar (Alan's request, see
+	// PluginEditor::parentHierarchyChanged) instead of JUCE's default custom-drawn one, which
+	// was the only place these four lived - JUCE's own Options button. Nothing to relocate for
+	// the plugin builds: a DAW host already offers its own audio/MIDI setup and project
+	// save/load, so these only make sense standalone.
+	const bool isStandalone = processor.wrapperType == juce::AudioProcessor::wrapperType_Standalone;
+	if (isStandalone) {
+		m.addItem(900, "Audio/MIDI Settings...");
+		m.addItem(901, "Save current state...");
+		m.addItem(902, "Load a saved state...");
+		m.addItem(903, "Reset to default state");
+		m.addSeparator();
+	}
+
 	// Direct MIDI ports, beside whatever the host routes in. This is how an external
 	// editor reaches the module the way it would reach the hardware.
 	const auto ins = D110AudioProcessor::midiInputs();
@@ -732,6 +770,14 @@ void D110Panel::showOptionsMenu()
 			case 5:
 				processor.setSequencerRetroMode(!processor.getSequencerRetroMode());
 				if (onSequencerModeChanged) onSequencerModeChanged();
+				break;
+			case 900:
+			case 901:
+			case 902:
+			case 903:
+#if JucePlugin_Build_Standalone
+				performStandaloneAppAction(*this, result);
+#endif
 				break;
 			default:
 				break;
@@ -944,6 +990,10 @@ void D110EditorPane::layout() {
 		tabBounds[(size_t)i] = tabs.removeFromLeft(tabW);
 		tabs.removeFromLeft(6.0f);
 	}
+	optionsButtonBounds = (processor.wrapperType == juce::AudioProcessor::wrapperType_Standalone
+	                        && tabs.getWidth() > 40.0f)
+	                          ? tabs.removeFromRight(juce::jmin(90.0f, tabs.getWidth()))
+	                          : juce::Rectangle<float>{};
 	area.removeFromTop(8.0f);
 	area.removeFromBottom(16.0f);   // полоса под пояснением внизу
 
@@ -1557,6 +1607,17 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 	}
 	area.removeFromTop(18.0f);
 
+	labels.push_back({ area.removeFromTop(15.0f), "SEQUENCER", true });
+	{
+		auto row = area.removeFromTop(28.0f);
+		buttons.push_back({ row.removeFromLeft(150.0f), processor.getSequencerRetroMode() ? "RETRO" : "NORMAL", 13 });
+		labels.push_back({ row.reduced(12.0f, 0.0f),
+		                   "click to switch the sequencer drawer between the mouse-driven "
+		                   "grid and the D-20-style LCD+buttons view - same toggle as the "
+		                   "panel's own right-click Options menu", false });
+	}
+	area.removeFromTop(18.0f);
+
 	labels.push_back({ area.removeFromTop(15.0f), "DEBUG", true });
 	{
 		auto row = area.removeFromTop(28.0f);
@@ -1983,6 +2044,16 @@ void D110EditorPane::paint(juce::Graphics &g) {
 		g.drawText(kTabs[i], tabBounds[(size_t)i], juce::Justification::centred);
 	}
 
+	if (!optionsButtonBounds.isEmpty()) {
+		g.setColour(kEdBox());
+		g.fillRoundedRectangle(optionsButtonBounds, 3.0f);
+		g.setColour(kEdBorder());
+		g.drawRoundedRectangle(optionsButtonBounds.reduced(0.5f), 3.0f, 1.0f);
+		g.setColour(kEdLabel());
+		g.setFont(labelFont);
+		g.drawText("OPTIONS", optionsButtonBounds, juce::Justification::centred);
+	}
+
 	if (!ramValid) {
 		g.setColour(kEdDim());
 		g.setFont(labelFont);
@@ -2234,6 +2305,25 @@ void D110EditorPane::paintMonitor(juce::Graphics &g, juce::Rectangle<float> area
 	               + "   dropped: "
 	               + juce::String(juce::int64(processor.getCore().midiDropped())),
 	           area.removeFromTop(18.0f), juce::Justification::centredLeft);
+	area.removeFromTop(4.0f);
+	// Diagnostic counter for the stuck-continuous-note report Alan filed 2026-08-18/19 (see
+	// project_sequencer_channel_collision_fix memory) - Part::abortFirstPoly()'s fallback
+	// release (munt/mt32emu/src/Part.cpp) increments this every time it fires. Should stay at
+	// 0 most sessions; if it climbs right when a note gets stuck, that's the mechanism.
+	const uint32_t abortFallbacks = processor.engineAbortFallbackCount();
+	g.setColour(abortFallbacks > 0 ? kEdValue() : kEdDim());
+	g.drawText("stuck-voice guard fired: " + juce::String(juce::int64(abortFallbacks)) + " time(s) this session",
+	           area.removeFromTop(18.0f), juce::Justification::centredLeft);
+	// Second candidate for the same stuck-note report, added once the first (above) came back
+	// at 0 while the bug still reproduced - see project_sequencer_channel_collision_fix
+	// memory. A nonzero count here means the emulated firmware genuinely lost a MIDI byte
+	// (most likely a note-off) because it hadn't read the previous one yet when the next
+	// arrived - independent of munt entirely.
+	const uint32_t serialOverruns = processor.getCore().serialOverrunCount();
+	g.setColour(serialOverruns > 0 ? kEdValue() : kEdDim());
+	g.drawText("MIDI UART overruns (byte lost, firmware too slow to read it): "
+	               + juce::String(juce::int64(serialOverruns)) + " time(s) this session",
+	           area.removeFromTop(18.0f), juce::Justification::centredLeft);
 	area.removeFromTop(8.0f);
 
 	g.setColour(kEdLabel());
@@ -2282,6 +2372,13 @@ void D110EditorPane::buttonPressed(int id) {
 	}
 	if (id == 12) {
 		processor.setDebugModeEnabled(!processor.getDebugModeEnabled());
+		layout();
+		repaint();
+		return;
+	}
+	if (id == 13) {
+		processor.setSequencerRetroMode(!processor.getSequencerRetroMode());
+		if (onSequencerModeChanged) onSequencerModeChanged();
 		layout();
 		repaint();
 		return;
@@ -2488,6 +2585,10 @@ void D110EditorPane::showRhythmSoundMenu(int slot) {
 
 void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 	const auto p = e.position;
+	if (!optionsButtonBounds.isEmpty() && optionsButtonBounds.contains(p)) {
+		if (onOptionsButtonClicked) onOptionsButtonClicked();
+		return;
+	}
 	for (int i = 0; i < kNumTabs; ++i) {
 		if (!tabBounds[(size_t)i].contains(p)) continue;
 		selectTab(i);
@@ -2857,6 +2958,8 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 	// Same idea for the editor pane's own height - read before totalRefHeight() is first
 	// called just below, so a project saved with a resized drawer opens already that size.
 	editorPaneRefH = juce::jlimit(kMinPaneRefH, kMaxPaneRefH, p.getEditorPaneRefH());
+	keyboardPaneRefH = juce::jlimit(kMinKeyboardPaneRefH, kMaxKeyboardPaneRefH, p.getKeyboardPaneRefH());
+	sequencerPaneRefH = juce::jlimit(kMinSequencerPaneRefH, kMaxSequencerPaneRefH, p.getSequencerPaneRefH());
 
 	addAndMakeVisible(panel);
 	addAndMakeVisible(editorPane);
@@ -2870,12 +2973,15 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 	sequencerRetroPanel.setVisible(processor.getSequencerRetroMode());
 
 	panel.onCardSlotClicked = [this] { card.toggle(); };
-	panel.onSequencerModeChanged = [this] {
+	auto refreshSequencerMode = [this] {
 		sequencerPanel.setVisible(!processor.getSequencerRetroMode());
 		sequencerRetroPanel.setVisible(processor.getSequencerRetroMode());
 		sequencerPanel.repaint();
 		sequencerRetroPanel.repaint();
 	};
+	panel.onSequencerModeChanged = refreshSequencerMode;
+	editorPane.onSequencerModeChanged = refreshSequencerMode;
+	editorPane.onOptionsButtonClicked = [this] { panel.showOptionsMenu(); };
 	card.onEjectNeedsDrawer = [this] {
 		expansion = expansionTarget = 1.0f;
 		applySize();
@@ -2892,7 +2998,8 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 
 	// Zoom presets (Utility tab) call this to resize precisely, the same way a manual
 	// drag-resize already does reliably - see D110EditorPane::onRequestZoom's own comment for
-	// why this exists instead of a maximise button.
+	// why this exists instead of a maximise button (feedback_no_blind_wm_fixes memory: a native
+	// one sent the window off-screen on Alan's real desktop, twice now).
 	editorPane.onRequestZoom = [this](int percent) {
 		const int targetW = juce::roundToInt(float(D110Panel::kRefW) * float(percent) / 100.0f);
 		setSize(targetW, int(totalRefHeight() * (float(targetW) / float(D110Panel::kRefW)) + 0.5f));
@@ -2909,10 +3016,32 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 	};
 }
 
+void D110AudioProcessorEditor::parentHierarchyChanged()
+{
+	juce::AudioProcessorEditor::parentHierarchyChanged();
+	// Plugin builds: no such window exists (the host draws its own), and wrapperType tells
+	// them apart at runtime same as PluginProcessor.cpp already does elsewhere. Standalone:
+	// StandaloneFilterWindow's ctor hardcodes JUCE's own custom-drawn title bar (the "Options"
+	// button lived there - now on the panel's right-click menu, see D110Panel::showOptionsMenu),
+	// there's no constructor hook to ask for the native one instead, so it's flipped here, the
+	// first time this editor is far enough up the hierarchy to reach that window. Guarded by
+	// isUsingNativeTitleBar() so repeated hierarchy-change notifications don't keep tearing
+	// down and rebuilding the native window peer.
+	if (processor.wrapperType != juce::AudioProcessor::wrapperType_Standalone) return;
+	if (auto *dw = dynamic_cast<juce::DocumentWindow *>(getTopLevelComponent()))
+		// Deliberately NOT calling setTitleBarButtonsRequired(allButtons, ...) here: a native
+		// maximise button was tried on this same window in an earlier session (2026-08-06) and
+		// sent it off-screen on Alan's real desktop (confirmed again 2026-08-19) - see the
+		// feedback_no_blind_wm_fixes memory. Stick to minimise+close (StandaloneFilterWindow's
+		// own default) unless Alan explicitly asks for maximise again.
+		if (!dw->isUsingNativeTitleBar()) dw->setUsingNativeTitleBar(true);
+}
+
 float D110AudioProcessorEditor::totalRefHeight() const {
 	return float(D110Panel::kRefH) + kHandleRefH + expansion * editorPaneRefH
-	     + kKeyboardHandleRefH + keyboardExpansion * D110Keyboard::kRefH
-	     + kSequencerHandleRefH + sequencerExpansion * D110SequencerPanel::kRefH;
+	     + kKeyboardHandleRefH + keyboardExpansion * keyboardPaneRefH
+	     + kSequencerHandleRefH + sequencerExpansion * sequencerPaneRefH
+	     + sequencerExpansion * kSequencerResizeGripRefH;
 }
 
 void D110AudioProcessorEditor::applySize() {
@@ -2941,8 +3070,20 @@ juce::Rectangle<float> D110AudioProcessorEditor::keyboardHandleBand() const {
 juce::Rectangle<float> D110AudioProcessorEditor::sequencerHandleBand() const {
 	const float s = float(getWidth()) / float(D110Panel::kRefW);
 	const float top = (float(D110Panel::kRefH) + kHandleRefH + expansion * editorPaneRefH
-	                  + kKeyboardHandleRefH + keyboardExpansion * D110Keyboard::kRefH) * s;
+	                  + kKeyboardHandleRefH + keyboardExpansion * keyboardPaneRefH) * s;
 	return { 0.0f, top, float(getWidth()), kSequencerHandleRefH * s };
+}
+
+// The sequencer drawer's own resize grip, right under it - see kSequencerResizeGripRefH's
+// comment for why this one isn't a dual-role band like the two above. Zero height (so it
+// never hit-tests true) whenever the drawer itself is collapsed, exactly like the drawer's
+// own bounds in resized() below.
+juce::Rectangle<float> D110AudioProcessorEditor::sequencerResizeBand() const {
+	const float s = float(getWidth()) / float(D110Panel::kRefW);
+	const float top = (float(D110Panel::kRefH) + kHandleRefH + expansion * editorPaneRefH
+	                  + kKeyboardHandleRefH + keyboardExpansion * keyboardPaneRefH
+	                  + kSequencerHandleRefH + sequencerExpansion * sequencerPaneRefH) * s;
+	return { 0.0f, top, float(getWidth()), sequencerExpansion * kSequencerResizeGripRefH * s };
 }
 
 namespace {
@@ -2983,6 +3124,18 @@ void D110AudioProcessorEditor::paint(juce::Graphics &g)
 	paintDrawerHandle(g, handleBand(), expansion > 0.5f, handleHover, "EDITOR");
 	paintDrawerHandle(g, keyboardHandleBand(), keyboardExpansion > 0.5f, keyboardHandleHover, "KEYBOARD");
 	paintDrawerHandle(g, sequencerHandleBand(), sequencerExpansion > 0.5f, sequencerHandleHover, "SEQUENCER");
+
+	// Pure resize grip, no chevron/label - it doesn't fold anything, it's just a thicker
+	// grab target than the drawer's own 1px edge would be. Same bar colour as the other
+	// bands so it still reads as "part of this drawer's furniture".
+	const auto grip = sequencerResizeBand();
+	if (!grip.isEmpty()) {
+		const auto &pal = d110ui::palette();
+		g.setColour(pal.handleBg);
+		g.fillRect(grip);
+		g.setColour(sequencerResizeHover ? pal.handleBarHover : pal.handleBar);
+		g.fillRect(grip.reduced(0.0f, grip.getHeight() * 0.28f));
+	}
 }
 
 void D110AudioProcessorEditor::mouseDown(const juce::MouseEvent &e)
@@ -3016,32 +3169,80 @@ void D110AudioProcessorEditor::mouseDown(const juce::MouseEvent &e)
 		return;
 	}
 	if (sequencerHandleBand().contains(e.position)) {
-		sequencerExpansionTarget = (sequencerExpansionTarget > 0.5f) ? 0.0f : 1.0f;
-		sequencerExpansion = sequencerExpansionTarget;
-		applySize();
+		// Same dual role, one drawer down: drag resizes the KEYBOARD pane above this band,
+		// plain click toggles the sequencer drawer - see keyboardHandleBand's case just above.
+		sequencerHandlePressed = true;
+		resizingKeyboardPane = false;
+		resizeDragStartY = e.position.y;
+		resizeDragStartRefH = keyboardPaneRefH;
+		return;
+	}
+	if (sequencerResizeBand().contains(e.position)) {
+		// No toggle role here - the sequencer drawer is the last one, nothing below it to
+		// fold - so this is a plain resize grab from the first pixel of movement.
+		sequencerResizeHandlePressed = true;
+		resizeDragStartY = e.position.y;
+		resizeDragStartRefH = sequencerPaneRefH;
 		return;
 	}
 }
 
 void D110AudioProcessorEditor::mouseDrag(const juce::MouseEvent &e)
 {
-	if (!keyboardHandlePressed) return;
-	const float deltaY = e.position.y - resizeDragStartY;
-	// A few pixels of slop before a press-and-hold turns into a resize, so an ordinary click
-	// (which always jitters slightly between down and up) doesn't accidentally nudge the
-	// height - only actually resizes once the editor pane is open, since dragging this band
-	// with nothing above it to resize wouldn't do anything visible.
-	if (!resizingEditorPane) {
-		if (expansion < 0.5f || std::abs(deltaY) < 4.0f) return;
-		resizingEditorPane = true;
-	}
 	const float s = float(getWidth()) / float(D110Panel::kRefW);
-	editorPaneRefH = juce::jlimit(kMinPaneRefH, kMaxPaneRefH, resizeDragStartRefH + deltaY / s);
-	applySize();
+	const float deltaY = e.position.y - resizeDragStartY;
+
+	if (keyboardHandlePressed) {
+		// A few pixels of slop before a press-and-hold turns into a resize, so an ordinary
+		// click (which always jitters slightly between down and up) doesn't accidentally
+		// nudge the height - only actually resizes once the editor pane is open, since
+		// dragging this band with nothing above it to resize wouldn't do anything visible.
+		if (!resizingEditorPane) {
+			if (expansion < 0.5f || std::abs(deltaY) < 4.0f) return;
+			resizingEditorPane = true;
+		}
+		editorPaneRefH = juce::jlimit(kMinPaneRefH, kMaxPaneRefH, resizeDragStartRefH + deltaY / s);
+		applySize();
+		return;
+	}
+	if (sequencerHandlePressed) {
+		if (!resizingKeyboardPane) {
+			if (keyboardExpansion < 0.5f || std::abs(deltaY) < 4.0f) return;
+			resizingKeyboardPane = true;
+		}
+		keyboardPaneRefH =
+			juce::jlimit(kMinKeyboardPaneRefH, kMaxKeyboardPaneRefH, resizeDragStartRefH + deltaY / s);
+		applySize();
+		return;
+	}
+	if (sequencerResizeHandlePressed) {
+		sequencerPaneRefH =
+			juce::jlimit(kMinSequencerPaneRefH, kMaxSequencerPaneRefH, resizeDragStartRefH + deltaY / s);
+		applySize();
+	}
 }
 
 void D110AudioProcessorEditor::mouseUp(const juce::MouseEvent &)
 {
+	if (sequencerResizeHandlePressed) {
+		sequencerResizeHandlePressed = false;
+		processor.setSequencerPaneRefH(sequencerPaneRefH);
+		return;
+	}
+	if (sequencerHandlePressed) {
+		sequencerHandlePressed = false;
+		if (resizingKeyboardPane) {
+			processor.setKeyboardPaneRefH(keyboardPaneRefH);
+			resizingKeyboardPane = false;
+			return;
+		}
+		// No real drag happened - an ordinary click, so this band keeps behaving as the
+		// sequencer drawer's toggle, exactly as before it gained its second role.
+		sequencerExpansionTarget = (sequencerExpansionTarget > 0.5f) ? 0.0f : 1.0f;
+		sequencerExpansion = sequencerExpansionTarget;
+		applySize();
+		return;
+	}
 	if (!keyboardHandlePressed) return;
 	keyboardHandlePressed = false;
 	if (resizingEditorPane) {
@@ -3063,16 +3264,21 @@ void D110AudioProcessorEditor::mouseMove(const juce::MouseEvent &e)
 	const bool over = handleBand().contains(e.position);
 	const bool overKeyboard = keyboardHandleBand().contains(e.position);
 	const bool overSequencer = sequencerHandleBand().contains(e.position);
+	const bool overSequencerResize = sequencerResizeBand().contains(e.position);
 	bool changed = false;
 	if (over != handleHover) { handleHover = over; changed = true; }
 	if (overKeyboard != keyboardHandleHover) { keyboardHandleHover = overKeyboard; changed = true; }
 	if (overSequencer != sequencerHandleHover) { sequencerHandleHover = overSequencer; changed = true; }
+	if (overSequencerResize != sequencerResizeHover) { sequencerResizeHover = overSequencerResize; changed = true; }
 	if (!changed) return;
-	// Over the keyboard band specifically, hint at the resize (rather than the plain
-	// pointing-hand the other two bands use) only when there's actually something to
-	// resize - i.e. the editor pane above it is open.
+	// Over the keyboard/sequencer bands specifically, hint at the resize (rather than the
+	// plain pointing-hand the toggle-only band uses) only when there's actually something to
+	// resize - i.e. the pane above it is open. The grip is always a resize cursor - it has
+	// no toggle role to fall back to.
 	juce::MouseCursor cursor = juce::MouseCursor::NormalCursor;
-	if (overKeyboard && expansion > 0.5f) cursor = juce::MouseCursor::UpDownResizeCursor;
+	if (overSequencerResize) cursor = juce::MouseCursor::UpDownResizeCursor;
+	else if (overKeyboard && expansion > 0.5f) cursor = juce::MouseCursor::UpDownResizeCursor;
+	else if (overSequencer && keyboardExpansion > 0.5f) cursor = juce::MouseCursor::UpDownResizeCursor;
 	else if (over || overKeyboard || overSequencer) cursor = juce::MouseCursor::PointingHandCursor;
 	setMouseCursor(cursor);
 	repaint();
@@ -3080,10 +3286,11 @@ void D110AudioProcessorEditor::mouseMove(const juce::MouseEvent &e)
 
 void D110AudioProcessorEditor::mouseExit(const juce::MouseEvent &)
 {
-	if (!handleHover && !keyboardHandleHover && !sequencerHandleHover) return;
+	if (!handleHover && !keyboardHandleHover && !sequencerHandleHover && !sequencerResizeHover) return;
 	handleHover = false;
 	keyboardHandleHover = false;
 	sequencerHandleHover = false;
+	sequencerResizeHover = false;
 	repaint();
 }
 
@@ -3104,12 +3311,12 @@ void D110AudioProcessorEditor::resized()
 	// Клавиатура - тот же приём, второй раз подряд: своя полоса-ручка сразу под ящиком
 	// (открытым или нет), сама - под ней, обрезанная собственными границами.
 	const int kbTop = paneTop + paneH + int(kKeyboardHandleRefH * s + 0.5f);
-	const int kbH = int(keyboardExpansion * D110Keyboard::kRefH * s + 0.5f);
+	const int kbH = int(keyboardExpansion * keyboardPaneRefH * s + 0.5f);
 	keyboard.setBounds(0, kbTop, getWidth(), juce::jmax(0, kbH));
 
 	// Third time: sequencer's own handle band right below the keyboard, drawer under that.
 	const int seqTop = kbTop + kbH + int(kSequencerHandleRefH * s + 0.5f);
-	const int seqH = int(sequencerExpansion * D110SequencerPanel::kRefH * s + 0.5f);
+	const int seqH = int(sequencerExpansion * sequencerPaneRefH * s + 0.5f);
 	// Same bounds either way (D110SequencerRetroPanel::kRefH matches) - only the one
 	// processor.getSequencerRetroMode() picked is actually visible, see the constructor
 	// and panel.onSequencerModeChanged.

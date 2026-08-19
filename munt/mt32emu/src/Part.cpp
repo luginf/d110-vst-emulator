@@ -480,7 +480,24 @@ void Part::noteOn(unsigned int midiKey, unsigned int velocity) {
 bool Part::abortFirstPoly(unsigned int key) {
 	for (Poly *poly = activePolys.getFirst(); poly != NULL; poly = poly->getNext()) {
 		if (poly->getKey() == key) {
-			return poly->startAbort();
+			if (poly->startAbort()) return true;
+			// D-110 local patch: startAbort() silently does nothing (Poly.cpp, returns false)
+			// when Synth::abortingPoly - a single synth-wide slot, not scoped to which
+			// partials it's actually fading, see playPoly()'s own comment above this call -
+			// is already occupied by some UNRELATED poly elsewhere in the mix. Without this
+			// fallback, this same-key poly is left completely untouched: playPoly() (which
+			// called us to retrigger this very key) goes on to play the new note through a
+			// fresh partial regardless of what we return, and nothing ever revisits this old
+			// one to tell it to stop - it just keeps sounding forever. A plain release lets it
+			// fade out normally instead of hanging - not as instant as a real abort, but
+			// correct, and only actually matters for a sustaining instrument (a non-sustaining
+			// one dies away on its own regardless, per Poly::noteOff()'s own comment) - matches
+			// Alan's report (2026-08-19): one extra continuous low note added on top of
+			// otherwise-normal playback, on whichever part happens to retrigger its own
+			// sustained note while some other part's abort is in flight - random by
+			// construction, since it depends on synth-wide timing, not just this one part.
+			synth->abortFallbackCount++;
+			return poly->noteOff(false);
 		}
 	}
 	return false;

@@ -411,6 +411,47 @@ void D110SequencerPanel::showRecordModeMenu() {
 	});
 }
 
+void D110SequencerPanel::showUndoRedoInfo(bool isUndo) {
+	auto &eng = engine();
+	const juce::String desc = isUndo ? eng.getUndoDescription() : eng.getRedoDescription();
+	juce::PopupMenu m;
+	m.addItem(1, desc.isNotEmpty() ? desc : juce::String(isUndo ? "Nothing to undo" : "Nothing to redo"), false);
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition());
+}
+
+void D110SequencerPanel::showResyncInfo() {
+	const juce::String fields = "Program Change/Bank" + juce::String(processor.supportsTrackVolumePan() ? "/Volume/Pan" : "");
+	juce::PopupMenu m;
+	m.addItem(1, "Send: re-sends every track's " + fields + " to the live patch right now, in case it's "
+	                 "drifted from what's stored here.",
+	          false);
+	if (processor.supportsCaptureLivePatch())
+		m.addItem(2, "Capture: overwrites every track's stored " + fields + " with what the live patch "
+		                 "actually has right now (confirms first).",
+		          false);
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition());
+}
+
+// Pull direction - see D110SequencerHost.h's resyncProgramChanges()/captureLivePatchIntoTracks()
+// comments for how this is the reverse of what SYNC's own "send" action does. Destructive to
+// whatever every track's stored Program Change/Bank/Volume/Pan currently is, hence the confirm.
+void D110SequencerPanel::confirmCaptureLivePatch() {
+	auto *aw = new juce::AlertWindow(
+		"Capture patch into song",
+		"Overwrites every track's stored Program Change/Bank/Volume/Pan with what the live "
+		"patch actually has right now, part by part. This can't be undone.",
+		juce::AlertWindow::WarningIcon);
+	aw->addButton("Capture", 1, juce::KeyPress(juce::KeyPress::returnKey));
+	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw](int result) {
+		if (result == 1) {
+			processor.captureLivePatchIntoTracks();
+			repaint();
+		}
+		delete aw;
+	}));
+}
+
 void D110SequencerPanel::showMetronomeModeMenu() {
 	using d110seq::MetronomeMode;
 	auto &eng = engine();
@@ -550,7 +591,7 @@ void D110SequencerPanel::showQuantizeMenu(int track) {
 			case 7: grid = QuantizeGrid::thirtySecond; break;
 			default: return;
 		}
-		engine().pushUndoSnapshot();
+		engine().pushUndoSnapshot("Quantize (" + defaultTrackLabel(track) + ")");
 		engine().quantizeTrack(track, grid);
 		repaint();
 	});
@@ -586,6 +627,11 @@ void D110SequencerPanel::showTrackChannelMenu(int track) {
 void D110SequencerPanel::promptForTrackProgram(int track) {
 	const int current = processor.getTrackProgram(track);
 	const int currentBank = processor.getTrackBank(track);
+	const bool hasLsb = processor.supportsBankLsb();
+	const int currentBankLsb = processor.getTrackBankLsb(track);
+	const bool hasVolPan = processor.supportsTrackVolumePan();
+	const int currentVolume = processor.getTrackVolume(track);
+	const int currentPan = processor.getTrackPan(track);
 	// No override set yet - pre-fill from getTrackProgramHint() instead of an arbitrary blank
 	// field, when the host has one to offer (the D-110 plugin does: whatever this Part is
 	// playing right now - see its own override's comment). Still blank if the host has no
@@ -596,19 +642,47 @@ void D110SequencerPanel::promptForTrackProgram(int track) {
 	                                                  : juce::String();
 	auto *aw = new juce::AlertWindow(
 		"Program Change",
-		"Bank Select + Program Change, sent once on this track's channel when PLAY or REC "
-		"starts, so an external synth picks the right patch on its own. Leave Program blank "
-		"to send none (Bank is only sent along with a Program).",
+		"Sent once on this track's channel when PLAY or REC starts, so the receiving synth "
+		"picks the right patch on its own. Leave Program blank to send none.\n\n"
+		"On the D-110 itself: no separate Bank Select exists on this instrument, so BANK just "
+		"folds into the raw value - Bank 1/Program 1-128 addresses one of its 128 Timbre "
+		"Memory slots directly (same numbering as the TIMBRES tab), Bank 2/Program 1-64 reaches "
+		"the second half, the \"B\" page on the instrument's own panel. On any other synth "
+		"(Nonet Sequencer), MIDI actually has two Bank Select controllers - CC0 (Bank/high, "
+		"the MSB) and CC32 (Bank LSB/low) - sent ahead of the Program Change, in that order, "
+		"as most external gear expects; many synths only look at one of the two, but both are "
+		"here since which one varies by device."
+		+ juce::String(hasVolPan
+			? (hasLsb ? "\n\nVOLUME (0-100) and PAN (0-14, 7=centre) send real MIDI CC7/CC10, "
+			            "scaled to the wire's 0-127, the same moment as the Program Change. "
+			            "Leave either blank to send neither."
+			          : "\n\nVOLUME (0-100) and PAN (0-14, 7=centre) are the same Part LEVEL/PAN "
+			            "the PARTS tab edits, sent the same moment as the Program Change. Leave "
+			            "either blank to send neither.")
+			: ""),
 		juce::AlertWindow::NoIcon);
-	aw->addTextEditor("bank", juce::String(currentBank), "Bank (1-128):");
+	aw->addTextEditor("bank", juce::String(currentBank), hasLsb ? "Bank/high (1-128):" : "Bank (1-128):");
+	if (hasLsb) aw->addTextEditor("bankLsb", juce::String(currentBankLsb), "Bank LSB/low (1-128):");
 	aw->addTextEditor("program", programDefault, "Program (1-128):");
+	if (hasVolPan) {
+		aw->addTextEditor("volume", currentVolume >= 0 ? juce::String(currentVolume) : juce::String(),
+		                   "Volume (0-100):");
+		aw->addTextEditor("pan", currentPan >= 0 ? juce::String(currentPan) : juce::String(), "Pan (0-14):");
+	}
 	aw->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
 	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track](int result) {
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track, hasLsb, hasVolPan](int result) {
 		if (result == 1) {
 			const juce::String text = aw->getTextEditorContents("program").trim();
 			processor.setTrackProgram(track, text.isEmpty() ? -1 : juce::jlimit(1, 128, text.getIntValue()) - 1);
 			processor.setTrackBank(track, aw->getTextEditorContents("bank").trim().getIntValue());
+			if (hasLsb) processor.setTrackBankLsb(track, aw->getTextEditorContents("bankLsb").trim().getIntValue());
+			if (hasVolPan) {
+				const juce::String volText = aw->getTextEditorContents("volume").trim();
+				processor.setTrackVolume(track, volText.isEmpty() ? -1 : volText.getIntValue());
+				const juce::String panText = aw->getTextEditorContents("pan").trim();
+				processor.setTrackPan(track, panText.isEmpty() ? -1 : panText.getIntValue());
+			}
 			repaint();
 		}
 		delete aw;
@@ -652,7 +726,7 @@ void D110SequencerPanel::promptForRenameTrack(int track) {
 	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track](int result) {
 		if (result == 1) {
-			engine().pushUndoSnapshot();
+			engine().pushUndoSnapshot("Rename (" + defaultTrackLabel(track) + ")");
 			engine().setTrackName(track, aw->getTextEditorContents("name").trim());
 			repaint();
 		}
@@ -669,9 +743,9 @@ void D110SequencerPanel::confirmClearTrack(int track) {
 		juce::AlertWindow::WarningIcon);
 	aw->addButton("Clear", 1, juce::KeyPress(juce::KeyPress::returnKey));
 	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track](int result) {
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track, name](int result) {
 		if (result == 1) {
-			engine().pushUndoSnapshot();
+			engine().pushUndoSnapshot("Clear track (" + name + ")");
 			engine().clearTrack(track);
 			repaint();
 		}
@@ -718,6 +792,22 @@ void D110SequencerPanel::showBarMenu() {
 		}
 		repaint();
 	});
+}
+
+void D110SequencerPanel::promptForTempo() {
+	auto &eng = engine();
+	auto *aw = new juce::AlertWindow("Set tempo", "Enter a tempo in BPM (20-300).", juce::AlertWindow::NoIcon);
+	aw->addTextEditor("bpm", juce::String(eng.getTempo(), 1), "BPM:");
+	aw->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
+	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw](int result) {
+		if (result == 1) {
+			const double bpm = aw->getTextEditorContents("bpm").getDoubleValue();
+			if (bpm > 0.0) engine().setTempo(bpm);
+			repaint();
+		}
+		delete aw;
+	}));
 }
 
 void D110SequencerPanel::promptForBar() {
@@ -774,12 +864,12 @@ void D110SequencerPanel::promptForDeleteBars(int track) {
 	aw->addTextEditor("to", juce::String(eng.getCurrentBar()), "To bar:");
 	aw->addButton("Delete", 1, juce::KeyPress(juce::KeyPress::returnKey));
 	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track](int result) {
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track, scope](int result) {
 		if (result == 1) {
 			const int from = aw->getTextEditorContents("from").getIntValue();
 			const int to = aw->getTextEditorContents("to").getIntValue();
 			if (from >= 1 && to >= from) {
-				engine().pushUndoSnapshot();
+				engine().pushUndoSnapshot("Delete bars " + juce::String(from) + "-" + juce::String(to) + " (" + scope + ")");
 				engine().deleteBars(track, from, to);
 			}
 			repaint();
@@ -816,14 +906,14 @@ void D110SequencerPanel::promptForCopyBars(int track) {
 	}
 	aw->addButton("Copy", 1, juce::KeyPress(juce::KeyPress::returnKey));
 	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track](int result) {
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track, scope](int result) {
 		if (result == 1) {
 			const int from = aw->getTextEditorContents("from").getIntValue();
 			const int to = aw->getTextEditorContents("to").getIntValue();
 			const int dest = aw->getTextEditorContents("dest").getIntValue();
 			const int destTrack = track >= 0 ? aw->getComboBoxComponent("destTrack")->getSelectedItemIndex() : -1;
 			if (from >= 1 && to >= from && dest >= 1) {
-				engine().pushUndoSnapshot();
+				engine().pushUndoSnapshot("Copy bars " + juce::String(from) + "-" + juce::String(to) + " (" + scope + ")");
 				engine().copyBars(track, destTrack, from, to, dest);
 			}
 			repaint();
@@ -848,13 +938,13 @@ void D110SequencerPanel::promptForTransposeBars(int track) {
 	aw->addTextEditor("semitones", "0", "Semitones:");
 	aw->addButton("Transpose", 1, juce::KeyPress(juce::KeyPress::returnKey));
 	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track](int result) {
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track, scope](int result) {
 		if (result == 1) {
 			const int from = aw->getTextEditorContents("from").getIntValue();
 			const int to = aw->getTextEditorContents("to").getIntValue();
 			const int semitones = aw->getTextEditorContents("semitones").getIntValue();
 			if (from >= 1 && to >= from && semitones != 0) {
-				engine().pushUndoSnapshot();
+				engine().pushUndoSnapshot("Transpose bars " + juce::String(from) + "-" + juce::String(to) + " (" + scope + ")");
 				engine().transposeBars(track, from, to, semitones);
 			}
 			repaint();
@@ -892,7 +982,7 @@ void D110SequencerPanel::promptForEventList(int track) {
 		content->setRows(std::move(newRows));
 	};
 	content->onDelete = [this, track, refresh](int index) {
-		engine().pushUndoSnapshot();
+		engine().pushUndoSnapshot("Delete note (" + defaultTrackLabel(track) + ")");
 		engine().deleteNoteEvent(track, index);
 		refresh();
 		repaint();
@@ -909,7 +999,7 @@ void D110SequencerPanel::promptForEventList(int track) {
 		aw2->enterModalState(true, juce::ModalCallbackFunction::create([this, aw2, track, index, refresh](int result) {
 			const int newNote = noteNameToNumber(aw2->getTextEditorContents("note"));
 			if (result == 1 && newNote >= 0) {
-				engine().pushUndoSnapshot();
+				engine().pushUndoSnapshot("Edit note pitch (" + defaultTrackLabel(track) + ")");
 				engine().setNoteEventPitch(track, index, newNote);
 				refresh();
 				repaint();
@@ -1008,7 +1098,7 @@ void D110SequencerPanel::confirmCopySongTo(int destSlot) {
 	auto &eng = engine();
 	const int current = eng.getCurrentSongSlot();
 	if (!eng.songSlotHasContent(destSlot)) {
-		eng.pushUndoSnapshot();
+		eng.pushUndoSnapshot("Copy song to Slot " + juce::String(destSlot + 1));
 		eng.copyCurrentSongTo(destSlot);
 		repaint();
 		return;
@@ -1022,7 +1112,7 @@ void D110SequencerPanel::confirmCopySongTo(int destSlot) {
 	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, destSlot](int result) {
 		if (result == 1) {
-			engine().pushUndoSnapshot();
+			engine().pushUndoSnapshot("Copy song to Slot " + juce::String(destSlot + 1));
 			engine().copyCurrentSongTo(destSlot);
 			repaint();
 		}
@@ -1034,6 +1124,7 @@ void D110SequencerPanel::confirmCopySongTo(int destSlot) {
 // confirms first (Alan's own explicit ask, to avoid an accidental wipe).
 void D110SequencerPanel::confirmNewSong() {
 	const int slot = engine().getCurrentSongSlot();
+	const juce::String description = "New song (Slot " + juce::String(slot + 1) + ")";
 	auto *aw = new juce::AlertWindow(
 		"Clear this song?",
 		"This clears every track's recorded MIDI in song " + juce::String(slot + 1)
@@ -1041,9 +1132,9 @@ void D110SequencerPanel::confirmNewSong() {
 		juce::AlertWindow::WarningIcon);
 	aw->addButton("Clear", 1, juce::KeyPress(juce::KeyPress::returnKey));
 	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw](int result) {
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, description](int result) {
 		if (result == 1) {
-			engine().pushUndoSnapshot();
+			engine().pushUndoSnapshot(description);
 			engine().newSong();
 			repaint();
 		}
@@ -1072,8 +1163,12 @@ void D110SequencerPanel::layout() {
 	stopBounds = colT(0.000f, 0.060f);
 	playBounds = colT(0.060f, 0.060f);
 	recBounds = colT(0.120f, 0.060f);
-	tempoBounds = colT(0.185f, 0.120f);
-	timeSigBounds = colT(0.310f, 0.090f);
+	// TEMPO/TAP/TIME SIG share the same 0.185-0.400 span the first two used to have alone
+	// (0.120 + 0.090, minus the small inter-cell gap) - carved into three so TAP TEMPO gets
+	// its own click target without touching METRONOME onward at all.
+	tempoBounds = colT(0.185f, 0.100f);
+	tapTempoBounds = colT(0.288f, 0.045f);
+	timeSigBounds = colT(0.336f, 0.064f);
 	metronomeBounds = colT(0.405f, 0.120f);
 	precountBounds = colT(0.530f, 0.130f);
 	loopBounds = colT(0.665f, 0.090f);
@@ -1100,7 +1195,9 @@ void D110SequencerPanel::layout() {
 	newBounds = colF(0.225f, 0.075f);
 	for (int s = 0; s < D110SequencerEngine::kNumSongSlots; ++s)
 		slotBounds[static_cast<size_t>(s)] = colF(0.310f + float(s) * 0.048f, 0.044f);
-	undoBounds = colF(0.560f, 0.110f);
+	undoBounds = colF(0.535f, 0.075f);
+	redoBounds = colF(0.615f, 0.075f);
+	resyncBounds = colF(0.695f, 0.080f);
 	loadBounds = colF(0.780f, 0.100f);
 	saveBounds = colF(0.885f, 0.100f);
 	area.removeFromTop(juce::jmax(2.0f, area.getHeight() * 0.015f));
@@ -1118,18 +1215,18 @@ void D110SequencerPanel::layout() {
 	stepDotBounds = colS(0.265f, 0.075f);
 	restBounds = colS(0.350f, 0.115f);
 	backBounds = colS(0.475f, 0.115f);
-	// Narrower than before (was 0.600-1.000) to leave room for the extra-tracks zone below,
-	// right of it - the "Bar N step M" text it shows rarely needs the full width it used to
-	// have.
-	stepInfoBounds = colS(0.600f, 0.150f);
+	// Wider than a bare "Bar N step M" needs, now that it shows two lines (current step/total
+	// and how many are left, per Alan's own ask 2026-08-19) - takes a bit of room from the
+	// extra-tracks zone below, right of it, which is Nonet Sequencer only and rarely used.
+	stepInfoBounds = colS(0.600f, 0.260f);
 	// Nonet Sequencer only (processor.supportsExtraTracks()) - right-click anywhere in
 	// extraTracksZoneBounds always opens "Activate extra tracks" (see showExtraTracksMenu());
 	// the two page buttons inside it only draw/hit-test once that's on (see paint()/
 	// mouseDown()). Computed unconditionally either way - cheap, and simpler than threading a
 	// capability check through layout() too.
-	extraTracksZoneBounds = colS(0.760f, 0.225f);
-	trackPage1Bounds = colS(0.760f, 0.110f);
-	trackPage2Bounds = colS(0.875f, 0.110f);
+	extraTracksZoneBounds = colS(0.870f, 0.115f);
+	trackPage1Bounds = colS(0.870f, 0.055f);
+	trackPage2Bounds = colS(0.930f, 0.055f);
 	area.removeFromTop(juce::jmax(2.0f, area.getHeight() * 0.015f));
 
 	// Row height always divides by kNumTracks (9), even on page 1 (only 7 real tracks) - so
@@ -1173,6 +1270,7 @@ void D110SequencerPanel::paint(juce::Graphics &g) {
 	paintToggleButton(g, playBounds, "PLAY", eng.isPlaying() && !eng.isRecording());
 	paintToggleButton(g, recBounds, "REC", eng.isRecording());
 	paintToggleButton(g, tempoBounds, juce::String(eng.getTempo(), 1) + " BPM", false);
+	paintToggleButton(g, tapTempoBounds, "TAP", false);
 	paintToggleButton(
 		g, timeSigBounds,
 		juce::String(eng.getTimeSigNumerator()) + "/" + juce::String(eng.getTimeSigDenominator()), false);
@@ -1188,8 +1286,27 @@ void D110SequencerPanel::paint(juce::Graphics &g) {
 	                   "BAR " + juce::String(eng.getCurrentBar()) + "/" + juce::String(eng.getBarCount()),
 	                   eng.isPrecounting());
 
-	if (eng.getMetronomeEnabled() && eng.getMetronomeMode() != d110seq::MetronomeMode::audioOnly
-	    && (!eng.getMetronomeRecordOnly() || eng.isRecording()) && metroLedBounds.getWidth() > 0.0f) {
+	if (eng.isStepRecording() && metroLedBounds.getWidth() > 0.0f) {
+		// Repurposed while step recording: the transport isn't actually running (there's no
+		// real-time clock to click along to while typing steps one at a time), so the same LED
+		// strip instead shows where the step cursor sits in the bar - re-subdivided to the step
+		// grid rather than the beat grid, per Alan's own ask (2026-08-19): a quarter-note step
+		// lights one whole LED, same as a normal beat click would; an eighth-note step
+		// re-subdivides the same strip into twice as many, half-as-wide LEDs; and so on for any
+		// grid (see D110SequencerEngine::getStepsPerBar()). Shown regardless of METRO being on -
+		// it's a step-position indicator now, not a metronome.
+		const int total = juce::jmax(1, eng.getStepsPerBar());
+		const int active = eng.getStepIndexInBar() - 1;
+		const float ledW = metroLedBounds.getWidth() / float(total);
+		for (int i = 0; i < total; ++i) {
+			juce::Rectangle<float> led(metroLedBounds.getX() + ledW * float(i), metroLedBounds.getY(),
+			                            juce::jmax(1.0f, ledW - 3.0f), metroLedBounds.getHeight());
+			const juce::Colour c = i == 0 ? pal.seqMetroDownbeat : pal.seqMetroBeat;
+			g.setColour(i == active ? c : c.withAlpha(0.16f));
+			g.fillRect(led);
+		}
+	} else if (eng.getMetronomeEnabled() && eng.getMetronomeMode() != d110seq::MetronomeMode::audioOnly
+	           && (!eng.getMetronomeRecordOnly() || eng.isRecording()) && metroLedBounds.getWidth() > 0.0f) {
 		const int total = juce::jmax(1, eng.clicksPerBar());
 		// Precounting: only the downbeat LED is ever used, but it FLASHES once per beat of the
 		// count-in (timerCallback() edge-detects each beat and opens a short window here) -
@@ -1230,6 +1347,8 @@ void D110SequencerPanel::paint(juce::Graphics &g) {
 		}
 	}
 	paintToggleButton(g, undoBounds, "UNDO", false, eng.canUndo());
+	paintToggleButton(g, redoBounds, "REDO", false, eng.canRedo());
+	paintToggleButton(g, resyncBounds, "SYNC", false, processor.supportsProgramChange());
 	paintToggleButton(g, loadBounds, "LOAD", false);
 	paintToggleButton(g, saveBounds, "SAVE", false);
 
@@ -1239,10 +1358,19 @@ void D110SequencerPanel::paint(juce::Graphics &g) {
 	paintToggleButton(g, restBounds, "REST", false, eng.isStepRecording());
 	paintToggleButton(g, backBounds, "BACK", false, eng.isStepRecording());
 	if (eng.isStepRecording()) {
+		const int stepIndex = eng.getStepIndexInBar();
+		const int stepsPerBar = eng.getStepsPerBar();
+		auto infoArea = stepInfoBounds;
+		auto line1 = infoArea.removeFromTop(infoArea.getHeight() * 0.5f);
 		g.setColour(pal.handleLabel);
-		g.setFont(juce::FontOptions(juce::jlimit(8.0f, 13.0f, stepInfoBounds.getHeight() * 0.5f)));
-		g.drawText("Bar " + juce::String(eng.getStepBar()) + " step " + juce::String(eng.getStepIndexInBar()),
-		           stepInfoBounds, juce::Justification::centredLeft);
+		g.setFont(juce::FontOptions(juce::jlimit(7.0f, 12.0f, line1.getHeight() * 0.85f)));
+		g.drawText("Bar " + juce::String(eng.getStepBar()) + " step " + juce::String(stepIndex) + "/"
+		               + juce::String(stepsPerBar),
+		           line1, juce::Justification::centredLeft);
+		g.setColour(pal.seqInactiveText);
+		g.setFont(juce::FontOptions(juce::jlimit(7.0f, 12.0f, infoArea.getHeight() * 0.85f)));
+		g.drawText(juce::String(juce::jmax(0, stepsPerBar - stepIndex)) + " step(s) left", infoArea,
+		           juce::Justification::centredLeft);
 	}
 
 	// Page-switch buttons - Nonet Sequencer only, and only once extra tracks are actually on
@@ -1296,12 +1424,16 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 	const auto p = e.position;
 
 	if (e.mods.isPopupMenu()) {
+		if (tempoBounds.contains(p)) { promptForTempo(); return; }
 		if (timeSigBounds.contains(p)) { showTimeSignatureMenu(); return; }
 		if (stepDurationBounds.contains(p)) { showStepDurationMenu(); return; }
 		if (recModeBounds.contains(p)) { showRecordModeMenu(); return; }
 		if (metronomeBounds.contains(p)) { showMetronomeModeMenu(); return; }
 		if (loadBounds.contains(p)) { showLoadMenu(); return; }
 		if (saveBounds.contains(p)) { showSaveMenu(); return; }
+		if (undoBounds.contains(p)) { showUndoRedoInfo(true); return; }
+		if (redoBounds.contains(p)) { showUndoRedoInfo(false); return; }
+		if (resyncBounds.contains(p)) { showResyncInfo(); return; }
 		if (barReadoutBounds.contains(p)) { showBarMenu(); return; }
 		if (barPrevBounds.contains(p)) { eng.gotoBar(1); repaint(); return; }
 		if (barNextBounds.contains(p)) { eng.gotoBar(eng.getBarCount()); repaint(); return; }
@@ -1325,6 +1457,31 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 	if (undoBounds.contains(p)) {
 		if (eng.canUndo()) eng.undo();
 		repaint();
+		return;
+	}
+	if (redoBounds.contains(p)) {
+		if (eng.canRedo()) eng.redo();
+		repaint();
+		return;
+	}
+	if (resyncBounds.contains(p)) {
+		if (!processor.supportsProgramChange()) return;
+		// D-110 only: capture is also possible here, so this button opens a small menu instead
+		// of acting directly - see confirmCaptureLivePatch()'s own comment for why the other
+		// direction needs to confirm first. Nonet-Seq has no live patch to capture from, so it
+		// keeps the single-click direct action it always had.
+		if (!processor.supportsCaptureLivePatch()) {
+			processor.resyncProgramChanges();
+			return;
+		}
+		juce::PopupMenu m;
+		m.addItem(1, "Send stored settings to patch now");
+		m.addItem(2, "Capture patch into song...");
+		m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
+			[this](int result) {
+				if (result == 1) processor.resyncProgramChanges();
+				else if (result == 2) confirmCaptureLivePatch();
+			});
 		return;
 	}
 	if (stepBounds.contains(p)) {
@@ -1414,6 +1571,11 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 		draggingTempo = true;
 		tempoDragStartY = p.y;
 		tempoDragStartValue = eng.getTempo();
+		return;
+	}
+	if (tapTempoBounds.contains(p)) {
+		eng.registerTapTempo();
+		repaint();
 		return;
 	}
 	if (processor.supportsExtraTracks() && eng.getExtraTracksEnabled()) {

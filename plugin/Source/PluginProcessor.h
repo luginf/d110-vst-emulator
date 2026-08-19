@@ -214,6 +214,16 @@ public:
 	float getEditorPaneRefH() const { return editorPaneRefH; }
 	void setEditorPaneRefH(float refH) { editorPaneRefH = refH; }
 
+	// Same idea, for the test keyboard and D-20-style sequencer drawers - both used to be a
+	// fixed D110Keyboard::kRefH/D110SequencerPanel::kRefH, not user-adjustable at all, until
+	// Alan asked (2026-08-19) for the sequencer drawer in particular to be resizable ("pas
+	// très haute"). Clamped by the editor (kMin/MaxKeyboardPaneRefH, kMin/MaxSequencerPaneRefH)
+	// whenever it reads these back, same reasoning as editorPaneRefH above.
+	float getKeyboardPaneRefH() const { return keyboardPaneRefH; }
+	void setKeyboardPaneRefH(float refH) { keyboardPaneRefH = refH; }
+	float getSequencerPaneRefH() const { return sequencerPaneRefH; }
+	void setSequencerPaneRefH(float refH) { sequencerPaneRefH = refH; }
+
 	// The D-20-style sequencer drawer's one way in: it owns its transport, its 9 tracks
 	// and its own MIDI-file/state (de)serialisation, and reads/writes it directly - see
 	// Source/sequencer/D110SequencerEngine.h. processBlock() is the only other reader/
@@ -236,6 +246,25 @@ public:
 	void setTrackBank(int track, int bank) override;
 	// -1 = no hint. See sequencerLivePrograms's own comment for what this actually reads.
 	int getTrackProgramHint(int track) const override;
+
+	// Manual "resend now" escape hatch - see D110SequencerHost.h's own comment. Just flags a
+	// request; processBlock() does the actual send (same code as the PLAY/REC edge), since only
+	// the audio thread may touch the firmware/sound-engine bridge.
+	void resyncProgramChanges() override { sequencerResyncRequested.store(true); }
+
+	// Part Volume/Pan alongside the Program Change above - see D110SequencerHost.h's own
+	// comment on why these are D-110-only and sent as SysEx (Part LEVEL/PAN), not MIDI CC.
+	bool supportsTrackVolumePan() const override { return true; }
+	int getTrackVolume(int track) const override;
+	void setTrackVolume(int track, int volume) override;
+	int getTrackPan(int track) const override;
+	void setTrackPan(int track, int pan) override;
+
+	// Pull direction - see D110SequencerHost.h's own comment. Plain data copy
+	// (sequencerLiveXxx -> sequencerTrackXxx), no firmware I/O involved, so unlike
+	// resyncProgramChanges() this is safe to just do immediately wherever it's called from.
+	bool supportsCaptureLivePatch() const override { return true; }
+	void captureLivePatchIntoTracks() override;
 
 	// Per-song sound snapshot - see D110SequencerHost.h's own comment on why this exists
 	// alongside (not instead of) the per-track Program Change override above. Captures/
@@ -477,6 +506,12 @@ public:
 	bool engineIsOpen() const { return synth != nullptr; }
 	uint32_t enginePartStates() const { return synth ? synth->getPartStates() : 0u; }
 	uint32_t enginePartialCount() const { return synth ? synth->getPartialCount() : 0u; }
+	// How many times Part::abortFirstPoly()'s fallback release has fired since the engine
+	// opened - see that function's own comment (munt/mt32emu/src/Part.cpp) and
+	// project_sequencer_channel_collision_fix memory. Logged alongside the debugModeEnabled
+	// tally below so a real session either does or doesn't show this path firing, instead of
+	// only ever being tested in a synthetic repro attempt.
+	uint32_t engineAbortFallbackCount() const { return synth ? synth->getAbortFallbackCount() : 0u; }
 	// How many partials are busy right now. If this sits at the ceiling while a part is
 	// silent, the part is being starved rather than ignored.
 	int engineActivePartials() const {
@@ -602,6 +637,10 @@ private:
 	// D110AudioProcessorEditor::kPaneRefH's own default - duplicated rather than shared
 	// because PluginEditor.h isn't (and shouldn't become) a dependency of this header.
 	float editorPaneRefH = 750.0f;
+	// See getKeyboardPaneRefH()/getSequencerPaneRefH() above - 130.0f/347.0f mirror
+	// D110Keyboard::kRefH/D110SequencerPanel::kRefH's own defaults, same duplication reasoning.
+	float keyboardPaneRefH = 130.0f;
+	float sequencerPaneRefH = 347.0f;
 
 	// --- D-20-style sequencer ---------------------------------------------------
 	d110seq::D110SequencerEngine sequencerEngine;
@@ -611,12 +650,17 @@ private:
 	// core directly (that would mean one getRam() call per note emitted, not per block).
 	// Index kRhythmTrack is never read this way; the rhythm track is fixed on channel 10.
 	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerLiveChannels{};
-	// Same idea, for the live tone NUMBER (0-63, or -1 = unknown) each melodic part is
-	// currently set to - what sequencerEngine's program source reads to embed a Program
-	// Change into MIDI exports (see D110SequencerEngine::setProgramSource). Index
-	// kRhythmTrack is never read this way; the rhythm part has no single "current tone" the
-	// way a melodic part does.
+	// Same idea, for the raw 0-127 Program Change value that would reproduce each melodic
+	// part's live sound (-1 = unknown, or a sound with no such value - internal tone memory/
+	// rhythm, see the fill site's own comment) - what sequencerEngine's program source reads
+	// to embed a Program Change into MIDI exports (see D110SequencerEngine::setProgramSource).
+	// Index kRhythmTrack is never read this way; the rhythm part has no single "current tone"
+	// the way a melodic part does.
 	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerLivePrograms{};
+	// Same idea, LEVEL/PAN (TimbreTemp fields 8/9) - what captureLivePatchIntoTracks() reads.
+	// -1 = unreadable (same fallback reasoning as sequencerLivePrograms).
+	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerLiveVolumes{};
+	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerLivePans{};
 	// Reused across blocks so refreshing sequencerLiveChannels/sequencerLivePrograms doesn't
 	// reallocate 32KB every time - see their use beside sequencerLiveChannels above.
 	std::vector<juce::uint8> sequencerRamScratch;
@@ -626,6 +670,13 @@ private:
 	// Index kRhythmTrack is never read/written - see supportsProgramChangeForTrack().
 	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerTrackPrograms{};
 	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerTrackBanks{};
+	// Same idea, Part LEVEL/PAN - see getTrackVolume()/setTrackVolume()/getTrackPan()/
+	// setTrackPan(). -1 = no override for either (send neither).
+	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerTrackVolumes{};
+	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerTrackPans{};
+	// Set by resyncProgramChanges() (any thread, hence atomic - the UI thread is who actually
+	// calls it), cleared by processBlock() once it's acted on it - see its own comment.
+	std::atomic<bool> sequencerResyncRequested{false};
 
 	// Per-song sound snapshot - see hasSoundSnapshot()/storeSoundSnapshotForSlot()/
 	// loadSoundSnapshotForSlot(). Empty MemoryBlock (default) = no snapshot stored for that

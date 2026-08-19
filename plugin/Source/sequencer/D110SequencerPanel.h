@@ -55,6 +55,12 @@ private:
 	// Only ever called when processor.supportsProgramChange() - see D110SequencerHost.h.
 	void promptForTrackProgram(int track);
 	void showMetronomeModeMenu();
+	// Right-click UNDO/REDO: a non-interactive popup naming what it would actually revert/
+	// redo (e.g. "Clear track PART 2") - see D110SequencerEngine::getUndoDescription()/
+	// getRedoDescription().
+	void showUndoRedoInfo(bool isUndo);
+	void showResyncInfo();
+	void confirmCaptureLivePatch();
 	void confirmClearTrack(int track);
 	// Right-click any song-slot button: copy the CURRENT song into one of the other 3 slots
 	// (see D110SequencerEngine::copyCurrentSongTo()), plus - only when
@@ -83,6 +89,9 @@ private:
 	int rowsOnCurrentPage() const;
 	void showBarMenu();
 	void promptForBar();
+	// Right-click on the TEMPO readout - a text-entry alternative to the click-drag/wheel
+	// adjustments, for setting an exact BPM directly.
+	void promptForTempo();
 	void promptForPunchRange();
 	void promptForTimeSignature();
 	void confirmNewSong();
@@ -108,9 +117,12 @@ private:
 	D110SequencerHost &processor;
 
 	juce::Rectangle<float> stopBounds, playBounds, recBounds;
-	juce::Rectangle<float> tempoBounds, timeSigBounds, metronomeBounds, precountBounds, loopBounds;
+	juce::Rectangle<float> tempoBounds, tapTempoBounds, timeSigBounds, metronomeBounds, precountBounds, loopBounds;
 	juce::Rectangle<float> barPrevBounds, barNextBounds, barReadoutBounds;
-	juce::Rectangle<float> loadBounds, saveBounds, recModeBounds, newBounds, undoBounds;
+	juce::Rectangle<float> loadBounds, saveBounds, recModeBounds, newBounds, undoBounds, redoBounds;
+	// Manual "resend Program Change/Bank/Volume/Pan now" - see D110SequencerHost.h's
+	// resyncProgramChanges().
+	juce::Rectangle<float> resyncBounds;
 	// Step-recording strip, under the file strip - see D110SequencerEngine's step API.
 	// stepInfoBounds is a plain readout (current bar/step while active), not clickable.
 	juce::Rectangle<float> stepBounds, stepDurationBounds, stepDotBounds, restBounds, backBounds,

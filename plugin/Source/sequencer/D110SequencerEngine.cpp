@@ -45,15 +45,56 @@ int D110SequencerEngine::channelForTrack(int trackIndex) const {
 		const int ch = channelSource(trackIndex);
 		if (ch >= 1 && ch <= 16) return ch;
 	}
-	return trackIndex == kRhythmTrack ? 10 : 1;
+	// Reached whenever the channel source can't resolve a track yet - every melodic Part in
+	// the plugin starts here (sequencerLiveChannels.fill(-1) in PluginProcessor's
+	// constructor) until the firmware has both finished booting AND a getRam() call has
+	// actually landed after that (several seconds - see native_snapshot_repro_probe.cpp's own
+	// 9-second wait after setPoweredOn(true)), and any Part explicitly turned OFF stays here
+	// permanently. Used to collapse EVERY melodic track onto the same hardcoded channel 1, so
+	// two tracks with simultaneous content playing during that window would audibly collide -
+	// Alan's "parasitic notes... not every time" report (2026-08-18), reproduced by
+	// sequencer_stray_channel_probe.cpp. Falling back to the real D-110 factory map instead
+	// (Part N -> channel N+2, same convention sequencer_probe.cpp's defaultChannelForTrack()
+	// and NonetSeqHost's own per-track default already use) means every track still gets its
+	// own channel, matching what the firmware will show anyway once it's actually booted.
+	if (trackIndex == kRhythmTrack) return 10;
+	if (trackIndex < kNumTracks) return trackIndex + 2;
+	return 1; // extra tracks beyond kNumTracks - Nonet Sequencer only, and always has a real channel source
 }
 
 void D110SequencerEngine::setProgramSource(std::function<int(int)> f) {
 	programSource = std::move(f);
 }
 
+void D110SequencerEngine::setVolumeSource(std::function<int(int)> f) {
+	volumeSource = std::move(f);
+}
+
+void D110SequencerEngine::setPanSource(std::function<int(int)> f) {
+	panSource = std::move(f);
+}
+
+void D110SequencerEngine::setBankSource(std::function<int(int)> f) {
+	bankSource = std::move(f);
+}
+
+void D110SequencerEngine::setBankLsbSource(std::function<int(int)> f) {
+	bankLsbSource = std::move(f);
+}
+
 void D110SequencerEngine::setTempo(double bpm) {
 	tempoBpm = juce::jlimit(20.0, 300.0, bpm);
+}
+
+void D110SequencerEngine::registerTapTempo() {
+	const double now = juce::Time::getMillisecondCounterHiRes();
+	if (!tapTimesMs.empty() && (now - tapTimesMs.back()) > kTapResetMs) tapTimesMs.clear();
+	tapTimesMs.push_back(now);
+	if ((int) tapTimesMs.size() > kTapMaxSamples) tapTimesMs.erase(tapTimesMs.begin());
+	if (tapTimesMs.size() < 2) return;
+	const double span = tapTimesMs.back() - tapTimesMs.front();
+	const double avgIntervalMs = span / double(tapTimesMs.size() - 1);
+	if (avgIntervalMs > 0.0) setTempo(60000.0 / avgIntervalMs);
 }
 
 void D110SequencerEngine::setTimeSignature(int numerator, int denominator) {
@@ -182,6 +223,11 @@ void D110SequencerEngine::armTrack(int index) {
 void D110SequencerEngine::startRecording() {
 	if (armedTrack < 0) return;
 	if (stepRecording) stopStepRecording();
+	// Checkpointed here, before the take, rather than in stopRecording() - stopRecording() is
+	// also reached by a punch-out with nothing captured (silence, or the take got aborted), and
+	// this way the snapshot always reflects the track exactly as it was before THIS take, no
+	// matter how it ends.
+	pushUndoSnapshot("Recording (" + trackLabel(armedTrack) + ")");
 	playing = true;
 	recording = true;
 	// Precount is fictitious - it never moves positionBeats (see renderInto()), so the take
@@ -236,6 +282,8 @@ void D110SequencerEngine::setStepDuration(QuantizeGrid grid) {
 void D110SequencerEngine::startStepRecording() {
 	if (armedTrack < 0) return;
 	if (recording) stopRecording();
+	// See startRecording()'s own comment on checkpointing before, not after, the take.
+	pushUndoSnapshot("Step recording (" + trackLabel(armedTrack) + ")");
 	stepRecording = true;
 	stepPositionBeats = double(getCurrentBar() - 1) * barLengthBeats();
 	stepHeldNotes.clear();
@@ -328,6 +376,13 @@ int D110SequencerEngine::getStepIndexInBar() const {
 	return static_cast<int>(std::round((stepPositionBeats - barStart) / step)) + 1;
 }
 
+int D110SequencerEngine::getStepsPerBar() const {
+	const double step = currentStepBeats();
+	const double bl = barLengthBeats();
+	if (step <= 0.0 || bl <= 0.0) return 1;
+	return juce::jmax(1, static_cast<int>(std::round(bl / step)));
+}
+
 void D110SequencerEngine::setTrackMuted(int index, bool muted) { trackAt(index).muted = muted; }
 bool D110SequencerEngine::isTrackMuted(int index) const { return trackAt(index).muted; }
 void D110SequencerEngine::setTrackName(int index, const juce::String &name) { trackAt(index).name = name; }
@@ -379,15 +434,37 @@ void D110SequencerEngine::snapTrackToGrid(Track &track, QuantizeGrid grid) const
 	seq.updateMatchedPairs();
 }
 
-void D110SequencerEngine::pushUndoSnapshot() {
+juce::String D110SequencerEngine::trackLabel(int t) const {
+	const auto &trackName = trackAt(t).name;
+	if (trackName.isNotEmpty()) return trackName;
+	if (t == kRhythmTrack) return "RHYTHM";
+	if (t < kNumTracks) return "PART " + juce::String(t + 1);
+	return "TRACK " + juce::String(t + 1);
+}
+
+void D110SequencerEngine::pushUndoSnapshot(const juce::String &description) {
 	if (undoStack.size() >= kMaxUndoDepth) undoStack.erase(undoStack.begin());
-	undoStack.push_back(UndoSnapshot{tracks, songs, currentSlot});
+	undoStack.push_back(UndoSnapshot{tracks, songs, currentSlot, description});
+	redoStack.clear();
 }
 
 void D110SequencerEngine::undo() {
 	if (undoStack.empty()) return;
 	auto snapshot = std::move(undoStack.back());
 	undoStack.pop_back();
+	if (redoStack.size() >= kMaxUndoDepth) redoStack.erase(redoStack.begin());
+	redoStack.push_back(UndoSnapshot{tracks, songs, currentSlot, snapshot.description});
+	tracks = std::move(snapshot.tracks);
+	songs = std::move(snapshot.songs);
+	currentSlot = snapshot.currentSlot;
+}
+
+void D110SequencerEngine::redo() {
+	if (redoStack.empty()) return;
+	auto snapshot = std::move(redoStack.back());
+	redoStack.pop_back();
+	if (undoStack.size() >= kMaxUndoDepth) undoStack.erase(undoStack.begin());
+	undoStack.push_back(UndoSnapshot{tracks, songs, currentSlot, snapshot.description});
 	tracks = std::move(snapshot.tracks);
 	songs = std::move(snapshot.songs);
 	currentSlot = snapshot.currentSlot;
@@ -852,24 +929,50 @@ bool D110SequencerEngine::saveMidiFile(const juce::File &file) const {
 	for (int t = 0; t < activeTrackCount(); ++t) {
 		juce::MidiMessageSequence seq;
 		const int channel = channelForTrack(t);
-		// Track Name meta-event (FF 03) - the user's own name if they set one (see
-		// setTrackName()), otherwise the same "PART N"/"RHYTHM"/"TRACK N" label the panel
-		// falls back to, so a track never reaches the exported file unnamed.
-		const auto &trackName = trackAt(t).name;
-		const juce::String label = trackName.isNotEmpty()
-			? trackName
-			: (t == kRhythmTrack ? juce::String("RHYTHM")
-			                     : (t < kNumTracks ? ("PART " + juce::String(t + 1))
-			                                       : ("TRACK " + juce::String(t + 1))));
-		seq.addEvent(juce::MidiMessage::textMetaEvent(3, label), 0.0);
+		// Track Name meta-event (FF 03) - the user's own name if they set one, otherwise the
+		// same fallback label used everywhere else (see trackLabel()), so a track never
+		// reaches the exported file unnamed.
+		seq.addEvent(juce::MidiMessage::textMetaEvent(3, trackLabel(t)), 0.0);
 		// A Program Change at time 0, ahead of the track's own notes, so a receiving synth
 		// (including this same plugin, reimporting the file) starts the piece on
 		// approximately the sound that was live when this was exported. See setProgramSource's
 		// own comment for why "approximately", and for what changing it later actually means.
 		if (programSource) {
 			const int program = programSource(t);
-			if (program >= 0 && program < 128)
+			if (program >= 0 && program < 128) {
+				// Bank MSB/LSB, standard MIDI ordering, right before the Program Change they
+				// belong to - see setBankSource()/setBankLsbSource()'s own comment.
+				if (bankSource) {
+					const int bank = bankSource(t);
+					if (bank >= 1)
+						seq.addEvent(juce::MidiMessage::controllerEvent(channel, 0, juce::jlimit(0, 127, bank - 1)),
+						             0.0);
+				}
+				if (bankLsbSource) {
+					const int bankLsb = bankLsbSource(t);
+					if (bankLsb >= 1)
+						seq.addEvent(
+						    juce::MidiMessage::controllerEvent(channel, 32, juce::jlimit(0, 127, bankLsb - 1)), 0.0);
+				}
 				seq.addEvent(juce::MidiMessage::programChange(channel, program), 0.0);
+			}
+		}
+		// Same idea, CC7 (Volume)/CC10 (Pan) - see setVolumeSource()/setPanSource()'s own
+		// comment. 0-100/0-14 (the D-110's own LEVEL/PAN ranges) scaled to the wire's plain
+		// 0-127, same scaling NonetSeqHost::advance() uses for its own live CC7/CC10 sends.
+		if (volumeSource) {
+			const int volume = volumeSource(t);
+			if (volume >= 0 && volume <= 100)
+				seq.addEvent(juce::MidiMessage::controllerEvent(
+				                 channel, 7, juce::jlimit(0, 127, juce::roundToInt(volume * 127.0f / 100.0f))),
+				             0.0);
+		}
+		if (panSource) {
+			const int pan = panSource(t);
+			if (pan >= 0 && pan <= 14)
+				seq.addEvent(juce::MidiMessage::controllerEvent(
+				                 channel, 10, juce::jlimit(0, 127, juce::roundToInt(pan * 127.0f / 14.0f))),
+				             0.0);
 		}
 		const auto &src = trackAt(t).events;
 		for (int i = 0; i < src.getNumEvents(); ++i) {

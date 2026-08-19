@@ -53,6 +53,17 @@ public:
 	// own serial-read code (SBUF read clears the ready flag) - lets a caller pace bytes in
 	// without ever clobbering one still waiting to be read.
 
+	// D-110 local patch: how many times serialWrite() has been called while the PREVIOUS
+	// byte was still sitting in SBUF unread (serialRxReady() was already false) - a genuine
+	// UART overrun, the previous byte silently lost. D110CoreNative::runForSeconds() calls
+	// serialWrite() unconditionally, without checking serialRxReady() first, deliberately
+	// matching real MIDI cable timing (see its own comment) - so this can happen for real if
+	// the emulated firmware is ever busy (interrupts disabled, or servicing some other ISR)
+	// for longer than one MIDI byte period (~320us) when the next byte lands. Diagnostic
+	// only - added 2026-08-19 to test this against Alan's own stuck-note report empirically
+	// rather than by further guessing (project_sequencer_channel_collision_fix memory).
+	uint32_t serialOverrunCount() const { return serial_overrun_count_; }
+
 	void reset();
 	// Runs up to `cycles` oscillator periods (the same unit total_cycles()/icount use in the
 	// original - state times x cycles_scaling, cycles_scaling=3 for the i8x9x). Returns the
@@ -93,6 +104,7 @@ public:
 	u8 serial_send_buf = 0;
 	u64 serial_send_timer = 0;
 	u16 baud_reg = 0;
+	uint32_t serial_overrun_count_ = 0;
 	bool brh = false;
 
 	// Port 1/2 output callbacks - the D-110 driver never wires anything to port1_cb, and

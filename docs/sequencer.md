@@ -50,10 +50,13 @@ bars, below).
 ## Transport
 
 **STOP** / **PLAY** / **REC**, a draggable **TEMPO** field (20-300 BPM; drag vertically, mouse
-wheel, or the field shows the live value), a **time signature** field (click cycles six presets
-- 4/4, 3/4, 6/8, 2/4, 5/4, 7/8 - right-click picks one directly, or picks **Custom...** to type
-any numerator/denominator from 1-32), and bar navigation (prev/next buttons, a draggable
-**BAR n/total** readout).
+wheel, or right-click to type an exact BPM), a **TAP** button right next to it (click it a few
+times at the beat you want - two or more taps within 2 seconds of each other average into a
+live tempo via `D110SequencerEngine::registerTapTempo()`; a longer pause starts a fresh tap
+sequence instead of corrupting the average with a stray tap), a **time signature** field (click
+cycles six presets - 4/4, 3/4, 6/8, 2/4, 5/4, 7/8 - right-click picks one directly, or picks
+**Custom...** to type any numerator/denominator from 1-32), and bar navigation (prev/next
+buttons, a draggable **BAR n/total** readout).
 
 **STOP** always sends a MIDI panic (all notes off on every channel) as well as halting the
 transport, so a note whose off was scheduled past the stop point (renderInto() stops walking the
@@ -128,9 +131,15 @@ patterns that are awkward to play in tempo, or built one note at a time.
 - **BACK** undoes the most recently committed step (a note, a chord, or a rest) and moves the
   cursor back by one, so a wrong note can be fixed without restarting the take. It always
   rewinds exactly what was applied, even if the step duration or DOT has since changed.
-- A live **"Bar n step m"** readout shows where the cursor currently is. Step recording never
-  touches the transport's own playhead - leaving step mode always drops you back exactly where
-  the transport was, the same way a precount leaves it untouched.
+- A live **"Bar n step m/N"** readout shows where the cursor currently is, plus how many steps
+  are left in the bar. Step recording never touches the transport's own playhead - leaving step
+  mode always drops you back exactly where the transport was, the same way a precount leaves it
+  untouched.
+- The visual metronome LED strip (mouse view only) is repurposed while step recording is active:
+  since there's no real-time clock ticking to click along to, it instead shows where the step
+  cursor sits in the bar, re-subdivided to the step duration instead of the beat - a quarter-note
+  step lights one whole LED, an eighth-note step splits the same strip into twice as many,
+  half-as-wide LEDs, and so on for any grid. Shown regardless of whether **METRO** is on.
 
 Notes played while either recording mode is active are still audible through the firmware as
 they're entered - capture is a side channel, not a detour.
@@ -217,19 +226,58 @@ memory card.
 Click a track's **CH** readout (same entry point as changing its channel) for a **Program
 Change...** item at the bottom of that menu - pick a program 1-128 and, alongside it, a bank
 1-128, or leave the program blank for none (a trailing `*` on the CH readout marks a track
-that has one set). Whichever tracks have a program set get Bank Select then Program Change
-sent, once, the moment **PLAY** or **REC** starts (precount included, so the patch has
-already switched before any notes arrive) - not re-sent mid-song, since a track only ever
-holds one fixed program for the whole song slot. Works in both apps: over the direct system
-**MIDI Out** port in Nonet Sequencer (there's no synth there to pick a patch on otherwise),
-and over the firmware's own MIDI IN (plus MIDI Out) in the D-110 plugin, exactly as an
-external keyboard sending Program Change would - the same live Part->Timbre lookup
-`TIMBRES` in the extended editor uses (see [`architecture.md`](architecture.md)).
+that has one set). Whichever tracks have a program set get a Program Change sent, once, the
+moment **PLAY** or **REC** starts (precount included, so the patch has already switched
+before any notes arrive) - not re-sent mid-song, since a track only ever holds one fixed
+program for the whole song slot. Works in both apps, but the wire format differs:
+
+- **Nonet Sequencer** sends real Bank Select - both controllers MIDI actually defines, CC0
+  (labelled Bank/high, the MSB) and CC32 (Bank LSB/low) - ahead of the Program Change, in that
+  order, over the direct system **MIDI Out** port; most external synths only look at one of the
+  two, which one varies by device, so both are offered (there's no synth here to pick a patch
+  on otherwise).
+- **The D-110 plugin** sends no Bank Select at all - the D-110 predates that MIDI convention
+  and its firmware doesn't implement one. Its 128 Timbre Memory slots are two pages of 64,
+  "A" and "B" on the instrument's own panel, addressed purely by the raw Program Change value
+  itself, so BANK folds straight into it instead: Bank 1/Program 1-128 addresses a slot
+  directly (the same numbering `TIMBRES` in the extended editor uses), Bank 2/Program 1-64
+  reaches page B's own 1-64 (the "B31" naming the instrument's panel/manual use). Sent over
+  the firmware's own MIDI IN (plus MIDI Out), exactly as an external keyboard would - the same
+  live Part->Timbre lookup `TIMBRES` uses (see [`architecture.md`](architecture.md)). There is
+  no separate way to reach a Timbre slot programmed to play from *internal* tone memory (tone
+  group 2) via this dialog - set one up via `TIMBRES`' own GROUP/TONE columns first (any of
+  the 128 slots can be repointed at an internal tone), then address that same slot's number
+  here.
 
 **This is one value per track, shared by every song slot - it is not song content**, so
 switching which song is loaded never changes it. In the D-110 plugin, if what you actually
 want is different instruments *per song*, see
 [Per-song sound snapshot](#per-song-sound-snapshot-d-110-plugin-only) above instead.
+
+The same dialog also has **Volume (0-100)** and **Pan (0-14, 7 = centre)** fields, sent the same
+moment as the Program Change, in both apps - Leave either blank to send neither. The wire format
+differs the same way Bank does: the D-110 plugin sends real Part LEVEL/PAN via SysEx DT1 (the
+exact write the extended editor's `PARTS` tab already uses - not MIDI CC7/CC10, since there's no
+evidence the firmware answers to those and this project doesn't guess); Nonet Sequencer sends real
+MIDI CC7 (Volume)/CC10 (Pan), the 0-100/0-14 scaled to the wire's plain 0-127 (7 lands on 64,
+standard MIDI centre pan).
+
+**SYNC** (mouse view: button next to UNDO/REDO, opens a small menu; retro view:
+`OPTIONS > SYNC: TO PATCH` / `SYNC: FROM PATCH`) moves data between every track's stored Program
+Change/Bank/Volume/Pan and the live patch, either direction, regardless of transport state - Alan
+asked for this 2026-08-19:
+
+- **Send** (`SYNC: TO PATCH`) - the direction that already existed: re-sends every track's stored
+  values to the live patch right now, in case the two have drifted apart (changed a track's
+  settings while already playing, or the live patch changed some other way since) - rather than
+  only ever sending on the next PLAY/REC edge. Not destructive to anything, no confirmation.
+- **Capture** (`SYNC: FROM PATCH`, **D-110 plugin only** - Nonet Sequencer has no synth of its own
+  to read a live patch from) - the reverse: reads whatever's actually live right now on each
+  melodic Part (its Program Change-equivalent slot, LEVEL, PAN) and overwrites every track's
+  stored settings with it, so dialling in sounds by hand on the panel/extended editor can be
+  captured into the song instead of typing Program/Volume/Pan numbers into the dialog by hand.
+  Overwrites what was stored before and can't be undone (these settings live outside the
+  sequencer's own undo stack), so this one confirms first.
 
 ## MIDI Out (driving external gear)
 
@@ -342,8 +390,17 @@ carry the beat in that degraded mode).
 ## Load / Save
 
 A plain click on **LOAD**/**SAVE** loads/saves just the *current* song as a standard `.mid`
-file (a Program Change is written ahead of each track's notes, from whatever sound is live on
-that part at export time). **Right-click** LOAD/SAVE for all 4 song slots at once, as a single
+file (Bank Select MSB/LSB, then a Program Change, then CC7/CC10 for Volume/Pan, are written ahead
+of each track's notes, wherever there's something to write - a track with none of these set gets
+none of these events, not placeholders). The source differs by app: the **D-110 plugin** has no
+Bank Select to export (it predates that convention, same reasoning as everywhere else in this
+doc) and writes Program Change/Volume/Pan from whatever's actually live on that part at export
+time; **Nonet Sequencer** has no synth of its own to read a "live" value from at all, so it
+exports the stored per-track Program Change/Bank/Bank LSB/Volume/Pan instead (2026-08-19, Alan's
+call) - the same values [Per-track Program Change](#per-track-program-change) above sets, and the
+same ones actually sent over MIDI Out at PLAY/REC, *not* corrected by the Program Change/Bank
+offset knobs (those correct today's cable/device, not the song itself, so they don't get baked
+into a file that might be reopened elsewhere). **Right-click** LOAD/SAVE for all 4 song slots at once, as a single
 portable `.midiseq` file - an XML wrapper around a gzip-compressed standard MIDI file per
 track, plus the transport preferences below; not a raw memory snapshot, hence the name
 (renamed from `.d110songs` - a file saved under the old name still loads, it's the same
@@ -379,27 +436,54 @@ arrows also work from a real keyboard (arrow keys), and so do ENTER (Enter/Retur
 Everything reachable with the mouse in the normal view is also reachable here, through the
 same `D110SequencerEngine`/`D110SequencerHost` calls - nothing about the engine changes,
 this is purely an alternate view, and everything is reachable from just the 4 arrows, ENTER
-and EXIT (mouse or keyboard) - no other keys needed. HOME (the default screen) shows live
-transport/bar status plus five quick-adjust fields (**transport**, track, bar, tempo, song
-slot) that LEFT/RIGHT selects and UP/DOWN nudges directly, with no menu. TRANSPORT is
-selected by default and is what makes STOP/PLAY/REC reachable without a mouse: UP/DOWN
-dials through STOP/PLAY/REC (re-syncing to whatever's actually live each time the field is
-(re)selected), and ENTER fires whichever one is showing - the same `D110SequencerEngine`
-calls the physical STOP/PLAY/REC buttons make. ENTER on every other field instead opens MAIN
-MENU, which branches into TRACK, TRANSPORT, RECORD, SONG, FILE, UNDO and (Nonet Sequencer
-only) EXTRA TRACKS - each a list of the same operations the mouse menus/dialogs already
-offer (mute/solo/arm, rename, channel, quantize, clear/delete/copy/transpose bars, edit
-events, tempo/time signature/metronome/precount/loop/punch, record mode, step recording,
-song slots and sound snapshots, LOAD/SAVE - recording needs a track armed first, same as
-the mouse view, reachable from TRACK > *track* > ARM). EXIT always backs out one menu level.
+and EXIT (mouse or keyboard) - no other keys needed.
+
+**Navigation, revised 2026-08-18** for a flatter, more discoverable layout (the original v1
+nested a generic "MAIN MENU" behind ENTER, which took the same number of presses to reach
+regardless of where you started - Alan's own D-20-style sketch replaced it with this): HOME
+is one scrollable list, always the base of the navigation stack, holding every top-level
+rubric in one screen instead of hiding most of them behind a menu hop:
+
+- **TEMPO/SIG/METRO** and **PRECOUNT/LOOP** - plain rows, ENTER opens a short list of their
+  own (TEMPO/**TAP TEMPO**/TIME SIG/METRONOME; PRECOUNT/LOOP). TAP TEMPO's value column
+  doubles as a live BPM readout - each ENTER press is one tap, same
+  `D110SequencerEngine::registerTapTempo()` the mouse view's TAP button calls. TEMPO's own
+  form has asymmetric steps, Alan's own numbers (2026-08-18): LEFT/RIGHT is 1 BPM,
+  UP/DOWN is 5.5 BPM - the only field anywhere in retro mode where LEFT/RIGHT adjusts the
+  value directly instead of moving between fields (`FormField::leftRightStep`, 0 everywhere
+  else), since a single-field form has nothing else for LEFT/RIGHT to navigate to.
+- **SONG** - a horizontal quick-bar: LEFT/RIGHT cycles SLOT 1-4 (direct select) then
+  NEW/COPY/SNAPSHOT (Nonet Sequencer's sound-snapshot slots), ENTER fires whichever is shown.
+- **BAR** - LEFT/RIGHT scrubs the current bar directly, no ENTER needed; ENTER still opens
+  a bar menu (exact GO TO BAR, PUNCH IN/OUT HERE, PUNCH RANGE, DELETE/COPY/TRANSPOSE across
+  every track).
+- **TRANSPORT** - a quick-bar: PLAY/STOP fire immediately, REC opens record-mode/step-record
+  settings, MIDI (only where `supportsTrackChannelEdit()`) lists every track's channel, and
+  OPTIONS holds LOAD/SAVE (.mid/.midiseq) plus, in Nonet Sequencer, the EXTRA TRACKS toggle.
+- **One row per track** (PART 1-8/16 + RHYTHM, however many `activeTrackCount()` reports) -
+  a quick-bar: REC/PLAY/SOLO/MUTE/COPY/CLEAR/UNDO/QUANTIZE, then MORE, which opens the same
+  full per-track menu v1 had (RENAME, CHANNEL, PROGRAM CHANGE, ARM, DELETE/COPY/TRANSPOSE
+  BARS, EDIT EVENTS) for the operations too specialised for the quick-bar. The row's own
+  label shows M/S/A flags live. REC here arms *and* starts recording on that track in one
+  press - no separate ARM step needed, unlike the mouse view and unlike MORE's own ARM
+  toggle (still there for cases that want a track armed without recording yet).
+
+A quick-bar row always shows whichever action is currently dialled (`<LIKE THIS>` when it's
+the selected row) in the value column, same layout mouse-driven rows always used. HOME's
+title row doubles as a live transport/bar status readout (`STOP BAR 3/8`) instead of a
+static title, since HOME itself never needs one. EXIT always backs out one level; at HOME it
+does nothing, since HOME is the permanent base of the stack, not something pushed onto it.
 Renaming a track has no physical keyboard to type on, so it's a character-wheel instead:
 LEFT/RIGHT moves the caret, UP/DOWN cycles the character at that position.
 
-Two deliberate v1 differences from the mouse view: EDIT EVENTS operates on whatever bar HOME
-was navigated to when it was opened, without the mouse dialog's own in-place "< Bar N >"
-strip (EXIT back out, change HOME's bar field, re-enter for a different bar); and LOAD/SAVE
-still open the ordinary native file picker rather than a text-driven file browser, since
-reinventing one in a 4-line LCD would cost more than it's worth.
+Two deliberate simplifications versus the mouse view: EDIT EVENTS (under MORE) operates on
+whatever bar HOME was navigated to when it was opened, without the mouse dialog's own
+in-place "< Bar N >" strip (EXIT back out, change HOME's BAR row, re-enter for a different
+bar); and LOAD/SAVE still open the ordinary native file picker rather than a text-driven
+file browser, since reinventing one in a 4-line LCD would cost more than it's worth. UNDO
+is a single global stack in the engine, not per-track - the TRACK row's UNDO quick action
+calls the same `D110SequencerEngine::undo()` regardless of which track's row it's pressed
+from, exposed there purely for reach, not because undo is scoped to that track.
 
 ## Verification
 

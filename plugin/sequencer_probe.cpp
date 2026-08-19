@@ -452,6 +452,12 @@ void testProgramChangeExport() {
 	engine.setProgramSource([](int track) {
 		return track == 2 ? 41 : (track == D110SequencerEngine::kRhythmTrack ? -1 : -1);
 	});
+	// Same idea, LEVEL 80/PAN 3 on track 2 only - see setVolumeSource()/setPanSource().
+	engine.setVolumeSource([](int track) { return track == 2 ? 80 : -1; });
+	engine.setPanSource([](int track) { return track == 2 ? 3 : -1; });
+	// Bank 2 (musician-facing) on track 2 - see setBankSource()/setBankLsbSource(). No LSB
+	// source wired at all here, mirroring D-110's own real usage (it never sets one).
+	engine.setBankSource([](int track) { return track == 2 ? 2 : -1; });
 
 	engine.armTrack(2);
 	engine.startRecording();
@@ -484,15 +490,49 @@ void testProgramChangeExport() {
 	}
 	check(foundProgramChange, "track 2's exported track carries PC 41 on channel 4 at time 0");
 
+	// LEVEL 80 -> CC7 round(80*127/100)=102, PAN 3 -> CC10 round(3*127/14)=27 - same scaling
+	// NonetSeqHost::advance() uses for its own live sends.
+	bool foundVolumeCC = false, foundPanCC = false;
+	if (mf.getNumTracks() > 3) {
+		const auto *seq = mf.getTrack(3);
+		for (int i = 0; i < seq->getNumEvents(); ++i) {
+			const auto &msg = seq->getEventPointer(i)->message;
+			if (!msg.isController() || msg.getTimeStamp() != 0.0 || msg.getChannel() != 4) continue;
+			if (msg.getControllerNumber() == 7 && msg.getControllerValue() == 102) foundVolumeCC = true;
+			if (msg.getControllerNumber() == 10 && msg.getControllerValue() == 27) foundPanCC = true;
+		}
+	}
+	check(foundVolumeCC, "track 2's exported track carries CC7=102 on channel 4 at time 0");
+	check(foundPanCC, "track 2's exported track carries CC10=27 on channel 4 at time 0");
+
+	// Bank 2 (musician-facing) -> CC0=1 (bank-1). No bankLsbSource wired at all, so no CC32.
+	bool foundBankCC = false, foundBankLsbCC = false;
+	if (mf.getNumTracks() > 3) {
+		const auto *seq = mf.getTrack(3);
+		for (int i = 0; i < seq->getNumEvents(); ++i) {
+			const auto &msg = seq->getEventPointer(i)->message;
+			if (!msg.isController() || msg.getTimeStamp() != 0.0 || msg.getChannel() != 4) continue;
+			if (msg.getControllerNumber() == 0 && msg.getControllerValue() == 1) foundBankCC = true;
+			if (msg.getControllerNumber() == 32) foundBankLsbCC = true;
+		}
+	}
+	check(foundBankCC, "track 2's exported track carries CC0=1 (bank 2) on channel 4 at time 0");
+	check(!foundBankLsbCC, "no bankLsbSource wired -> no CC32 at all");
+
 	// A track the program source has no opinion on gets no Program Change at all - not a
-	// wrong/placeholder one.
-	bool rhythmHasProgramChange = false;
+	// wrong/placeholder one. Same for Volume/Pan.
+	bool rhythmHasProgramChange = false, rhythmHasVolPanCC = false;
 	if (mf.getNumTracks() > D110SequencerEngine::kRhythmTrack + 1) {
 		const auto *seq = mf.getTrack(D110SequencerEngine::kRhythmTrack + 1);
-		for (int i = 0; i < seq->getNumEvents(); ++i)
-			if (seq->getEventPointer(i)->message.isProgramChange()) rhythmHasProgramChange = true;
+		for (int i = 0; i < seq->getNumEvents(); ++i) {
+			const auto &msg = seq->getEventPointer(i)->message;
+			if (msg.isProgramChange()) rhythmHasProgramChange = true;
+			if (msg.isController() && (msg.getControllerNumber() == 7 || msg.getControllerNumber() == 10))
+				rhythmHasVolPanCC = true;
+		}
 	}
 	check(!rhythmHasProgramChange, "rhythm track (no program source opinion) has no Program Change");
+	check(!rhythmHasVolPanCC, "rhythm track (no volume/pan source opinion) has no CC7/CC10");
 }
 
 // ---- 6. trackToBytes/trackFromBytes round-trip (the state-save path) ------------
@@ -1371,31 +1411,45 @@ void testUndo() {
 		check(!engine.canUndo(), "undo: still nothing to undo after a no-op call");
 	}
 
-	// Reverts clearTrack() back to the exact events that were there before.
+	// Reverts clearTrack() back to the exact events that were there before. Also exercises the
+	// new startRecording() checkpoint (recording is itself an undoable edit now) - after both
+	// undos, the track is empty AND unrecorded, back to how the engine started.
 	{
 		D110SequencerEngine engine;
 		engine.setChannelSource(defaultChannelForTrack);
 		engine.setPrecountBars(0);
 		engine.armTrack(0);
-		engine.startRecording();
+		engine.startRecording(); // checkpoints on its own now - see pushUndoSnapshot()'s comment
 		engine.captureEvent(juce::MidiMessage::noteOn(1, (juce::uint8)60, (juce::uint8)100), 0.0);
 		engine.captureEvent(juce::MidiMessage::noteOff(1, (juce::uint8)60), 0.5);
 		engine.stopRecording();
 		check(engine.trackHasEvents(0), "undo/clearTrack: track has an event before clearing");
+		check(engine.canUndo(), "undo/clearTrack: recording itself already left a checkpoint");
 
-		engine.pushUndoSnapshot();
+		engine.pushUndoSnapshot("clear");
 		engine.clearTrack(0);
 		check(!engine.trackHasEvents(0), "undo/clearTrack: track is empty right after clearing");
 		check(engine.canUndo(), "undo/clearTrack: a snapshot is now on the stack");
 
 		engine.undo();
 		check(engine.trackHasEvents(0), "undo/clearTrack: the event is back after undo()");
-		check(!engine.canUndo(), "undo/clearTrack: the stack is empty again after the one undo");
+		check(engine.canUndo(), "undo/clearTrack: the recording checkpoint is still on the stack");
+		check(engine.canRedo(), "undo/clearTrack: the clear can now be redone");
+
+		engine.undo(); // unwind the recording take itself too
+		check(!engine.trackHasEvents(0), "undo/clearTrack: undoing the recording removes the note again");
+		check(!engine.canUndo(), "undo/clearTrack: the stack is fully empty after both undos");
+
+		engine.redo();
+		engine.redo();
+		check(!engine.trackHasEvents(0), "undo/clearTrack: redoing both steps ends back on the cleared track");
+		check(!engine.canRedo(), "undo/clearTrack: redo stack drained after replaying both steps");
 	}
 
 	// Multiple checkpoints unwind one at a time, most recent first - tempo/time signature are
 	// deliberately NOT part of a snapshot (they're workspace settings, same as newSong() leaving
-	// them alone), so this stacks two content edits (transposeBars) instead.
+	// them alone), so this stacks two content edits (transposeBars) instead, on top of the
+	// recording checkpoint startRecording() adds on its own.
 	{
 		D110SequencerEngine engine;
 		engine.setChannelSource(defaultChannelForTrack);
@@ -1406,9 +1460,9 @@ void testUndo() {
 		engine.captureEvent(juce::MidiMessage::noteOff(1, (juce::uint8)60), 0.5);
 		engine.stopRecording();
 
-		engine.pushUndoSnapshot();
+		engine.pushUndoSnapshot("transpose 1");
 		engine.transposeBars(0, 1, 1, 12); // 60 -> 72
-		engine.pushUndoSnapshot();
+		engine.pushUndoSnapshot("transpose 2");
 		engine.transposeBars(0, 1, 1, 12); // 72 -> 84
 
 		engine.gotoBar(1);
@@ -1430,7 +1484,28 @@ void testUndo() {
 		notes = renderBlock(engine, 96000, 48000.0);
 		ns = onNotes(notes, 2);
 		check(ns.size() == 1 && ns[0] == 60, "undo: second undo lands back on the original pitch");
-		check(!engine.canUndo(), "undo: stack empty after unwinding both checkpoints");
+		check(engine.canUndo(), "undo: the recording checkpoint is still there below the two transposes");
+
+		engine.redo();
+		engine.gotoBar(1);
+		engine.play();
+		notes = renderBlock(engine, 96000, 48000.0);
+		ns = onNotes(notes, 2);
+		check(ns.size() == 1 && ns[0] == 72, "redo: first redo replays the first transpose");
+
+		engine.redo();
+		engine.gotoBar(1);
+		engine.play();
+		notes = renderBlock(engine, 96000, 48000.0);
+		ns = onNotes(notes, 2);
+		check(ns.size() == 1 && ns[0] == 84, "redo: second redo replays the second transpose");
+		check(!engine.canRedo(), "redo: nothing left to redo after replaying both");
+
+		// A fresh edit after undoing invalidates whatever redo history was pending.
+		engine.undo();
+		engine.pushUndoSnapshot("transpose 3");
+		engine.transposeBars(0, 1, 1, 1);
+		check(!engine.canRedo(), "undo/redo: a new edit after undo() clears the redo stack");
 	}
 
 	// copyCurrentSongTo() touches a slot that isn't live - undo has to restore that slot too,
@@ -1446,12 +1521,34 @@ void testUndo() {
 		engine.stopRecording();
 		check(!engine.songSlotHasContent(1), "undo/copyCurrentSongTo: slot 1 starts empty");
 
-		engine.pushUndoSnapshot();
+		engine.pushUndoSnapshot("copy to slot 1");
 		engine.copyCurrentSongTo(1);
 		check(engine.songSlotHasContent(1), "undo/copyCurrentSongTo: slot 1 now has the copy");
+		check(engine.getUndoDescription() == "copy to slot 1", "undo/copyCurrentSongTo: description matches what was pushed");
 
 		engine.undo();
 		check(!engine.songSlotHasContent(1), "undo/copyCurrentSongTo: slot 1 is empty again after undo()");
+		check(engine.getRedoDescription() == "copy to slot 1", "undo/copyCurrentSongTo: redo description carries over from undo");
+	}
+
+	// startRecording()/startStepRecording() checkpoint on their own - a take is undoable even
+	// with no other edit involved, which is what makes "undo my last recording" work.
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		engine.setPrecountBars(0);
+		check(!engine.canUndo(), "undo/recording: nothing to undo before any take");
+
+		engine.armTrack(0);
+		engine.startRecording();
+		engine.captureEvent(juce::MidiMessage::noteOn(1, (juce::uint8)60, (juce::uint8)100), 0.0);
+		engine.captureEvent(juce::MidiMessage::noteOff(1, (juce::uint8)60), 0.5);
+		engine.stopRecording();
+		check(engine.trackHasEvents(0), "undo/recording: the take landed on the track");
+		check(engine.getUndoDescription().isNotEmpty(), "undo/recording: startRecording() left a description");
+
+		engine.undo();
+		check(!engine.trackHasEvents(0), "undo/recording: undo() reverts the whole take, no edit needed first");
 	}
 }
 
@@ -1525,7 +1622,7 @@ void testEventList() {
 
 		const auto before = engine2.eventsInBarRange(0, 1, 1);
 		check(before.size() == 1, "undo/eventList: one note before deleting");
-		engine2.pushUndoSnapshot();
+		engine2.pushUndoSnapshot("delete note");
 		engine2.deleteNoteEvent(0, before[0].index);
 		check(engine2.eventsInBarRange(0, 1, 1).empty(), "undo/eventList: note gone right after delete");
 		engine2.undo();
@@ -1547,7 +1644,7 @@ void testEventList() {
 		const auto before = engine3.eventsInBarRange(0, 1, 1);
 		check(before.size() == 1 && before[0].note == 61, "pitch edit: wrong note there before the edit");
 
-		engine3.pushUndoSnapshot();
+		engine3.pushUndoSnapshot("edit pitch");
 		engine3.setNoteEventPitch(0, before[0].index, 60);
 		const auto after = engine3.eventsInBarRange(0, 1, 1);
 		check(after.size() == 1 && after[0].note == 60, "pitch edit: same slot, corrected pitch");

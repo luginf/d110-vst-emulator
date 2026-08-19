@@ -107,9 +107,35 @@ public:
 	// specific inserted event by hand).
 	void setProgramSource(std::function<int(int trackIndex)> programForTrack);
 
+	// Same idea as setProgramSource(), for Channel Volume (0-100) / Pan (0-14, 7=centre) -
+	// written into the exported file as CC7/CC10 (scaled to the wire's 0-127) right after the
+	// Program Change, same time-0 position. < 0 = no opinion, same meaning as setProgramSource()
+	// (saveMidiFile() then just leaves that track without the corresponding CC). Alan asked for
+	// this 2026-08-19 after noticing the exported file carried the Program Change but not
+	// Volume/Pan.
+	void setVolumeSource(std::function<int(int trackIndex)> volumeForTrack);
+	void setPanSource(std::function<int(int trackIndex)> panForTrack);
+
+	// Same idea again, Bank Select MSB/LSB (1-128 musician-facing, same numbering as
+	// D110SequencerHost::getTrackBank()/getTrackBankLsb()) - written as CC0/CC32 right before
+	// the Program Change, only consulted when the Program Change itself is also being written
+	// (a bank with no program is meaningless). D-110 has no bank concept to export (it predates
+	// Bank Select and folds A/B straight into the Program Change number itself, already
+	// reflected in whatever programSource returns) so it never sets these; Nonet Sequencer does,
+	// reading the stored per-track Bank/Bank LSB (2026-08-19, Alan's request - export from the
+	// stored settings, not a "live" value there being no synth to read one from).
+	void setBankSource(std::function<int(int trackIndex)> bankForTrack);
+	void setBankLsbSource(std::function<int(int trackIndex)> bankLsbForTrack);
+
 	// Transport
 	void setTempo(double bpm);
 	double getTempo() const { return tempoBpm; }
+	// Tap tempo: call once per tap (a button press, in either sequencer view). Two or more
+	// taps within kTapResetMs of each other average into a live tempo via setTempo(); a
+	// longer gap starts a fresh sequence instead of corrupting the average with a stray
+	// tap, so leaving it alone for a couple of seconds and tapping again always starts
+	// clean. A lone first tap doesn't change the tempo yet - there's no interval to measure.
+	void registerTapTempo();
 	void setTimeSignature(int numerator, int denominator);
 	int getTimeSigNumerator() const { return timeSigNum; }
 	int getTimeSigDenominator() const { return timeSigDen; }
@@ -272,6 +298,12 @@ public:
 	// precount leaves it untouched (see startRecording()'s own comment).
 	int getStepBar() const;
 	int getStepIndexInBar() const;
+	// How many steps the current step grid (getStepDuration(), x1.5 if getStepDotted()) divides
+	// the current bar into - e.g. 4 for quarter-note steps in 4/4, 8 for eighth-note steps in
+	// the same bar. Together with getStepIndexInBar(), lets the UI show "step M of N"/how many
+	// are left, and re-subdivide a beat-based visual (metronome LEDs) to the step grid instead
+	// while step recording is active.
+	int getStepsPerBar() const;
 
 	void setTrackMuted(int index, bool muted);
 	bool isTrackMuted(int index) const;
@@ -297,11 +329,26 @@ public:
 	// current one. Playback/transport state (position, playing, armed track, ...) is
 	// deliberately NOT captured, so undoing an edit never disturbs what's currently rolling.
 	// Capped at kMaxUndoDepth entries - the oldest snapshot is dropped once the stack is full,
-	// rather than growing without bound over a long editing session.
-	void pushUndoSnapshot();
-	// Restores the most recently pushed snapshot, if any; a no-op with nothing to undo.
+	// rather than growing without bound over a long editing session. `description` is a short,
+	// human-readable label for what's ABOUT TO happen (e.g. "Clear track PART 2"), surfaced by
+	// getUndoDescription()/getRedoDescription() so the UI can show what a right-click on UNDO/
+	// REDO would actually do. Also called internally by startRecording()/startStepRecording(),
+	// which is why real-time and step takes are undoable too, not just the editing operations
+	// below. Clears redoStack: a fresh edit invalidates whatever was previously undone, same as
+	// undo/redo in any ordinary editor.
+	void pushUndoSnapshot(const juce::String &description);
+	// Restores the most recently pushed snapshot, if any; a no-op with nothing to undo. Stashes
+	// what's being overwritten onto redoStack first, under the same description, so redo() can
+	// bring it straight back.
 	void undo();
 	bool canUndo() const { return !undoStack.empty(); }
+	// Re-applies the most recently undone snapshot, if any; a no-op with nothing to redo.
+	void redo();
+	bool canRedo() const { return !redoStack.empty(); }
+	// What undo()/redo() would do right now, e.g. "Clear track PART 2" - empty string if
+	// canUndo()/canRedo() is false. For a right-click tooltip/label on the UNDO/REDO control.
+	juce::String getUndoDescription() const { return undoStack.empty() ? juce::String() : undoStack.back().description; }
+	juce::String getRedoDescription() const { return redoStack.empty() ? juce::String() : redoStack.back().description; }
 
 	void quantizeTrack(int index, QuantizeGrid grid);
 	QuantizeGrid getTrackQuantize(int index) const;
@@ -474,6 +521,10 @@ private:
 	std::array<Track, kMaxTracks> tracks;
 	std::function<int(int)> channelSource;
 	std::function<int(int)> programSource;
+	std::function<int(int)> volumeSource;
+	std::function<int(int)> panSource;
+	std::function<int(int)> bankSource;
+	std::function<int(int)> bankLsbSource;
 	bool extraTracksEnabled = false;
 
 	// Storage for slots other than currentSlot - see selectSongSlot()'s own comment for why
@@ -488,19 +539,32 @@ private:
 	std::array<Song, kNumSongSlots> songs;
 	int currentSlot = 0;
 
-	// See pushUndoSnapshot()/undo() above.
+	// See pushUndoSnapshot()/undo()/redo() above.
 	struct UndoSnapshot {
 		std::array<Track, kMaxTracks> tracks;
 		std::array<Song, kNumSongSlots> songs;
 		int currentSlot;
+		juce::String description; // e.g. "Clear track PART 2" - see getUndoDescription()
 	};
 	static constexpr size_t kMaxUndoDepth = 20;
 	std::vector<UndoSnapshot> undoStack;
+	std::vector<UndoSnapshot> redoStack;
+
+	// "PART N"/"RHYTHM"/"TRACK N" - the user's own name if they set one, otherwise the same
+	// fallback saveMidiFile() and the undo/redo descriptions both use, so a track never shows
+	// up unnamed in either place.
+	juce::String trackLabel(int t) const;
 
 	double tempoBpm = 120.0;
 	int timeSigNum = 4;
 	int timeSigDen = 4;
 	double positionBeats = 0.0;
+
+	// Tap tempo scratch state - see registerTapTempo(). Not persisted (getStateInformation/
+	// slot save-load never touch it): it's a live gesture, not a setting.
+	std::vector<double> tapTimesMs;
+	static constexpr double kTapResetMs = 2000.0;
+	static constexpr int kTapMaxSamples = 8;
 
 	bool playing = false;
 	bool recording = false;

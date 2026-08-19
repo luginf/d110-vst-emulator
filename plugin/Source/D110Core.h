@@ -821,6 +821,9 @@ public:
 	uint64_t midiForwarded() const { return midiInCount.load(std::memory_order_acquire); }
 	uint64_t midiDelivered() const { return midiOutCount.load(std::memory_order_acquire); }
 	uint64_t midiDropped() const { return midiDropCount.load(std::memory_order_acquire); }
+	// Not tracked on this (dormant, MAME-backed) core - see D110CoreType::serialOverrunCount()
+	// in D110CoreNative.h for what this actually measures on the shipping native core.
+	uint32_t serialOverrunCount() const { return 0; }
 
 	// One block of the firmware's RAM that is mirrored into the LA engine, and where
 	// Roland's own exclusive map says it lives.

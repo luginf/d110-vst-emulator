@@ -21,10 +21,25 @@ NonetSeqHost::NonetSeqHost() {
 		trackChannels[static_cast<size_t>(t)] = t == d110seq::D110SequencerEngine::kNumTracks ? 1 : t + 1;
 	trackPrograms.fill(-1);
 	trackBanks.fill(1);
+	trackBankLsb.fill(1);
+	trackVolumes.fill(-1);
+	trackPans.fill(-1);
 	engine.setChannelSource([this](int trackIndex) { return trackChannels[static_cast<size_t>(trackIndex)]; });
-	// No live "current program" to report for saveMidiFile() - see setProgramSource()'s
-	// own comment on what returning < 0 means.
-	engine.setProgramSource([](int) { return -1; });
+	// No live sound to read a "current" Program Change/Bank/Volume/Pan from - there's no synth
+	// here - so saveMidiFile() instead exports the stored per-track settings directly (the same
+	// ones advance() sends over MIDI Out at PLAY/REC), Alan's call (2026-08-19) over leaving the
+	// export empty the way it was before Volume/Pan existed. Deliberately NOT
+	// programChangeOffset/bankOffset-corrected - that knob corrects today's cable/device, not
+	// the song itself, so it shouldn't get baked into a file that might be reopened elsewhere.
+	// Bank/Bank LSB are only consulted when a Program Change is also present - see
+	// setBankSource()'s own comment.
+	engine.setProgramSource([this](int t) { return getTrackProgram(t); });
+	engine.setBankSource(
+		[this](int t) { return getTrackProgram(t) >= 0 ? getTrackBank(t) : -1; });
+	engine.setBankLsbSource(
+		[this](int t) { return getTrackProgram(t) >= 0 ? getTrackBankLsb(t) : -1; });
+	engine.setVolumeSource([this](int t) { return getTrackVolume(t); });
+	engine.setPanSource([this](int t) { return getTrackPan(t); });
 
 	midiCollector.reset(currentSampleRate);
 
@@ -113,23 +128,46 @@ void NonetSeqHost::advance(int numSamples, float *const *outputChannelData, int 
 	// PLAY/REC edge (precount included, on purpose - see the header comment): send whichever
 	// tracks have a Program Change set, once, before anything else this block might send, so
 	// an external synth on that channel has already switched patch by the time real notes
-	// (thru or sequenced) reach it. Bank Select (CC0, MSB only) goes first, immediately before
-	// its track's Program Change, same pairing every synth expects. programChangeOffset/
+	// (thru or sequenced) reach it. Bank Select MSB (CC0) then LSB (CC32) go first, immediately
+	// before their track's Program Change, standard MIDI ordering. programChangeOffset/
 	// bankOffset (see their own comment) are applied here, at the very last moment, so
 	// trackPrograms/trackBanks themselves always stay in the plain musician-facing numbering
-	// the dialog shows, regardless of what correction is currently dialled in.
+	// the dialog shows, regardless of what correction is currently dialled in - bankOffset only
+	// ever touches the MSB, same as before LSB existed; LSB has no separate correction knob,
+	// nothing asked for one yet.
 	const bool nowPlaying = engine.isPlaying();
-	if (nowPlaying && !wasPlayingForProgramSend) {
+	const bool doResync = resyncRequested.exchange(false);
+	if ((nowPlaying && !wasPlayingForProgramSend) || doResync) {
 		juce::MidiBuffer pcOut;
 		for (int t = 0; t < engine.activeTrackCount(); ++t) {
 			const int program = trackPrograms[static_cast<size_t>(t)];
-			if (program < 0) continue;
+			const int volume = trackVolumes[static_cast<size_t>(t)];
+			const int pan = trackPans[static_cast<size_t>(t)];
+			// Volume/Pan are independent of Program Change - a track can have either without
+			// the other - so only skip this track once all three are unset, not just PC.
+			if (program < 0 && volume < 0 && pan < 0) continue;
 			const int channel = engine.channelForTrack(t);
-			const int bank = trackBanks[static_cast<size_t>(t)];
-			const int rawProgram = juce::jlimit(0, 127, program + programChangeOffset);
-			const int rawBank = juce::jlimit(0, 127, (bank - 1) + bankOffset);
-			pcOut.addEvent(juce::MidiMessage::controllerEvent(channel, 0, rawBank), 0);
-			pcOut.addEvent(juce::MidiMessage::programChange(channel, rawProgram), 0);
+			if (program >= 0) {
+				const int bank = trackBanks[static_cast<size_t>(t)];
+				const int bankLsb = trackBankLsb[static_cast<size_t>(t)];
+				const int rawProgram = juce::jlimit(0, 127, program + programChangeOffset);
+				const int rawBank = juce::jlimit(0, 127, (bank - 1) + bankOffset);
+				const int rawBankLsb = juce::jlimit(0, 127, bankLsb - 1);
+				pcOut.addEvent(juce::MidiMessage::controllerEvent(channel, 0, rawBank), 0);
+				pcOut.addEvent(juce::MidiMessage::controllerEvent(channel, 32, rawBankLsb), 0);
+				pcOut.addEvent(juce::MidiMessage::programChange(channel, rawProgram), 0);
+			}
+			// CC7 (Volume)/CC10 (Pan) - musician-facing 0-100/0-14 (the D-110's own LEVEL/PAN
+			// ranges, kept as the one scale both hosts show) scaled to the wire's plain 0-127;
+			// 7 (centre pan) lands on 64, standard MIDI centre.
+			if (volume >= 0) {
+				const int rawVolume = juce::jlimit(0, 127, juce::roundToInt(volume * 127.0f / 100.0f));
+				pcOut.addEvent(juce::MidiMessage::controllerEvent(channel, 7, rawVolume), 0);
+			}
+			if (pan >= 0) {
+				const int rawPan = juce::jlimit(0, 127, juce::roundToInt(pan * 127.0f / 14.0f));
+				pcOut.addEvent(juce::MidiMessage::controllerEvent(channel, 10, rawPan), 0);
+			}
 		}
 		const juce::ScopedLock lock(osMidiLock);
 		if (osMidiOut != nullptr && pcOut.getNumEvents() > 0) osMidiOut->sendBlockOfMessagesNow(pcOut);
@@ -274,6 +312,36 @@ void NonetSeqHost::setTrackBank(int track, int bank) {
 	trackBanks[static_cast<size_t>(track)] = juce::jlimit(1, 128, bank);
 }
 
+int NonetSeqHost::getTrackBankLsb(int track) const {
+	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return 1;
+	return trackBankLsb[static_cast<size_t>(track)];
+}
+
+void NonetSeqHost::setTrackBankLsb(int track, int bankLsb) {
+	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return;
+	trackBankLsb[static_cast<size_t>(track)] = juce::jlimit(1, 128, bankLsb);
+}
+
+int NonetSeqHost::getTrackVolume(int track) const {
+	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return -1;
+	return trackVolumes[static_cast<size_t>(track)];
+}
+
+void NonetSeqHost::setTrackVolume(int track, int volume) {
+	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return;
+	trackVolumes[static_cast<size_t>(track)] = volume < 0 ? -1 : juce::jlimit(0, 100, volume);
+}
+
+int NonetSeqHost::getTrackPan(int track) const {
+	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return -1;
+	return trackPans[static_cast<size_t>(track)];
+}
+
+void NonetSeqHost::setTrackPan(int track, int pan) {
+	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return;
+	trackPans[static_cast<size_t>(track)] = pan < 0 ? -1 : juce::jlimit(0, 14, pan);
+}
+
 void NonetSeqHost::injectTestNote(int channel, int note, float velocity, bool on) {
 	auto message = on ? juce::MidiMessage::noteOn(channel, note, velocity)
 	                   : juce::MidiMessage::noteOff(channel, note, velocity);
@@ -368,6 +436,9 @@ void NonetSeqHost::loadSettings() {
 		setTrackChannel(t, xml->getIntAttribute("chTrack" + juce::String(t), trackChannels[static_cast<size_t>(t)]));
 		setTrackProgram(t, xml->getIntAttribute("pcTrack" + juce::String(t), -1));
 		setTrackBank(t, xml->getIntAttribute("bankTrack" + juce::String(t), 1));
+		setTrackBankLsb(t, xml->getIntAttribute("bankLsbTrack" + juce::String(t), 1));
+		setTrackVolume(t, xml->getIntAttribute("volTrack" + juce::String(t), -1));
+		setTrackPan(t, xml->getIntAttribute("panTrack" + juce::String(t), -1));
 	}
 
 	// kMaxTracks unconditionally - see D110SequencerSongsFile.h's own comment on why.
@@ -408,6 +479,9 @@ void NonetSeqHost::saveSettings() const {
 		xml.setAttribute("chTrack" + juce::String(t), trackChannels[static_cast<size_t>(t)]);
 		xml.setAttribute("pcTrack" + juce::String(t), trackPrograms[static_cast<size_t>(t)]);
 		xml.setAttribute("bankTrack" + juce::String(t), trackBanks[static_cast<size_t>(t)]);
+		xml.setAttribute("bankLsbTrack" + juce::String(t), trackBankLsb[static_cast<size_t>(t)]);
+		xml.setAttribute("volTrack" + juce::String(t), trackVolumes[static_cast<size_t>(t)]);
+		xml.setAttribute("panTrack" + juce::String(t), trackPans[static_cast<size_t>(t)]);
 	}
 
 	// kMaxTracks unconditionally - see D110SequencerSongsFile.h's own comment on why.

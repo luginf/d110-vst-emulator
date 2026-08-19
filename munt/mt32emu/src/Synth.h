@@ -227,6 +227,14 @@ private:
 	// We emulate this by delaying new MIDI events processing until abortion finishes.
 	Poly *abortingPoly;
 
+	// D-110 local patch: counts how many times Part::abortFirstPoly() had to fall back to a
+	// plain release (Poly::startAbort() found abortingPoly already occupied by some
+	// unrelated poly and did nothing) instead of the fast abort it was asked for - see that
+	// function's own comment. Diagnostic only: lets the app's debugModeEnabled logging show
+	// whether/when this path actually fires in a real session, rather than only in a
+	// synthetic repro attempt.
+	Bit32u abortFallbackCount;
+
 	Analog *analog;
 	Renderer *renderer;
 	// Kept from open() so renderD110MultiOutput() can build its own per-part Analog
@@ -601,6 +609,12 @@ public:
 
 	// Fills in current states of all the partials into the array provided. The array must be large enough to accommodate states of all the partials.
 	MT32EMU_EXPORT void getPartialStates(PartialState *partialStates) const;
+
+	// D-110 local patch: how many times Part::abortFirstPoly()'s fallback release has fired
+	// since this Synth was created - see abortFallbackCount's own comment. Diagnostic only,
+	// for the app to log alongside its own debugModeEnabled tally - not part of upstream
+	// mt32emu.
+	MT32EMU_EXPORT Bit32u getAbortFallbackCount() const;
 
 	// Fills in current states of all the partials into the array provided. Each byte in the array holds states of 4 partials
 	// starting from the least significant bits. The state of each partial is packed in a pair of bits.

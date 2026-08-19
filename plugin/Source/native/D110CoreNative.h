@@ -97,6 +97,9 @@ public:
 	uint64_t sysexDropped() const { return 0; } // mirror queue is a plain deque - never drops
 	uint64_t midiDelivered() const { return midiDelivered_; }
 	uint64_t midiDropped() const { return 0; }  // MIDI-in queue is a plain deque - never drops
+	// A byte handed to the CPU (midiDelivered above) can still be LOST if the firmware never
+	// reads it before the next one lands - see Mcs96Cpu::serialOverrunCount()'s own comment.
+	uint32_t serialOverrunCount() const { return cpu_.serialOverrunCount(); }
 
 	// romFolder must contain d-110.v1.10.ic19.bin, r15179873-lh5310-97.ic12.bin and
 	// msm6222b-01.bin - the same three files D110AudioProcessor::getAutoRomFolder() already

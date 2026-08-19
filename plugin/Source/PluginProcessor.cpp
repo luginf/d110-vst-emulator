@@ -120,11 +120,19 @@ D110AudioProcessor::D110AudioProcessor()
 		[this](int track) { return sequencerLiveChannels[static_cast<size_t>(track)]; });
 
 	sequencerLivePrograms.fill(-1);
+	sequencerLiveVolumes.fill(-1);
+	sequencerLivePans.fill(-1);
 	sequencerEngine.setProgramSource(
 		[this](int track) { return sequencerLivePrograms[static_cast<size_t>(track)]; });
+	sequencerEngine.setVolumeSource(
+		[this](int track) { return sequencerLiveVolumes[static_cast<size_t>(track)]; });
+	sequencerEngine.setPanSource(
+		[this](int track) { return sequencerLivePans[static_cast<size_t>(track)]; });
 
 	sequencerTrackPrograms.fill(-1);
 	sequencerTrackBanks.fill(1);
+	sequencerTrackVolumes.fill(-1);
+	sequencerTrackPans.fill(-1);
 
 	tryAutoLoadRoms();
 }
@@ -821,16 +829,38 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 					// own default (channelForTrack) by staying -1.
 					sequencerLiveChannels[static_cast<size_t>(t)] = (raw >= 0 && raw <= 15) ? raw + 1 : -1;
 
-					// TimbreTemp field 1 = the part's live tone NUMBER (0-63), the same byte
-					// D110EditorPane's Parts tab shows in its own TONE column - see
-					// sequencerLivePrograms' own comment for why this, not the tone GROUP, is
-					// what gets embedded as a Program Change.
-					const size_t toneAddr = static_cast<size_t>(D110CoreType::kRamTimbreTemp)
-					                       + static_cast<size_t>(t) * D110CoreType::kTimbreTempRecord + 1;
-					const int tone = toneAddr < sequencerRamScratch.size()
-					                      ? static_cast<int>(sequencerRamScratch[toneAddr])
+					// TimbreTemp field 0 = TONE GROUP (0=preset A, 1=preset B, 2=internal tone
+					// memory, 3=rhythm - see D110EditorPane's own "TONE GROUP" column), field 1
+					// = TONE, the number within that group (0-63) - see sequencerLivePrograms'
+					// own comment for how these two fold into the single Program Change value a
+					// real Program Change on this part's channel would actually have to be to
+					// reproduce what's playing right now.
+					const size_t timbreTempAddr = static_cast<size_t>(D110CoreType::kRamTimbreTemp)
+					                             + static_cast<size_t>(t) * D110CoreType::kTimbreTempRecord;
+					const int group = timbreTempAddr < sequencerRamScratch.size()
+					                       ? static_cast<int>(sequencerRamScratch[timbreTempAddr])
+					                       : -1;
+					const int tone = timbreTempAddr + 1 < sequencerRamScratch.size()
+					                      ? static_cast<int>(sequencerRamScratch[timbreTempAddr + 1])
 					                      : -1;
-					sequencerLivePrograms[static_cast<size_t>(t)] = (tone >= 0 && tone <= 63) ? tone : -1;
+					// Only preset A/B are reachable by a plain Program Change at all (see
+					// setTrackProgram()'s own comment) - group 2/3 (internal tone memory,
+					// rhythm) have no such number, so they report "no hint", same as an
+					// unreadable byte would.
+					sequencerLivePrograms[static_cast<size_t>(t)] =
+						(tone >= 0 && tone <= 63 && (group == 0 || group == 1)) ? (group == 1 ? 64 + tone : tone)
+						                                                        : -1;
+
+					// Same record, fields 8/9 (LEVEL/PAN) - what captureLivePatchIntoTracks()
+					// reads to fill in the sequencer's own per-track Volume/Pan.
+					sequencerLiveVolumes[static_cast<size_t>(t)] =
+						timbreTempAddr + 8 < sequencerRamScratch.size()
+							? static_cast<int>(sequencerRamScratch[timbreTempAddr + 8])
+							: -1;
+					sequencerLivePans[static_cast<size_t>(t)] =
+						timbreTempAddr + 9 < sequencerRamScratch.size()
+							? static_cast<int>(sequencerRamScratch[timbreTempAddr + 9])
+							: -1;
 				}
 			}
 		}
@@ -869,21 +899,43 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 		// below - the first step towards the sequencer driving external gear on its own.
 		juce::MidiBuffer sequencerOut;
 
-		// Per-Part Program Change/Bank override (see getTrackProgram()/getTrackBank()), added
-		// ahead of renderInto() below so it lands at sample 0, on the PLAY/REC edge (precount
-		// included - same reasoning as NonetSeqHost::advance(), the D-110's own patch should be
-		// settled before any note this block might also render). Bank Select (CC0, MSB only)
-		// goes first, same pairing every synth expects.
+		// Per-Part Program Change/Bank/Volume/Pan override (see getTrackProgram()/getTrackBank()/
+		// getTrackVolume()/getTrackPan()), added ahead of renderInto() below so it lands at
+		// sample 0, on the PLAY/REC edge (precount included - same reasoning as
+		// NonetSeqHost::advance(), the D-110's own patch should be settled before any note this
+		// block might also render) - OR right now, regardless of transport state, if
+		// resyncProgramChanges() asked for it (Alan's "the live sound and the sequencer's stored
+		// settings have drifted apart, force them back in sync" escape hatch, 2026-08-19) - the
+		// audio thread is the only place allowed to touch the firmware/sound-engine bridge, so
+		// that method can only flag the request, this is where it's actually acted on.
+		//
+		// No Bank Select (CC0) here - the D-110 predates that convention and its firmware
+		// simply doesn't implement it (confirmed against selectTimbreForPart(), the TIMBRES
+		// tab's own proven-correct mechanism, which never sends one either). Its 128 Timbre
+		// Memory slots are reached purely by Program Change value, split into two pages of 64
+		// Roland's own panel/manual call "A" and "B" - BANK folds straight into that same
+		// number instead: BANK 1/PROGRAM 1-128 addresses a slot directly (the flat numbering
+		// the TIMBRES tab itself uses), BANK 2/PROGRAM 1-64 addresses page B's own 1-64 (the
+		// "B31" naming Alan reads off the instrument), and anything past 127 just clamps.
+		//
+		// Volume/Pan go out as real Part LEVEL/PAN SysEx (sendTimbreTempParam, fields 8/9 -
+		// exactly what the PARTS tab's own LEVEL/PAN columns write), not MIDI CC7/CC10 - see
+		// D110SequencerHost.h's own comment on why.
 		const bool nowSequencerPlaying = sequencerEngine.isPlaying();
-		if (nowSequencerPlaying && !wasSequencerPlayingForProgramSend) {
+		const bool doProgramResync = sequencerResyncRequested.exchange(false);
+		if ((nowSequencerPlaying && !wasSequencerPlayingForProgramSend) || doProgramResync) {
 			for (int t = 0; t < d110seq::D110SequencerEngine::kRhythmTrack; ++t) {
 				const int program = sequencerTrackPrograms[static_cast<size_t>(t)];
-				if (program < 0) continue;
-				const int channel = sequencerEngine.channelForTrack(t);
-				const int bank = sequencerTrackBanks[static_cast<size_t>(t)];
-				sequencerOut.addEvent(juce::MidiMessage::controllerEvent(channel, 0, juce::jlimit(0, 127, bank - 1)),
-				                       0);
-				sequencerOut.addEvent(juce::MidiMessage::programChange(channel, program), 0);
+				if (program >= 0) {
+					const int channel = sequencerEngine.channelForTrack(t);
+					const int bank = sequencerTrackBanks[static_cast<size_t>(t)];
+					const int rawProgram = juce::jlimit(0, 127, (bank - 1) * 64 + program);
+					sequencerOut.addEvent(juce::MidiMessage::programChange(channel, rawProgram), 0);
+				}
+				const int volume = sequencerTrackVolumes[static_cast<size_t>(t)];
+				if (volume >= 0) sendTimbreTempParam(t, 8, static_cast<juce::uint8>(volume));
+				const int pan = sequencerTrackPans[static_cast<size_t>(t)];
+				if (pan >= 0) sendTimbreTempParam(t, 9, static_cast<juce::uint8>(pan));
 			}
 		}
 		wasSequencerPlayingForProgramSend = nowSequencerPlaying;
@@ -1038,7 +1090,8 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 			     << " misses=" << diagMisses << " ("
 			     << juce::String(diagAttempts > 0 ? 100.0 * diagMisses / diagAttempts : 0.0, 1)
 			     << "% missed)  enginePartStates=0x" << juce::String::toHexString(int(partStates))
-			     << juce::newLine;
+			     << "  abortFallbackCount=" << juce::int64(engineAbortFallbackCount())
+			     << "  serialOverrunCount=" << juce::int64(core.serialOverrunCount()) << juce::newLine;
 			MidiLogEntry log[16];
 			const int n = getMidiLog(log, 16);
 			for (int i = 0; i < n; ++i)
@@ -1791,6 +1844,10 @@ void D110AudioProcessor::selectTimbreForPart(int part, int timbre) {
 	pendingShortMessages.push_back(juce::uint32(bytes[0]) | (juce::uint32(bytes[1]) << 8));
 }
 
+// Stored 0-indexed (the dialog shows 1-128) - see the processBlock() send site's own comment
+// on how this combines with getTrackBank() into the actual raw Program Change byte for the
+// D-110 specifically (BANK 2 adds 64, since that's how its two Timbre Memory pages actually
+// work - there's no MIDI Bank Select on this instrument at all).
 int D110AudioProcessor::getTrackProgram(int track) const {
 	if (!supportsProgramChangeForTrack(track)) return -1;
 	return sequencerTrackPrograms[static_cast<size_t>(track)];
@@ -1811,9 +1868,54 @@ void D110AudioProcessor::setTrackBank(int track, int bank) {
 	sequencerTrackBanks[static_cast<size_t>(track)] = juce::jlimit(1, 128, bank);
 }
 
-// sequencerLivePrograms already tracks each Part's live tone NUMBER (0-63) once per block for
-// MIDI-file export - see that array's own comment. Reused here as the Program Change dialog's
-// pre-fill: whatever's playing right now, so Alan doesn't have to know or guess the number.
+int D110AudioProcessor::getTrackVolume(int track) const {
+	if (!supportsProgramChangeForTrack(track)) return -1;
+	return sequencerTrackVolumes[static_cast<size_t>(track)];
+}
+
+void D110AudioProcessor::setTrackVolume(int track, int volume) {
+	if (!supportsProgramChangeForTrack(track)) return;
+	sequencerTrackVolumes[static_cast<size_t>(track)] = volume < 0 ? -1 : juce::jlimit(0, 100, volume);
+}
+
+int D110AudioProcessor::getTrackPan(int track) const {
+	if (!supportsProgramChangeForTrack(track)) return -1;
+	return sequencerTrackPans[static_cast<size_t>(track)];
+}
+
+void D110AudioProcessor::setTrackPan(int track, int pan) {
+	if (!supportsProgramChangeForTrack(track)) return;
+	sequencerTrackPans[static_cast<size_t>(track)] = pan < 0 ? -1 : juce::jlimit(0, 14, pan);
+}
+
+// Pull direction - see D110SequencerHost.h's own comment on resyncProgramChanges() being the
+// other way around. sequencerLivePrograms is already the raw 0-127 value a real Program Change
+// on this part's channel would have to be to reproduce what's playing (see that array's own
+// comment): group A (0) folds to 0-63, group B (1) folds to 64-127. Rather than re-deriving a
+// (bank, program) pair that could reconstruct that raw value - several would, since Bank
+// 1/Program 65-128 and Bank 2/Program 1-64 address the same slots, see promptForTrackProgram's
+// own comment - this always writes back Bank 1, since Bank 1/Program 1-128 alone already
+// addresses the full range directly (the plain TIMBRES tab numbering), the simplest of the
+// several equally-correct (bank, program) pairs that would work.
+void D110AudioProcessor::captureLivePatchIntoTracks() {
+	for (int t = 0; t < d110seq::D110SequencerEngine::kRhythmTrack; ++t) {
+		const int program = sequencerLivePrograms[static_cast<size_t>(t)];
+		if (program >= 0) {
+			setTrackProgram(t, program);
+			setTrackBank(t, 1);
+		}
+		const int volume = sequencerLiveVolumes[static_cast<size_t>(t)];
+		if (volume >= 0) setTrackVolume(t, volume);
+		const int pan = sequencerLivePans[static_cast<size_t>(t)];
+		if (pan >= 0) setTrackPan(t, pan);
+	}
+}
+
+// sequencerLivePrograms already tracks each Part's live sound as a raw 0-127 Program Change
+// value once per block, for MIDI-file export - see that array's own comment. Reused here as
+// the Program Change dialog's pre-fill: whatever's playing right now, so Alan doesn't have to
+// know or guess the number. -1 (internal tone memory or rhythm) means there's no such number
+// to hint - see setTrackProgram()'s own comment on why.
 int D110AudioProcessor::getTrackProgramHint(int track) const {
 	if (!supportsProgramChangeForTrack(track)) return -1;
 	return sequencerLivePrograms[static_cast<size_t>(track)];
@@ -2146,6 +2248,9 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	// Editor drawer's own height, drag-resized via the keyboard handle band - see
 	// getEditorPaneRefH().
 	xml->setAttribute("editorPaneRefH", editorPaneRefH);
+	// Keyboard/sequencer drawers' own heights - see getKeyboardPaneRefH()/getSequencerPaneRefH().
+	xml->setAttribute("keyboardPaneRefH", keyboardPaneRefH);
+	xml->setAttribute("sequencerPaneRefH", sequencerPaneRefH);
 
 	// The D-20-style sequencer's own tracks and transport settings, packed the same way
 	// the firmware NVRAM is above - so a project brings the whole sequencer back exactly
@@ -2175,6 +2280,8 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	for (int t = 0; t < d110seq::D110SequencerEngine::kRhythmTrack; ++t) {
 		xml->setAttribute("pcTrack" + juce::String(t), sequencerTrackPrograms[static_cast<size_t>(t)]);
 		xml->setAttribute("bankTrack" + juce::String(t), sequencerTrackBanks[static_cast<size_t>(t)]);
+		xml->setAttribute("volTrack" + juce::String(t), sequencerTrackVolumes[static_cast<size_t>(t)]);
+		xml->setAttribute("panTrack" + juce::String(t), sequencerTrackPans[static_cast<size_t>(t)]);
 	}
 
 	// Per-song sound snapshot - see hasSoundSnapshot()/storeSoundSnapshotForSlot(). Unlike
@@ -2280,6 +2387,8 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 	setSequencerRetroMode(xml->getIntAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0) != 0);
 	setLastDialogDir(juce::File(xml->getStringAttribute("lastDialogDir", lastDialogDir.getFullPathName())));
 	setEditorPaneRefH(float(xml->getDoubleAttribute("editorPaneRefH", double(editorPaneRefH))));
+	setKeyboardPaneRefH(float(xml->getDoubleAttribute("keyboardPaneRefH", double(keyboardPaneRefH))));
+	setSequencerPaneRefH(float(xml->getDoubleAttribute("sequencerPaneRefH", double(sequencerPaneRefH))));
 
 	// The sequencer's own tracks and transport settings - see the matching comment in
 	// getStateInformation. A project saved before this existed simply has none of these
@@ -2312,6 +2421,8 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 	for (int t = 0; t < d110seq::D110SequencerEngine::kRhythmTrack; ++t) {
 		setTrackProgram(t, xml->getIntAttribute("pcTrack" + juce::String(t), -1));
 		setTrackBank(t, xml->getIntAttribute("bankTrack" + juce::String(t), 1));
+		setTrackVolume(t, xml->getIntAttribute("volTrack" + juce::String(t), -1));
+		setTrackPan(t, xml->getIntAttribute("panTrack" + juce::String(t), -1));
 	}
 
 	for (int s = 0; s < d110seq::D110SequencerEngine::kNumSongSlots; ++s) {

@@ -800,6 +800,7 @@ bool Synth::open(const ROMImage &controlROMImage, const ROMImage &pcmROMImage, B
     this->useSuper = useSuper;
 	partialCount = usePartialCount;
 	abortingPoly = NULL;
+	abortFallbackCount = 0;
 	extensions.abortingPartIx = 0;
     if (useSuper) {
         patchTempSuper = new MemParams::PatchTemp[7];
@@ -2899,6 +2900,10 @@ bool Synth::isSuper() const {
 
 Bit32u Synth::getPartialCount() const {
 	return partialCount;
+}
+
+Bit32u Synth::getAbortFallbackCount() const {
+	return abortFallbackCount;
 }
 
 void Synth::getPartStates(bool *partStates) const {

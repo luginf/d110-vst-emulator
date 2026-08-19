@@ -20,10 +20,15 @@
 // D110SequencerPanel.cpp for the call sites this mirrors.
 //
 // Navigation model: a stack of Screens (EXIT pops, a List/Form item's own onEnter/
-// onConfirm pushes), plus HOME (stack empty - not itself a Screen). List/Form/Confirm/
+// onConfirm pushes). HOME is a List Screen like any other (built once by
+// buildHomeMenu(), held in homeScreen) - top() returns it whenever the stack is empty,
+// so it's never pushed/popped itself, just permanently at the bottom. List/Form/Confirm/
 // NameEdit are the only 4 screen kinds - every menu is data (a Screen built by one of the
 // buildXyz() methods below), not a bespoke class, so adding a new menu item never needs a
-// new paint/input code path.
+// new paint/input code path. A List row can optionally add a horizontal quick-bar
+// (ListItem::quickActions, LEFT/RIGHT-cycled/ENTER-fired) or a live scrub
+// (ListItem::onAdjust, LEFT/RIGHT drives it directly) - see ListItem's own comment - used
+// by HOME's TRACK/SONG/TRANSPORT/BAR rows to reach fast actions without a submenu hop.
 //
 // Callback convention, load-bearing for stack safety: a List item's onEnter may freely
 // push/pop the navigation stack (that's how menus nest). A Form/Confirm screen's
@@ -52,37 +57,58 @@ private:
 	void timerCallback() override;
 	d110seq::D110SequencerEngine &engine();
 
-	// The HOME screen's own quick-adjust fields - LEFT/RIGHT cycles which one is active,
-	// UP/DOWN adjusts it directly, no menu needed for these four most-common tweaks.
-	// transport first - the most-used field, and what makes STOP/PLAY/REC reachable from
-	// the 6-key set (4 arrows + ENTER + EXIT) alone, no mouse needed - see pressEnter().
-	enum class HomeField { transport, track, bar, tempo, slot };
-	static constexpr int kHomeFieldCount = 5;
-
 	enum class ScreenKind { list, form, confirm, nameEdit };
+
+	// One entry in a list row's horizontal quick-bar (see ListItem::quickActions below).
+	struct QuickAction {
+		juce::String label;
+		std::function<void()> onEnter;
+		bool enabled = true;
+	};
 
 	// One selectable row in a List screen. label/value are rebuilt fresh from live
 	// engine/host state every time the screen is (re)built - see buildItems below - so a
 	// List screen never goes stale while it's open.
+	//
+	// A row is plain by default (ENTER fires onEnter, LEFT/RIGHT do nothing - the original
+	// behaviour, unchanged for every pre-existing menu). A row opts into one of two richer
+	// behaviours instead, never both:
+	//  - quickActions: LEFT/RIGHT cycles a per-row index (persisted in Screen::quickIndex,
+	//    since `items` itself is rebuilt fresh every frame), ENTER fires whichever action is
+	//    currently dialled. Used by HOME's TRACK/SONG/TRANSPORT rows - lets one row reach
+	//    several fast actions (REC/PLAY/MUTE/...) without a submenu hop.
+	//  - onAdjust: LEFT/RIGHT calls onAdjust(+-1) directly against live engine state, no
+	//    dialled index involved. Used by HOME's BAR row (live scrub), mirroring what
+	//    HomeField::bar used to do before HOME became a plain list.
 	struct ListItem {
 		juce::String label;
 		juce::String value;
 		bool enabled = true;
 		std::function<void()> onEnter;
+		std::vector<QuickAction> quickActions;
+		std::function<void(int)> onAdjust;
 	};
 
 	// One editable field in a Form screen. value is heap-allocated (shared_ptr, same
 	// idiom D110SequencerPanel::promptForEventList() uses for its own barState) so it
 	// stays alive independently of the Screen struct being copied/moved on the
-	// navigation stack. UP/DOWN adjusts *value by +-1, clamped to [minValue, maxValue];
-	// format renders the raw int for display (e.g. a bar number, a note name, a track
-	// label looked up by index).
+	// navigation stack. UP/DOWN adjusts *value by +-upDownStep (default 1), clamped to
+	// [minValue, maxValue]; format renders the raw int for display (e.g. a bar number, a
+	// note name, a track label looked up by index, or a unit conversion - see
+	// buildTempoForm(), which stores half-BPM units so its own 1 BPM/5.5 BPM steps both
+	// land on whole numbers). leftRightStep is 0 by default, meaning LEFT/RIGHT moves the
+	// cursor to the next/previous field, same as always; a form field that sets it nonzero
+	// (again, only the TEMPO field does) has LEFT/RIGHT adjust *that* field's value by
+	// +-leftRightStep instead - only sensible for a single-field form, since it means
+	// LEFT/RIGHT no longer reaches any other field while that one has focus.
 	struct FormField {
 		juce::String label;
 		std::shared_ptr<int> value;
 		int minValue = 0;
 		int maxValue = 999;
 		std::function<juce::String(int)> format;
+		int upDownStep = 1;
+		int leftRightStep = 0;
 	};
 
 	// One screen on the navigation stack - see the class comment for the kind-specific
@@ -98,11 +124,16 @@ private:
 		std::function<void()> onConfirm;                     // form/confirm
 		int cursor = 0;                                       // list row / form field index
 		bool confirmYes = false;                              // confirm only
+		std::vector<int> quickIndex;                          // list: dialled quickActions index per row
 	};
 
 	void pushScreen(Screen s);
 	void popScreen();
-	Screen &top() { return stack.back(); }
+	// HOME (the permanent base of the stack, never pushed/popped) is a Screen like any
+	// other - stack.empty() means "showing HOME", and top() transparently returns the
+	// persistent homeScreen member in that case, so every input handler and paintListScreen
+	// already written for nested lists works on HOME for free. See buildHomeMenu().
+	Screen &top() { return stack.empty() ? homeScreen : stack.back(); }
 
 	// Hardware buttons
 	void pressStop();
@@ -115,19 +146,25 @@ private:
 	void pressEnter();
 	void pressExit();
 
-	void homeAdjust(int delta);
-	void syncHomeTransportChoice(); // snaps homeTransportChoice to the live transport state
+	// Arms and starts recording on `track` in one gesture (or stops, if it's the one
+	// currently recording) - the HOME TRACK row's REC quick action. Unlike the ARM toggle
+	// still available under MORE, this never leaves a track armed-but-not-recording.
+	void pressTrackRec(int track);
 
-	// Screen builders - one per MAIN MENU destination and its own children. Each mirrors
-	// the equivalent D110SequencerPanel control 1:1 (see the .cpp for exact call sites).
-	// A track parameter of -1 where D110SequencerEngine itself accepts one means "every
+	// Screen builders - one per HOME destination and its own children. Each mirrors the
+	// equivalent D110SequencerPanel control 1:1 (see the .cpp for exact call sites). A
+	// track parameter of -1 where D110SequencerEngine itself accepts one means "every
 	// track", same convention as deleteBars()/copyBars()/transposeBars().
-	Screen buildMainMenu();
-	Screen buildTrackList();
+	Screen buildHomeMenu();
+	Screen buildTempoSigMetroMenu();
+	Screen buildPrecountLoopMenu();
+	Screen buildMidiChannelsMenu();
+	Screen buildOptionsMenu();
 	Screen buildTrackMenu(int track);
 	Screen buildQuantizeMenu(int track);
 	Screen buildChannelForm(int track);
 	Screen buildProgramForm(int track);
+	Screen buildCaptureLivePatchConfirm();
 	Screen buildClearConfirm(int track);
 	Screen buildDeleteBarsForm(int track);
 	Screen buildCopyBarsForm(int track);
@@ -136,7 +173,6 @@ private:
 	Screen buildEventItemMenu(int track, int eventIndex, int note);
 	Screen buildEventPitchForm(int track, int eventIndex, int note);
 	Screen buildEventDeleteConfirm(int track, int eventIndex);
-	Screen buildTransportMenu();
 	Screen buildTempoForm();
 	Screen buildTimeSigMenu();
 	Screen buildTimeSigCustomForm();
@@ -187,7 +223,7 @@ private:
 	// dot-matrix height) so the whole glass reads as a single consistent character grid.
 	void paintLcd(juce::Graphics &, juce::Rectangle<float> lcdArea);
 	void paintButtons(juce::Graphics &);
-	void paintHomeScreen(juce::Graphics &g, juce::Rectangle<float> inner, float charPx);
+	juce::String homeStatusText(); // title-row live status ("STOP"/"PLAY BAR 3/8"/...), HOME only
 	void paintListScreen(juce::Graphics &g, juce::Rectangle<float> textArea, float charPx);
 	void paintFormScreen(juce::Graphics &g, juce::Rectangle<float> textArea, float charPx);
 	void paintConfirmScreen(juce::Graphics &g, juce::Rectangle<float> textArea, float charPx);
@@ -196,13 +232,8 @@ private:
 
 	D110SequencerHost &processor;
 
-	std::vector<Screen> stack; // empty = HOME
-	HomeField homeField = HomeField::transport;
-	int homeSelectedTrack = 0;
-	// Which action UP/DOWN has dialled up on the transport field, 0=STOP/1=PLAY/2=REC -
-	// ENTER fires it (see pressEnter()). Re-synced to the live transport state whenever
-	// the field is (re)selected, so it always starts showing what's actually happening.
-	int homeTransportChoice = 0;
+	std::vector<Screen> stack; // empty = HOME (see top())
+	Screen homeScreen;          // built once in the constructor via buildHomeMenu()
 
 	juce::String nameEditBuffer;
 	int nameEditCaret = 0;

@@ -437,6 +437,7 @@ void Mcs96Cpu::setExtIntLine(bool asserted) {
 }
 
 void Mcs96Cpu::serialWrite(u8 val) {
+	if (sp_stat & 0x40) ++serial_overrun_count_; // previous byte never read - see the header's own comment
 	sbuf = val;
 	sp_stat |= 0x40;
 	pending_irq |= IRQ_SERIAL;

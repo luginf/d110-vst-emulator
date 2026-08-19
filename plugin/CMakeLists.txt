@@ -1826,6 +1826,12 @@ target_include_directories(d110_sequencer_probe PRIVATE "${CMAKE_CURRENT_SOURCE_
 target_compile_definitions(d110_sequencer_probe PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)
 target_link_libraries(d110_sequencer_probe PRIVATE juce::juce_audio_basics juce::juce_core)
 
+add_executable(d110_sequencer_stray_channel_probe sequencer_stray_channel_probe.cpp
+    Source/sequencer/D110SequencerEngine.cpp)
+target_include_directories(d110_sequencer_stray_channel_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_sequencer_stray_channel_probe PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)
+target_link_libraries(d110_sequencer_stray_channel_probe PRIVATE juce::juce_audio_basics juce::juce_core)
+
 # Nonet Sequencer, the independent sequencer app: D110SequencerPanel/Engine plus a bare
 # window and direct system MIDI In/Out, no firmware/ROMs/plugin wrapper at all - see
 # Source/sequencer/NonetSeqHost.h and docs/sequencer.md's "MIDI Out" section. Standalone

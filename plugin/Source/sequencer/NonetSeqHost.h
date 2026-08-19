@@ -70,6 +70,22 @@ public:
 	void setTrackProgram(int track, int program) override;
 	int getTrackBank(int track) const override;
 	void setTrackBank(int track, int bank) override;
+	bool supportsBankLsb() const override { return true; }
+	int getTrackBankLsb(int track) const override;
+	void setTrackBankLsb(int track, int bankLsb) override;
+
+	// Volume/Pan alongside the Program Change - see D110SequencerHost.h's own comment. Sent as
+	// real MIDI CC7/CC10, the 0-100/0-14 musician-facing values scaled to the wire's 0-127.
+	bool supportsTrackVolumePan() const override { return true; }
+	int getTrackVolume(int track) const override;
+	void setTrackVolume(int track, int volume) override;
+	int getTrackPan(int track) const override;
+	void setTrackPan(int track, int pan) override;
+
+	// Manual "resend now" escape hatch - see D110SequencerHost.h's own comment. Just flags a
+	// request; advance() does the actual send (same code as the PLAY/REC edge), same reasoning
+	// as D110AudioProcessor's own override (one MIDI producer, the audio thread).
+	void resyncProgramChanges() override { resyncRequested.store(true); }
 
 	// Global correction applied to the raw Program Change/Bank Select bytes actually sent
 	// (advance()), on top of whatever getTrackProgram()/getTrackBank() already resolved to -
@@ -204,7 +220,16 @@ private:
 	// 1-128 musician-facing bank number (raw MIDI Bank Select MSB sent is bank-1) - see
 	// setTrackBank()/advance(). Always a real value, no "none" state - see D110SequencerHost.h.
 	std::array<int, d110seq::D110SequencerEngine::kMaxTracks> trackBanks;
+	// Same idea, Bank Select LSB (CC32) - see setTrackBankLsb()/advance().
+	std::array<int, d110seq::D110SequencerEngine::kMaxTracks> trackBankLsb;
+	// -1 = not set (send neither CC), else 0-100 LEVEL / 0-14 PAN (scaled to CC7/CC10's 0-127
+	// on the wire in advance()) - see setTrackVolume()/setTrackPan().
+	std::array<int, d110seq::D110SequencerEngine::kMaxTracks> trackVolumes;
+	std::array<int, d110seq::D110SequencerEngine::kMaxTracks> trackPans;
 	bool wasPlayingForProgramSend = false;
+	// Set by resyncProgramChanges() (UI thread), cleared by advance() once acted on - see its
+	// own comment.
+	std::atomic<bool> resyncRequested{false};
 	// See getProgramChangeOffset()/getBankOffset() above.
 	int programChangeOffset = 0;
 	int bankOffset = 0;

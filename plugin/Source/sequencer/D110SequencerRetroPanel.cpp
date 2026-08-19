@@ -231,6 +231,7 @@ void paintRetroButton(juce::Graphics &g, juce::Rectangle<float> b, const juce::S
 } // namespace
 
 D110SequencerRetroPanel::D110SequencerRetroPanel(D110SequencerHost &p) : processor(p) {
+	homeScreen = buildHomeMenu();
 	startTimerHz(15);
 	setWantsKeyboardFocus(true);
 }
@@ -289,12 +290,10 @@ void D110SequencerRetroPanel::pressRec() {
 	repaint();
 }
 
+// The STEP RECORDING overlay steals UP/DOWN for REST/BACK - only meaningful on HOME,
+// since that's the only screen that ever shows it (see homeStatusText()/paintLcd()).
 void D110SequencerRetroPanel::pressUp() {
-	if (stack.empty()) {
-		if (engine().isStepRecording()) { engine().stepRest(); repaint(); return; }
-		homeAdjust(+1);
-		return;
-	}
+	if (stack.empty() && engine().isStepRecording()) { engine().stepRest(); repaint(); return; }
 	auto &s = top();
 	if (s.kind == ScreenKind::list) {
 		auto items = s.buildItems();
@@ -302,7 +301,7 @@ void D110SequencerRetroPanel::pressUp() {
 	} else if (s.kind == ScreenKind::form) {
 		if (!s.fields.empty()) {
 			auto &f = s.fields[(size_t) juce::jlimit(0, (int) s.fields.size() - 1, s.cursor)];
-			*f.value = juce::jlimit(f.minValue, f.maxValue, *f.value + 1);
+			*f.value = juce::jlimit(f.minValue, f.maxValue, *f.value + f.upDownStep);
 		}
 	} else if (s.kind == ScreenKind::nameEdit) {
 		nameEditAdjust(+1);
@@ -311,11 +310,7 @@ void D110SequencerRetroPanel::pressUp() {
 }
 
 void D110SequencerRetroPanel::pressDown() {
-	if (stack.empty()) {
-		if (engine().isStepRecording()) { engine().stepBack(); repaint(); return; }
-		homeAdjust(-1);
-		return;
-	}
+	if (stack.empty() && engine().isStepRecording()) { engine().stepBack(); repaint(); return; }
 	auto &s = top();
 	if (s.kind == ScreenKind::list) {
 		auto items = s.buildItems();
@@ -323,7 +318,7 @@ void D110SequencerRetroPanel::pressDown() {
 	} else if (s.kind == ScreenKind::form) {
 		if (!s.fields.empty()) {
 			auto &f = s.fields[(size_t) juce::jlimit(0, (int) s.fields.size() - 1, s.cursor)];
-			*f.value = juce::jlimit(f.minValue, f.maxValue, *f.value - 1);
+			*f.value = juce::jlimit(f.minValue, f.maxValue, *f.value - f.upDownStep);
 		}
 	} else if (s.kind == ScreenKind::nameEdit) {
 		nameEditAdjust(-1);
@@ -331,18 +326,32 @@ void D110SequencerRetroPanel::pressDown() {
 	repaint();
 }
 
+// List rows: LEFT/RIGHT drives whichever of onAdjust/quickActions the row under the
+// cursor defines (see ListItem's own comment) - a plain row (neither set, the vast
+// majority of nested menus) does nothing here, same as before this mechanism existed.
 void D110SequencerRetroPanel::pressLeft() {
-	if (stack.empty()) {
-		if (!engine().isStepRecording()) {
-			homeField = static_cast<HomeField>((static_cast<int>(homeField) + kHomeFieldCount - 1) % kHomeFieldCount);
-			if (homeField == HomeField::transport) syncHomeTransportChoice();
-			repaint();
-		}
-		return;
-	}
+	if (stack.empty() && engine().isStepRecording()) return;
 	auto &s = top();
-	if (s.kind == ScreenKind::form) {
-		if (!s.fields.empty()) s.cursor = (s.cursor - 1 + (int) s.fields.size()) % (int) s.fields.size();
+	if (s.kind == ScreenKind::list) {
+		auto items = s.buildItems();
+		if (!items.empty()) {
+			const int idx = juce::jlimit(0, (int) items.size() - 1, s.cursor);
+			auto &it = items[(size_t) idx];
+			if (it.onAdjust) {
+				it.onAdjust(-1);
+			} else if (!it.quickActions.empty()) {
+				if ((int) s.quickIndex.size() < (int) items.size()) s.quickIndex.resize(items.size(), 0);
+				int &qi = s.quickIndex[(size_t) idx];
+				qi = (qi - 1 + (int) it.quickActions.size()) % (int) it.quickActions.size();
+			}
+		}
+	} else if (s.kind == ScreenKind::form) {
+		if (!s.fields.empty()) {
+			const int idx = juce::jlimit(0, (int) s.fields.size() - 1, s.cursor);
+			auto &f = s.fields[(size_t) idx];
+			if (f.leftRightStep != 0) *f.value = juce::jlimit(f.minValue, f.maxValue, *f.value - f.leftRightStep);
+			else s.cursor = (s.cursor - 1 + (int) s.fields.size()) % (int) s.fields.size();
+		}
 	} else if (s.kind == ScreenKind::confirm) {
 		s.confirmYes = false;
 	} else if (s.kind == ScreenKind::nameEdit) {
@@ -352,17 +361,28 @@ void D110SequencerRetroPanel::pressLeft() {
 }
 
 void D110SequencerRetroPanel::pressRight() {
-	if (stack.empty()) {
-		if (!engine().isStepRecording()) {
-			homeField = static_cast<HomeField>((static_cast<int>(homeField) + 1) % kHomeFieldCount);
-			if (homeField == HomeField::transport) syncHomeTransportChoice();
-			repaint();
-		}
-		return;
-	}
+	if (stack.empty() && engine().isStepRecording()) return;
 	auto &s = top();
-	if (s.kind == ScreenKind::form) {
-		if (!s.fields.empty()) s.cursor = (s.cursor + 1) % (int) s.fields.size();
+	if (s.kind == ScreenKind::list) {
+		auto items = s.buildItems();
+		if (!items.empty()) {
+			const int idx = juce::jlimit(0, (int) items.size() - 1, s.cursor);
+			auto &it = items[(size_t) idx];
+			if (it.onAdjust) {
+				it.onAdjust(+1);
+			} else if (!it.quickActions.empty()) {
+				if ((int) s.quickIndex.size() < (int) items.size()) s.quickIndex.resize(items.size(), 0);
+				int &qi = s.quickIndex[(size_t) idx];
+				qi = (qi + 1) % (int) it.quickActions.size();
+			}
+		}
+	} else if (s.kind == ScreenKind::form) {
+		if (!s.fields.empty()) {
+			const int idx = juce::jlimit(0, (int) s.fields.size() - 1, s.cursor);
+			auto &f = s.fields[(size_t) idx];
+			if (f.leftRightStep != 0) *f.value = juce::jlimit(f.minValue, f.maxValue, *f.value + f.leftRightStep);
+			else s.cursor = (s.cursor + 1) % (int) s.fields.size();
+		}
 	} else if (s.kind == ScreenKind::confirm) {
 		s.confirmYes = true;
 	} else if (s.kind == ScreenKind::nameEdit) {
@@ -376,38 +396,34 @@ void D110SequencerRetroPanel::pressRight() {
 // onConfirm may only touch engine()/processor state, since popScreen() right after is what
 // actually closes the screen.
 void D110SequencerRetroPanel::pressEnter() {
-	if (stack.empty()) {
-		// The transport field fires whatever UP/DOWN dialled up (see homeAdjust()) instead
-		// of opening the menu - this is what makes STOP/PLAY/REC reachable from the 4
-		// arrows + ENTER + EXIT alone, no mouse needed.
-		if (homeField == HomeField::transport) {
-			if (homeTransportChoice == 0) pressStop();
-			else if (homeTransportChoice == 1) pressPlay();
-			else pressRec();
-			return;
-		}
-		pushScreen(buildMainMenu());
-		return;
-	}
-	const ScreenKind kind = stack.back().kind;
+	if (stack.empty() && engine().isStepRecording()) return;
+	auto &s = top();
+	const ScreenKind kind = s.kind;
 	if (kind == ScreenKind::list) {
-		auto items = stack.back().buildItems();
-		const int listCursor = stack.back().cursor;
+		auto items = s.buildItems();
+		const int listCursor = s.cursor;
 		if (listCursor < 0 || listCursor >= (int) items.size()) return;
 		auto &item = items[(size_t) listCursor];
-		if (item.enabled && item.onEnter) item.onEnter();
+		if (!item.quickActions.empty()) {
+			if ((int) s.quickIndex.size() < (int) items.size()) s.quickIndex.resize(items.size(), 0);
+			const int qi = juce::jlimit(0, (int) item.quickActions.size() - 1, s.quickIndex[(size_t) listCursor]);
+			auto &qa = item.quickActions[(size_t) qi];
+			if (qa.enabled && qa.onEnter) qa.onEnter();
+		} else if (item.enabled && item.onEnter) {
+			item.onEnter();
+		}
 		repaint();
 		return;
 	}
 	if (kind == ScreenKind::form) {
-		auto onConfirm = stack.back().onConfirm;
+		auto onConfirm = s.onConfirm;
 		if (onConfirm) onConfirm();
 		popScreen();
 		return;
 	}
 	if (kind == ScreenKind::confirm) {
-		const bool yes = stack.back().confirmYes;
-		auto onConfirm = stack.back().onConfirm;
+		const bool yes = s.confirmYes;
+		auto onConfirm = s.onConfirm;
 		if (yes && onConfirm) onConfirm();
 		popScreen();
 		return;
@@ -422,33 +438,13 @@ void D110SequencerRetroPanel::pressExit() {
 	if (!stack.empty()) popScreen();
 }
 
-void D110SequencerRetroPanel::syncHomeTransportChoice() {
+void D110SequencerRetroPanel::pressTrackRec(int track) {
 	auto &eng = engine();
-	homeTransportChoice = eng.isRecording() ? 2 : eng.isPlaying() ? 1 : 0;
-}
-
-void D110SequencerRetroPanel::homeAdjust(int delta) {
-	auto &eng = engine();
-	switch (homeField) {
-		case HomeField::transport:
-			homeTransportChoice = (homeTransportChoice + delta + 3) % 3;
-			break;
-		case HomeField::track: {
-			const int count = juce::jmax(1, eng.activeTrackCount());
-			homeSelectedTrack = (homeSelectedTrack + delta + count) % count;
-			break;
-		}
-		case HomeField::bar:
-			eng.gotoBar(juce::jmax(1, eng.getCurrentBar() + delta));
-			break;
-		case HomeField::tempo:
-			eng.setTempo(eng.getTempo() + delta);
-			break;
-		case HomeField::slot: {
-			constexpr int n = D110SequencerEngine::kNumSongSlots;
-			eng.selectSongSlot((eng.getCurrentSongSlot() + delta + n) % n);
-			break;
-		}
+	if (eng.isRecording() && eng.getArmedTrack() == track) {
+		eng.stopRecording();
+	} else {
+		eng.armTrack(track);
+		eng.startRecording();
 	}
 	repaint();
 }
@@ -485,23 +481,167 @@ void D110SequencerRetroPanel::mouseDown(const juce::MouseEvent &e) {
 // Screen builders
 // ---------------------------------------------------------------------------
 
-D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildMainMenu() {
+// HOME: the permanent base of the navigation stack (see top()). One row per rubric,
+// in the order Alan sketched - TEMPO/SIG/METRO and PRECOUNT/LOOP are plain rows (ENTER
+// opens a thin list), SONG/TRANSPORT/each TRACK are quick-bar rows (LEFT/RIGHT cycles a
+// fast action, ENTER fires it), BAR is a live scrub (LEFT/RIGHT moves the transport
+// directly, ENTER still opens the full bar menu for exact jumps/punch/bar-range ops).
+D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildHomeMenu() {
 	Screen s;
 	s.kind = ScreenKind::list;
-	s.title = "MAIN MENU";
+	s.title = "HOME";
 	s.buildItems = [this]() {
 		std::vector<ListItem> items;
-		items.push_back({ "TRACK", "", true, [this] { pushScreen(buildTrackList()); } });
-		items.push_back({ "TRANSPORT", "", true, [this] { pushScreen(buildTransportMenu()); } });
-		items.push_back({ "RECORD", "", true, [this] { pushScreen(buildRecordMenu()); } });
-		items.push_back({ "SONG", "", true, [this] { pushScreen(buildSongMenu()); } });
-		items.push_back({ "FILE", "", true, [this] { pushScreen(buildFileMenu()); } });
 		auto &eng = engine();
-		items.push_back({ "UNDO", eng.canUndo() ? "" : "(none)", eng.canUndo(), [this] {
-			                 engine().undo();
+
+		items.push_back({ "TEMPO/SIG/METRO", "", true, [this] { pushScreen(buildTempoSigMetroMenu()); } });
+		items.push_back({ "PRECOUNT/LOOP", "", true, [this] { pushScreen(buildPrecountLoopMenu()); } });
+
+		{
+			std::vector<QuickAction> qa;
+			for (int slot = 0; slot < D110SequencerEngine::kNumSongSlots; ++slot) {
+				juce::String label = "SLOT" + juce::String(slot + 1);
+				if (slot == eng.getCurrentSongSlot()) label += "<";
+				qa.push_back({ label, [this, slot] { engine().selectSongSlot(slot); repaint(); }, true });
+			}
+			qa.push_back({ "NEW", [this] { pushScreen(buildNewSongConfirm()); }, true });
+			qa.push_back({ "COPY", [this] { pushScreen(buildSongCopyMenu()); }, true });
+			if (processor.supportsSoundSnapshots())
+				qa.push_back({ "SNAPSHOT", [this] { pushScreen(buildSnapshotMenu()); }, true });
+			items.push_back({ "SONG", "", true, nullptr, qa });
+		}
+
+		items.push_back({ "BAR", juce::String(eng.getCurrentBar()) + "/" + juce::String(eng.getBarCount()), true,
+		                   [this] { pushScreen(buildBarMenu()); }, {},
+		                   [this](int delta) {
+			                   engine().gotoBar(juce::jmax(1, engine().getCurrentBar() + delta));
+			                   repaint();
+		                   } });
+
+		{
+			std::vector<QuickAction> qa;
+			qa.push_back({ "PLAY", [this] { pressPlay(); }, true });
+			qa.push_back({ "STOP", [this] { pressStop(); }, true });
+			qa.push_back({ "REC", [this] { pushScreen(buildRecordMenu()); }, true });
+			if (processor.supportsTrackChannelEdit())
+				qa.push_back({ "MIDI", [this] { pushScreen(buildMidiChannelsMenu()); }, true });
+			qa.push_back({ "OPTIONS", [this] { pushScreen(buildOptionsMenu()); }, true });
+			const juce::String status = eng.isRecording() ? "REC" : eng.isPlaying() ? "PLAY" : "STOP";
+			items.push_back({ "TRANSPORT", status, true, nullptr, qa });
+		}
+
+		for (int t = 0; t < eng.activeTrackCount(); ++t) {
+			juce::String name = eng.getTrackName(t);
+			if (name.isEmpty()) name = defaultTrackLabel(t);
+			juce::String flags;
+			if (eng.isTrackMuted(t)) flags += "M";
+			if (eng.isTrackSoloed(t)) flags += "S";
+			if (eng.getArmedTrack() == t) flags += "A";
+			if (!flags.isEmpty()) name += " " + flags;
+
+			std::vector<QuickAction> qa;
+			qa.push_back({ "REC", [this, t] { pressTrackRec(t); }, true });
+			qa.push_back({ "PLAY", [this] { pressPlay(); }, true });
+			qa.push_back({ "SOLO", [this, t] {
+				               auto &e = engine();
+				               e.setTrackSoloed(t, !e.isTrackSoloed(t));
+				               repaint();
+			               }, true });
+			qa.push_back({ "MUTE", [this, t] {
+				               auto &e = engine();
+				               e.setTrackMuted(t, !e.isTrackMuted(t));
+				               repaint();
+			               }, true });
+			qa.push_back({ "COPY", [this, t] { pushScreen(buildCopyBarsForm(t)); }, eng.trackHasEvents(t) });
+			qa.push_back({ "CLEAR", [this, t] { pushScreen(buildClearConfirm(t)); }, eng.trackHasEvents(t) });
+			qa.push_back({ "UNDO", [this] { engine().undo(); repaint(); }, eng.canUndo() });
+			qa.push_back({ "REDO", [this] { engine().redo(); repaint(); }, eng.canRedo() });
+			qa.push_back({ "QUANTIZE", [this, t] { pushScreen(buildQuantizeMenu(t)); }, true });
+			qa.push_back({ "MORE", [this, t] { pushScreen(buildTrackMenu(t)); }, true });
+			items.push_back({ name, "", true, nullptr, qa });
+		}
+
+		return items;
+	};
+	return s;
+}
+
+D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildTempoSigMetroMenu() {
+	Screen s;
+	s.kind = ScreenKind::list;
+	s.title = "TEMPO/SIG/METRO";
+	s.buildItems = [this]() {
+		auto &eng = engine();
+		std::vector<ListItem> items;
+		items.push_back({ "TEMPO", juce::String(eng.getTempo(), 0) + "BPM", true, [this] { pushScreen(buildTempoForm()); } });
+		// Each ENTER press is one tap - the value column doubles as a live readout, so the
+		// beats-per-minute figure updates right here as taps land (same idea as the mouse
+		// view's TAP button, sharing D110SequencerEngine::registerTapTempo()).
+		items.push_back({ "TAP TEMPO", juce::String(eng.getTempo(), 1) + "BPM", true, [this] {
+			                 engine().registerTapTempo();
 			                 repaint();
 		                 } });
+		items.push_back({ "TIME SIG", juce::String(eng.getTimeSigNumerator()) + "/" + juce::String(eng.getTimeSigDenominator()),
+		                   true, [this] { pushScreen(buildTimeSigMenu()); } });
+		items.push_back(
+			{ "METRONOME", eng.getMetronomeEnabled() ? "ON" : "OFF", true, [this] { pushScreen(buildMetronomeMenu()); } });
+		return items;
+	};
+	return s;
+}
+
+D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildPrecountLoopMenu() {
+	Screen s;
+	s.kind = ScreenKind::list;
+	s.title = "PRECOUNT/LOOP";
+	s.buildItems = [this]() {
+		auto &eng = engine();
+		std::vector<ListItem> items;
+		items.push_back({ "PRECOUNT", juce::String(eng.getPrecountBars()), true, [this] { pushScreen(buildPrecountForm()); } });
+		items.push_back({ "LOOP", loopModeShortLabel(eng.getLoopMode()), true, [this] { pushScreen(buildLoopMenu()); } });
+		return items;
+	};
+	return s;
+}
+
+D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildMidiChannelsMenu() {
+	Screen s;
+	s.kind = ScreenKind::list;
+	s.title = "MIDI CHANNELS";
+	s.buildItems = [this]() {
+		std::vector<ListItem> items;
+		auto &eng = engine();
+		for (int t = 0; t < eng.activeTrackCount(); ++t) {
+			juce::String name = eng.getTrackName(t);
+			if (name.isEmpty()) name = defaultTrackLabel(t);
+			items.push_back(
+				{ name, juce::String(eng.channelForTrack(t)), true, [this, t] { pushScreen(buildChannelForm(t)); } });
+		}
+		return items;
+	};
+	return s;
+}
+
+D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildOptionsMenu() {
+	Screen s;
+	s.kind = ScreenKind::list;
+	s.title = "OPTIONS";
+	s.buildItems = [this]() {
+		std::vector<ListItem> items;
+		items.push_back({ "FILE", "", true, [this] { pushScreen(buildFileMenu()); } });
+		// Value column shows what UNDO/REDO would actually do (e.g. "CLEAR TRACK PART 2") -
+		// the retro panel's stand-in for the mouse view's right-click info popup on those same
+		// buttons (see D110SequencerPanel::showUndoRedoInfo()), since there's no right-click
+		// gesture in a D-pad/LCD UI - just navigate here to see it, ENTER still fires it.
+		{
+			auto &eng = engine();
+			items.push_back({ "UNDO", eng.getUndoDescription().toUpperCase(), eng.canUndo(),
+			                   [this] { engine().undo(); popScreen(); } });
+			items.push_back({ "REDO", eng.getRedoDescription().toUpperCase(), eng.canRedo(),
+			                   [this] { engine().redo(); popScreen(); } });
+		}
 		if (processor.supportsExtraTracks()) {
+			auto &eng = engine();
 			const bool on = eng.getExtraTracksEnabled();
 			items.push_back({ "EXTRA TRACKS", on ? "ON" : "OFF", true, [this] {
 				                 auto &e = engine();
@@ -509,27 +649,15 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildMainMenu() {
 				                 repaint();
 			                 } });
 		}
-		return items;
-	};
-	return s;
-}
-
-D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildTrackList() {
-	Screen s;
-	s.kind = ScreenKind::list;
-	s.title = "TRACKS";
-	s.buildItems = [this]() {
-		std::vector<ListItem> items;
-		auto &eng = engine();
-		for (int t = 0; t < eng.activeTrackCount(); ++t) {
-			juce::String name = eng.getTrackName(t);
-			if (name.isEmpty()) name = defaultTrackLabel(t);
-			juce::String flagsText;
-			if (eng.isTrackMuted(t)) flagsText += "M";
-			if (eng.isTrackSoloed(t)) flagsText += "S";
-			if (eng.getArmedTrack() == t) flagsText += "A";
-			items.push_back({ name, flagsText, true, [this, t] { pushScreen(buildTrackMenu(t)); } });
-		}
+		// Both directions between the live patch and every track's stored Program Change/Bank/
+		// Volume/Pan - see D110SequencerHost.h's own comments on resyncProgramChanges() (this
+		// pushes stored -> live) and captureLivePatchIntoTracks() (the reverse, pulls live ->
+		// stored, destructive so it confirms first via buildCaptureLivePatchConfirm()).
+		if (processor.supportsProgramChange())
+			items.push_back({ "SYNC: TO PATCH", "", true, [this] { processor.resyncProgramChanges(); } });
+		if (processor.supportsCaptureLivePatch())
+			items.push_back(
+				{ "SYNC: FROM PATCH", "", true, [this] { pushScreen(buildCaptureLivePatchConfirm()); } });
 		return items;
 	};
 	return s;
@@ -596,7 +724,7 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildQuantizeMenu(int t
 		for (const auto &preset : presets) {
 			const QuantizeGrid grid = preset.first;
 			items.push_back({ preset.second, grid == current ? "*" : "", true, [this, track, grid] {
-				                 engine().pushUndoSnapshot();
+				                 engine().pushUndoSnapshot("Quantize (" + defaultTrackLabel(track) + ")");
 				                 engine().quantizeTrack(track, grid);
 				                 popScreen();
 			                 } });
@@ -621,15 +749,51 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildProgramForm(int tr
 	s.kind = ScreenKind::form;
 	s.title = "PROGRAM CHG";
 	const int currentProgram = processor.getTrackProgram(track);
+	const bool hasLsb = processor.supportsBankLsb();
+	const bool hasVolPan = processor.supportsTrackVolumePan();
 	auto program = std::make_shared<int>(currentProgram >= 0 ? currentProgram + 1 : 0);
 	auto bank = std::make_shared<int>(processor.getTrackBank(track));
+	auto bankLsb = std::make_shared<int>(processor.getTrackBankLsb(track));
+	// Same "0 = OFF, else value+1" trick PRG uses above - 0 is otherwise a perfectly meaningful
+	// LEVEL/PAN, so it can't double as "unset" the way it does for PRG (there, 0 is never a
+	// real Program Change value, this dialog numbers those 1-128 like Bank).
+	auto volume = std::make_shared<int>(processor.getTrackVolume(track) + 1);
+	auto pan = std::make_shared<int>(processor.getTrackPan(track) + 1);
 	s.fields.push_back(
 		{ "PRG(0=OFF)", program, 0, 128, [](int v) { return v == 0 ? juce::String("OFF") : juce::String(v); } });
-	s.fields.push_back({ "BANK", bank, 1, 128, [](int v) { return juce::String(v); } });
-	s.onConfirm = [this, track, program, bank] {
+	// MIDI has two Bank Select controllers (CC0/high/MSB, CC32/low/LSB) - see
+	// D110SequencerPanel::promptForTrackProgram's own comment. Only NonetSeqHost sends either;
+	// the D-110 has neither, so this second field only shows up there.
+	s.fields.push_back({ hasLsb ? "BANK(HIGH)" : "BANK", bank, 1, 128, [](int v) { return juce::String(v); } });
+	if (hasLsb) s.fields.push_back({ "BANK(LOW)", bankLsb, 1, 128, [](int v) { return juce::String(v); } });
+	if (hasVolPan) {
+		s.fields.push_back({ "VOL(0=OFF)", volume, 0, 101,
+		                      [](int v) { return v == 0 ? juce::String("OFF") : juce::String(v - 1); } });
+		s.fields.push_back({ "PAN(0=OFF)", pan, 0, 15,
+		                      [](int v) { return v == 0 ? juce::String("OFF") : juce::String(v - 1); } });
+	}
+	s.onConfirm = [this, track, program, bank, bankLsb, hasLsb, volume, pan, hasVolPan] {
 		processor.setTrackProgram(track, *program == 0 ? -1 : *program - 1);
 		processor.setTrackBank(track, *bank);
+		if (hasLsb) processor.setTrackBankLsb(track, *bankLsb);
+		if (hasVolPan) {
+			processor.setTrackVolume(track, *volume == 0 ? -1 : *volume - 1);
+			processor.setTrackPan(track, *pan == 0 ? -1 : *pan - 1);
+		}
 	};
+	return s;
+}
+
+// Pull direction - see D110SequencerHost.h's captureLivePatchIntoTracks() comment. Destructive
+// to every track's stored Program Change/Bank/Volume/Pan (not undoable - those live on the
+// processor, outside the engine's own undo stack, same as every other setTrackProgram()/
+// setTrackBank() call already is), hence the confirm.
+D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildCaptureLivePatchConfirm() {
+	Screen s;
+	s.kind = ScreenKind::confirm;
+	s.title = "CAPTURE PATCH?";
+	s.message = "OVERWRITES EVERY TRACK'S PROGRAM/BANK/VOL/PAN WITH THE LIVE PATCH - CAN'T UNDO";
+	s.onConfirm = [this] { processor.captureLivePatchIntoTracks(); };
 	return s;
 }
 
@@ -639,7 +803,7 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildClearConfirm(int t
 	s.title = "CLEAR TRACK?";
 	s.message = "ERASES ALL NOTES ON " + defaultTrackLabel(track);
 	s.onConfirm = [this, track] {
-		engine().pushUndoSnapshot();
+		engine().pushUndoSnapshot("Clear track (" + defaultTrackLabel(track) + ")");
 		engine().clearTrack(track);
 	};
 	return s;
@@ -656,7 +820,8 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildDeleteBarsForm(int
 	s.fields.push_back({ "TO", to, 1, 9999, [](int v) { return juce::String(v); } });
 	s.onConfirm = [this, track, from, to] {
 		if (*to >= *from) {
-			engine().pushUndoSnapshot();
+			const juce::String scope = track < 0 ? "all tracks" : defaultTrackLabel(track);
+			engine().pushUndoSnapshot("Delete bars " + juce::String(*from) + "-" + juce::String(*to) + " (" + scope + ")");
 			engine().deleteBars(track, *from, *to);
 		}
 	};
@@ -683,7 +848,8 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildCopyBarsForm(int t
 	}
 	s.onConfirm = [this, track, from, to, dest, destTrack] {
 		if (*to >= *from && *dest >= 1) {
-			engine().pushUndoSnapshot();
+			const juce::String scope = track < 0 ? "all tracks" : defaultTrackLabel(track);
+			engine().pushUndoSnapshot("Copy bars " + juce::String(*from) + "-" + juce::String(*to) + " (" + scope + ")");
 			engine().copyBars(track, track >= 0 ? *destTrack : -1, *from, *to, *dest);
 		}
 	};
@@ -704,7 +870,8 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildTransposeForm(int 
 		{ "SEMITONES", semitones, -127, 127, [](int v) { return (v > 0 ? juce::String("+") : juce::String()) + juce::String(v); } });
 	s.onConfirm = [this, track, from, to, semitones] {
 		if (*to >= *from && *semitones != 0) {
-			engine().pushUndoSnapshot();
+			const juce::String scope = track < 0 ? "all tracks" : defaultTrackLabel(track);
+			engine().pushUndoSnapshot("Transpose bars " + juce::String(*from) + "-" + juce::String(*to) + " (" + scope + ")");
 			engine().transposeBars(track, *from, *to, *semitones);
 		}
 	};
@@ -756,7 +923,7 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildEventPitchForm(int
 	auto value = std::make_shared<int>(note);
 	s.fields.push_back({ "NOTE", value, 0, 127, [](int v) { return juce::MidiMessage::getMidiNoteName(v, true, true, 4); } });
 	s.onConfirm = [this, track, eventIndex, value] {
-		engine().pushUndoSnapshot();
+		engine().pushUndoSnapshot("Edit note pitch (" + defaultTrackLabel(track) + ")");
 		engine().setNoteEventPitch(track, eventIndex, *value);
 	};
 	return s;
@@ -768,28 +935,8 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildEventDeleteConfirm
 	s.title = "DELETE NOTE?";
 	s.message = "REMOVES THIS NOTE EVENT";
 	s.onConfirm = [this, track, eventIndex] {
-		engine().pushUndoSnapshot();
+		engine().pushUndoSnapshot("Delete note (" + defaultTrackLabel(track) + ")");
 		engine().deleteNoteEvent(track, eventIndex);
-	};
-	return s;
-}
-
-D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildTransportMenu() {
-	Screen s;
-	s.kind = ScreenKind::list;
-	s.title = "TRANSPORT";
-	s.buildItems = [this]() {
-		auto &eng = engine();
-		std::vector<ListItem> items;
-		items.push_back({ "TEMPO", juce::String(eng.getTempo(), 0) + "BPM", true, [this] { pushScreen(buildTempoForm()); } });
-		items.push_back({ "TIME SIG", juce::String(eng.getTimeSigNumerator()) + "/" + juce::String(eng.getTimeSigDenominator()),
-		                   true, [this] { pushScreen(buildTimeSigMenu()); } });
-		items.push_back(
-			{ "METRONOME", eng.getMetronomeEnabled() ? "ON" : "OFF", true, [this] { pushScreen(buildMetronomeMenu()); } });
-		items.push_back({ "PRECOUNT", juce::String(eng.getPrecountBars()), true, [this] { pushScreen(buildPrecountForm()); } });
-		items.push_back({ "LOOP", loopModeShortLabel(eng.getLoopMode()), true, [this] { pushScreen(buildLoopMenu()); } });
-		items.push_back({ "BAR", "", true, [this] { pushScreen(buildBarMenu()); } });
-		return items;
 	};
 	return s;
 }
@@ -798,9 +945,12 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildTempoForm() {
 	Screen s;
 	s.kind = ScreenKind::form;
 	s.title = "TEMPO";
-	auto value = std::make_shared<int>((int) std::lround(engine().getTempo()));
-	s.fields.push_back({ "BPM", value, 20, 300, [](int v) { return juce::String(v); } });
-	s.onConfirm = [this, value] { engine().setTempo((double) *value); };
+	// Held in half-BPM units so LEFT/RIGHT's 1 BPM step and UP/DOWN's 5.5 BPM step (Alan's
+	// own numbers, 2026-08-18) both land on whole units - 2 and 11 half-units respectively.
+	auto value = std::make_shared<int>((int) std::lround(engine().getTempo() * 2.0));
+	s.fields.push_back({ "BPM", value, 40, 600, [](int v) { return juce::String(v / 2.0, 1) + "BPM"; },
+	                      /* upDownStep */ 11, /* leftRightStep */ 2 });
+	s.onConfirm = [this, value] { engine().setTempo((double) *value / 2.0); };
 	return s;
 }
 
@@ -966,7 +1116,10 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildGotoBarForm() {
 	s.kind = ScreenKind::form;
 	s.title = "GO TO BAR";
 	auto value = std::make_shared<int>(engine().getCurrentBar());
-	s.fields.push_back({ "BAR", value, 1, 9999, [](int v) { return juce::String(v); } });
+	// LEFT/RIGHT = 1 bar, UP/DOWN = 10 bars - same asymmetric-step idiom as TEMPO's own form
+	// (buildTempoForm()), Alan's own numbers (2026-08-18).
+	s.fields.push_back({ "BAR", value, 1, 9999, [](int v) { return juce::String(v); }, /* upDownStep */ 10,
+	                      /* leftRightStep */ 1 });
 	s.onConfirm = [this, value] { engine().gotoBar(*value); };
 	return s;
 }
@@ -1131,7 +1284,7 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildSongCopyConfirm(in
 	s.title = "COPY SONG?";
 	s.message = "OVERWRITES SLOT " + juce::String(destSlot + 1);
 	s.onConfirm = [this, destSlot] {
-		engine().pushUndoSnapshot();
+		engine().pushUndoSnapshot("Copy song to Slot " + juce::String(destSlot + 1));
 		engine().copyCurrentSongTo(destSlot);
 	};
 	return s;
@@ -1143,7 +1296,7 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildNewSongConfirm() {
 	s.title = "NEW SONG?";
 	s.message = "CLEARS EVERY TRACK IN THIS SLOT";
 	s.onConfirm = [this] {
-		engine().pushUndoSnapshot();
+		engine().pushUndoSnapshot("New song (Slot " + juce::String(engine().getCurrentSongSlot() + 1) + ")");
 		engine().newSong();
 	};
 	return s;
@@ -1238,7 +1391,7 @@ void D110SequencerRetroPanel::nameEditMoveCaret(int delta) {
 }
 
 void D110SequencerRetroPanel::nameEditCommit() {
-	engine().pushUndoSnapshot();
+	engine().pushUndoSnapshot("Rename (" + defaultTrackLabel(nameEditTrack) + ")");
 	engine().setTrackName(nameEditTrack, nameEditBuffer.trim());
 	popScreen();
 }
@@ -1389,14 +1542,35 @@ void D110SequencerRetroPanel::paintLcd(juce::Graphics &g, juce::Rectangle<float>
 	const float charPx = juce::jmin(inner.getWidth() / kCols * (7.0f / 6.0f), inner.getHeight() / kRows * 0.85f);
 	const float rowH = inner.getHeight() / kRows;
 
-	if (stack.empty()) {
-		paintHomeScreen(g, inner, charPx);
+	// STEP RECORDING overlay takes over the whole glass (no title/menu underneath makes
+	// sense while it's active) - only ever shown on HOME, since that's the only screen
+	// still visible once a track is armed for step recording.
+	if (stack.empty() && engine().isStepRecording()) {
+		auto &eng = engine();
+		const float lineH = inner.getHeight() / 4.0f;
+		auto l0 = inner.removeFromTop(lineH);
+		auto l1 = inner.removeFromTop(lineH);
+		auto l2 = inner.removeFromTop(lineH);
+		auto l3 = inner.removeFromTop(lineH);
+		const int stepIndex = eng.getStepIndexInBar();
+		const int stepsPerBar = eng.getStepsPerBar();
+		g.setColour(pal.seqActiveFill);
+		drawDotText(g, "STEP RECORDING", l0, juce::Justification::centredLeft, charPx);
+		g.setColour(pal.value);
+		drawDotText(g,
+		            "BAR " + juce::String(eng.getStepBar()) + " STEP " + juce::String(stepIndex) + "/"
+		                + juce::String(stepsPerBar),
+		            l1, juce::Justification::centredLeft, charPx);
+		drawDotText(g, "DUR " + stepDurationShortLabel(eng.getStepDuration()) + (eng.getStepDotted() ? " DOT" : ""), l2,
+		            juce::Justification::centredLeft, charPx);
+		drawDotText(g, juce::String(juce::jmax(0, stepsPerBar - stepIndex)) + " STEPS LEFT", l3,
+		            juce::Justification::centredLeft, charPx);
 		return;
 	}
 
 	auto titleArea = inner.removeFromTop(rowH);
 	g.setColour(pal.value);
-	drawDotText(g, top().title, titleArea, juce::Justification::centredLeft, charPx);
+	drawDotText(g, stack.empty() ? homeStatusText() : top().title, titleArea, juce::Justification::centredLeft, charPx);
 
 	switch (top().kind) {
 		case ScreenKind::list: paintListScreen(g, inner, charPx); break;
@@ -1406,68 +1580,10 @@ void D110SequencerRetroPanel::paintLcd(juce::Graphics &g, juce::Rectangle<float>
 	}
 }
 
-void D110SequencerRetroPanel::paintHomeScreen(juce::Graphics &g, juce::Rectangle<float> inner, float charPx) {
-	const auto &pal = d110ui::palette();
+juce::String D110SequencerRetroPanel::homeStatusText() {
 	auto &eng = engine();
-	const float lineH = inner.getHeight() / 4.0f;
-
-	if (eng.isStepRecording()) {
-		auto l0 = inner.removeFromTop(lineH);
-		auto l1 = inner.removeFromTop(lineH);
-		auto l2 = inner.removeFromTop(lineH);
-		g.setColour(pal.seqActiveFill);
-		drawDotText(g, "STEP RECORDING", l0, juce::Justification::centredLeft, charPx);
-		g.setColour(pal.value);
-		drawDotText(g, "BAR " + juce::String(eng.getStepBar()) + " STEP " + juce::String(eng.getStepIndexInBar()), l1,
-		            juce::Justification::centredLeft, charPx);
-		drawDotText(g, "DUR " + stepDurationShortLabel(eng.getStepDuration()) + (eng.getStepDotted() ? " DOT" : ""), l2,
-		            juce::Justification::centredLeft, charPx);
-		return;
-	}
-
-	auto l0 = inner.removeFromTop(lineH);
-	auto l1 = inner.removeFromTop(lineH);
-	auto l2 = inner.removeFromTop(lineH);
-
-	// The transport field: selected, it shows whatever UP/DOWN has dialled up (fired by
-	// ENTER - see pressEnter()/homeAdjust()); otherwise it's a plain live status readout,
-	// same as before.
-	static const juce::String kTransportLabels[3] = { "STOP", "PLAY", "REC" };
-	const bool transportSelected = homeField == HomeField::transport;
-	const juce::String transportText = transportSelected
-	                                        ? kTransportLabels[(size_t) homeTransportChoice]
-	                                        : (eng.isRecording() ? "REC" : eng.isPlaying() ? "PLAY" : "STOP");
-	const juce::String barText = "BAR " + juce::String(eng.getCurrentBar()) + "/" + juce::String(eng.getBarCount());
-	g.setColour(transportSelected ? pal.seqMetroDownbeat : pal.value);
-	drawDotText(g, (transportSelected ? juce::String(">") : juce::String()) + transportText,
-	            l0.removeFromLeft(l0.getWidth() * 0.3f), juce::Justification::centredLeft, charPx);
-	g.setColour(homeField == HomeField::bar ? pal.seqMetroDownbeat : pal.value);
-	drawDotText(g, (homeField == HomeField::bar ? juce::String(">") : juce::String()) + barText, l0,
-	            juce::Justification::centredRight, charPx);
-
-	juce::String trackName = eng.getTrackName(homeSelectedTrack);
-	if (trackName.isEmpty()) trackName = defaultTrackLabel(homeSelectedTrack);
-	juce::String flagsText;
-	if (eng.isTrackMuted(homeSelectedTrack)) flagsText += "M";
-	if (eng.isTrackSoloed(homeSelectedTrack)) flagsText += "S";
-	if (eng.getArmedTrack() == homeSelectedTrack) flagsText += "A";
-	g.setColour(homeField == HomeField::track ? pal.seqMetroDownbeat : pal.value);
-	drawDotText(g,
-	            (homeField == HomeField::track ? juce::String(">") : juce::String(" ")) + trackName + " CH"
-	                + juce::String(eng.channelForTrack(homeSelectedTrack)) + " " + flagsText,
-	            l1, juce::Justification::centredLeft, charPx);
-
-	auto tempoArea = l2.removeFromLeft(l2.getWidth() * 0.5f);
-	g.setColour(homeField == HomeField::tempo ? pal.seqMetroDownbeat : pal.value);
-	drawDotText(g,
-	            (homeField == HomeField::tempo ? juce::String(">") : juce::String(" ")) + juce::String(eng.getTempo(), 0)
-	                + "BPM",
-	            tempoArea, juce::Justification::centredLeft, charPx);
-	g.setColour(homeField == HomeField::slot ? pal.seqMetroDownbeat : pal.value);
-	drawDotText(g,
-	            (homeField == HomeField::slot ? juce::String(">") : juce::String(" ")) + "SNG "
-	                + juce::String(eng.getCurrentSongSlot() + 1),
-	            l2, juce::Justification::centredLeft, charPx);
+	const juce::String transport = eng.isRecording() ? "REC" : eng.isPlaying() ? "PLAY" : "STOP";
+	return transport + " BAR " + juce::String(eng.getCurrentBar()) + "/" + juce::String(eng.getBarCount());
 }
 
 void D110SequencerRetroPanel::paintListScreen(juce::Graphics &g, juce::Rectangle<float> textArea, float charPx) {
@@ -1483,6 +1599,8 @@ void D110SequencerRetroPanel::paintListScreen(juce::Graphics &g, juce::Rectangle
 		scroll = juce::jlimit(0, maxScroll, s.cursor - 1);
 	}
 
+	if ((int) s.quickIndex.size() < (int) items.size()) s.quickIndex.resize(items.size(), 0);
+
 	for (int row = 0; row < 3; ++row) {
 		auto lineArea = textArea.removeFromTop(lineH);
 		const int idx = scroll + row;
@@ -1493,7 +1611,15 @@ void D110SequencerRetroPanel::paintListScreen(juce::Graphics &g, juce::Rectangle
 		auto labelArea = lineArea.removeFromLeft(lineArea.getWidth() * 0.62f);
 		drawDotText(g, (selected ? juce::String(">") : juce::String(" ")) + it.label, labelArea,
 		            juce::Justification::centredLeft, charPx);
-		drawDotText(g, it.value, lineArea, juce::Justification::centredRight, charPx);
+		// A quick-bar row shows whichever action is currently dialled (LEFT/RIGHT-cycled,
+		// see pressLeft/pressRight) instead of a plain value - same column, same layout.
+		juce::String valueText = it.value;
+		if (!it.quickActions.empty()) {
+			const int qi = juce::jlimit(0, (int) it.quickActions.size() - 1, s.quickIndex[(size_t) idx]);
+			valueText = (selected ? juce::String("<") : juce::String()) + it.quickActions[(size_t) qi].label
+			            + (selected ? juce::String(">") : juce::String());
+		}
+		drawDotText(g, valueText, lineArea, juce::Justification::centredRight, charPx);
 	}
 }
 

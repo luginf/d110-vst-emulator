@@ -24,9 +24,11 @@
 // Buttons and the VOLUME knob are never redrawn: the cap or the disc is cut straight out of the
 // photograph, and the cut-out itself recedes into its recess or spins about its own axis.
 //
-// Emulator settings live on a right-click, never a control drawn onto the panel - the hardware has
-// no such thing, and the JUCE standalone wrapper already puts its own Options button in the
-// top-left corner of its window.
+// Emulator settings live on a right-click, never a control drawn onto the panel - the hardware
+// has no such thing. Standalone-only items (Audio/MIDI Settings, save/load state, reset) are
+// folded into the same menu too, now that the standalone window uses a native title bar and no
+// longer has JUCE's own Options button to carry them (see D110AudioProcessorEditor's
+// parentHierarchyChanged and D110Panel::showOptionsMenu).
 class D110Panel : public juce::Component, private juce::Timer {
 public:
 	// Reference space = the photo's own pixels.
@@ -68,6 +70,11 @@ public:
 	// always a modest, fixed ratio - see rebuildLcdImage() for why that matters.
 	void setDisplayScale(float scale);
 
+	// Public so D110EditorPane's OPTIONS button (standalone only - see its
+	// onOptionsButtonClicked) can reuse the exact same menu the panel's own right-click
+	// already shows, content included, rather than keeping a second copy in sync.
+	void showOptionsMenu();
+
 private:
 	// One front-panel cap as it sits in the photograph. `scanPort`/`scanBit` are this button's
 	// position in the real 2x8 key-scan matrix, straight out of INPUT_PORTS_START(d110) in MAME's
@@ -90,7 +97,6 @@ private:
 	void timerCallback() override;
 	int buttonAt(juce::Point<float>) const; // index into kButtons, kPowerIndex, or -1
 	void setButtonState(int index, bool down); // closes/opens the real scan-matrix switch
-	void showOptionsMenu();
 
 	juce::Image cutOut(juce::Rectangle<float>) const;
 	juce::Colour recessColourOf(juce::Rectangle<float>) const;
@@ -290,6 +296,17 @@ public:
 	// happens to redraw next.
 	std::function<void()> onThemeChanged;
 
+	// Utility tab's SEQUENCER toggle mirrors D110Panel's own right-click Options entry (same
+	// processor.getSequencerRetroMode() flag) - this callback exists so the owner can swap
+	// which sequencer drawer view is visible, same as D110Panel::onSequencerModeChanged does
+	// for the right-click path.
+	std::function<void()> onSequencerModeChanged;
+
+	// OPTIONS button (standalone only - see optionsButtonBounds below) - the owner wires this
+	// to D110Panel::showOptionsMenu() so it's the exact same menu as the panel's own
+	// right-click, content included, rather than a second copy of it living here too.
+	std::function<void()> onOptionsButtonClicked;
+
 private:
 	void timerCallback() override;
 	// Держит недавно посланные, ещё не подтверждённые правки поверх свежепрочитанной ram -
@@ -388,6 +405,11 @@ private:
 
 	Tab tab = Tab::Parts;
 	std::array<juce::Rectangle<float>, kNumTabs> tabBounds{};
+	// Standalone only, sits in the leftover space right of the tab row (empty in the plugin
+	// builds, and in standalone whenever the window's too narrow for it to fit) - fires
+	// onOptionsButtonClicked, somewhere visible instead of needing to know the panel's
+	// right-click menu exists.
+	juce::Rectangle<float> optionsButtonBounds{};
 
 	// Чьи записи показывают вкладки, у которых есть «текущая партия».
 	int part = 0;
@@ -485,6 +507,10 @@ public:
 	void mouseUp(const juce::MouseEvent &) override;
 	void mouseMove(const juce::MouseEvent &) override;
 	void mouseExit(const juce::MouseEvent &) override;
+	// Standalone only: switches the plugin wrapper's window from JUCE's own custom-drawn
+	// title bar to the OS's native one, to match Nonet Sequencer's window (Alan's request) -
+	// see the .cpp for why this is done here rather than at window construction.
+	void parentHierarchyChanged() override;
 
 	// Перечитать прибор обеими половинами сразу - панелью и ящиком. Нужно снимку целого
 	// редактора, у которого нет ни окна, ни очереди сообщений, чтобы крутить их таймеры.
@@ -514,10 +540,21 @@ public:
 	static constexpr float kMinPaneRefH = 260.0f;
 	static constexpr float kMaxPaneRefH = 1600.0f;
 	// Handle band above the test keyboard - slimmer than the editor's own, in keeping with
-	// the keyboard being the minimal add-on rather than the main drawer.
+	// the keyboard being the minimal add-on rather than the main drawer. Doubles as the
+	// keyboard pane's own resize handle exactly the way this band doubles for the editor
+	// pane above it - see keyboardPaneRefH below.
 	static constexpr float kKeyboardHandleRefH = 26.0f;
-	// Handle band above the sequencer drawer - same slim treatment as the keyboard's.
+	static constexpr float kMinKeyboardPaneRefH = 70.0f;
+	static constexpr float kMaxKeyboardPaneRefH = 400.0f;
+	// Handle band above the sequencer drawer - same slim treatment as the keyboard's, and the
+	// same dual role for the KEYBOARD pane above it.
 	static constexpr float kSequencerHandleRefH = 26.0f;
+	// The sequencer drawer is the last one, with no further drawer below it to lend it a handle
+	// band - so it gets its own thin resize-only grip instead, right under it (Alan asked for
+	// this 2026-08-19: the drawer "n'est pas très haute" and had no way to grow at all before).
+	static constexpr float kSequencerResizeGripRefH = 10.0f;
+	static constexpr float kMinSequencerPaneRefH = 200.0f;
+	static constexpr float kMaxSequencerPaneRefH = 1400.0f;
 
 private:
 	float totalRefHeight() const;
@@ -525,6 +562,7 @@ private:
 	juce::Rectangle<float> handleBand() const;
 	juce::Rectangle<float> keyboardHandleBand() const;
 	juce::Rectangle<float> sequencerHandleBand() const;
+	juce::Rectangle<float> sequencerResizeBand() const;
 
 	// Needed directly (not just by the child components below, which each keep their own
 	// reference) for setEditorPaneRefH() - see mouseUp()'s use of it.
@@ -557,7 +595,9 @@ private:
 	float editorPaneRefH = kPaneRefH;
 	// Set on mouseDown over the KEYBOARD handle band, before it's known whether this turns
 	// into a resize-drag or stays a plain click; resolved in mouseUp (toggle) or mouseDrag
-	// (resize, once the pointer has moved past a small threshold - see mouseDrag()).
+	// (resize, once the pointer has moved past a small threshold - see mouseDrag()). Same
+	// resizeDragStartY/resizeDragStartRefH pair is reused for all three resize gestures below -
+	// only one can ever be in progress at a time, so which resizingXxx flag is set says which.
 	bool keyboardHandlePressed = false;
 	bool resizingEditorPane = false;
 	float resizeDragStartY = 0.0f;
@@ -567,11 +607,28 @@ private:
 	float keyboardExpansionTarget = 1.0f;
 	bool keyboardHandleHover = false;
 
+	// The keyboard pane's own live height - same idea as editorPaneRefH, adjustable by
+	// dragging the SEQUENCER handle band (the boundary directly below it), the same dual-role
+	// trick keyboardHandleBand already uses for the editor pane. Persisted through
+	// D110AudioProcessor::get/setKeyboardPaneRefH.
+	float keyboardPaneRefH = D110Keyboard::kRefH;
+	// Mirrors keyboardHandlePressed/resizingEditorPane above, for this second dual-role band.
+	bool sequencerHandlePressed = false;
+	bool resizingKeyboardPane = false;
+
 	// Closed by default, unlike the keyboard: a bigger, more specialised drawer, better as
 	// an opt-in reveal than something that greets every session already open.
 	float sequencerExpansion = 0.0f;
 	float sequencerExpansionTarget = 0.0f;
 	bool sequencerHandleHover = false;
+
+	// The sequencer pane's own live height - same idea again, adjustable by dragging its own
+	// resize grip (sequencerResizeBand(), below the drawer - there's no further drawer there to
+	// double up on, unlike the two above). Persisted through
+	// D110AudioProcessor::get/setSequencerPaneRefH.
+	float sequencerPaneRefH = D110SequencerPanel::kRefH;
+	bool sequencerResizeHandlePressed = false;
+	bool sequencerResizeHover = false;
 
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D110AudioProcessorEditor)
 };
