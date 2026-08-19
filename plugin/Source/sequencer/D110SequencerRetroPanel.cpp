@@ -652,12 +652,14 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildOptionsMenu() {
 		// Both directions between the live patch and every track's stored Program Change/Bank/
 		// Volume/Pan - see D110SequencerHost.h's own comments on resyncProgramChanges() (this
 		// pushes stored -> live) and captureLivePatchIntoTracks() (the reverse, pulls live ->
-		// stored, destructive so it confirms first via buildCaptureLivePatchConfirm()).
-		if (processor.supportsProgramChange())
+		// stored, destructive so it confirms first via buildCaptureLivePatchConfirm()). Both are
+		// D-110-only: Nonet Sequencer has no live patch (no synth to read back), so it has
+		// nothing to sync with - hide both rather than expose a "live patch" that doesn't exist.
+		if (processor.supportsCaptureLivePatch()) {
 			items.push_back({ "SYNC: TO PATCH", "", true, [this] { processor.resyncProgramChanges(); } });
-		if (processor.supportsCaptureLivePatch())
 			items.push_back(
 				{ "SYNC: FROM PATCH", "", true, [this] { pushScreen(buildCaptureLivePatchConfirm()); } });
+		}
 		return items;
 	};
 	return s;

@@ -1197,9 +1197,17 @@ void D110SequencerPanel::layout() {
 		slotBounds[static_cast<size_t>(s)] = colF(0.310f + float(s) * 0.048f, 0.044f);
 	undoBounds = colF(0.535f, 0.075f);
 	redoBounds = colF(0.615f, 0.075f);
-	resyncBounds = colF(0.695f, 0.080f);
-	loadBounds = colF(0.780f, 0.100f);
-	saveBounds = colF(0.885f, 0.100f);
+	// SYNC (see showResyncInfo()'s own comment) is D-110-only - Nonet Sequencer has no live
+	// patch to sync with, so it has no button here at all, and LOAD/SAVE reclaim its space.
+	if (processor.supportsCaptureLivePatch()) {
+		resyncBounds = colF(0.695f, 0.080f);
+		loadBounds = colF(0.780f, 0.100f);
+		saveBounds = colF(0.885f, 0.100f);
+	} else {
+		resyncBounds = {};
+		loadBounds = colF(0.695f, 0.145f);
+		saveBounds = colF(0.845f, 0.145f);
+	}
 	area.removeFromTop(juce::jmax(2.0f, area.getHeight() * 0.015f));
 
 	// Third strip: step recording (see D110SequencerEngine's step API) - a toggle, the step
@@ -1348,7 +1356,8 @@ void D110SequencerPanel::paint(juce::Graphics &g) {
 	}
 	paintToggleButton(g, undoBounds, "UNDO", false, eng.canUndo());
 	paintToggleButton(g, redoBounds, "REDO", false, eng.canRedo());
-	paintToggleButton(g, resyncBounds, "SYNC", false, processor.supportsProgramChange());
+	if (processor.supportsCaptureLivePatch())
+		paintToggleButton(g, resyncBounds, "SYNC", false, processor.supportsProgramChange());
 	paintToggleButton(g, loadBounds, "LOAD", false);
 	paintToggleButton(g, saveBounds, "SAVE", false);
 
@@ -1433,7 +1442,7 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 		if (saveBounds.contains(p)) { showSaveMenu(); return; }
 		if (undoBounds.contains(p)) { showUndoRedoInfo(true); return; }
 		if (redoBounds.contains(p)) { showUndoRedoInfo(false); return; }
-		if (resyncBounds.contains(p)) { showResyncInfo(); return; }
+		if (processor.supportsCaptureLivePatch() && resyncBounds.contains(p)) { showResyncInfo(); return; }
 		if (barReadoutBounds.contains(p)) { showBarMenu(); return; }
 		if (barPrevBounds.contains(p)) { eng.gotoBar(1); repaint(); return; }
 		if (barNextBounds.contains(p)) { eng.gotoBar(eng.getBarCount()); repaint(); return; }
@@ -1464,16 +1473,9 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 		repaint();
 		return;
 	}
-	if (resyncBounds.contains(p)) {
-		if (!processor.supportsProgramChange()) return;
-		// D-110 only: capture is also possible here, so this button opens a small menu instead
-		// of acting directly - see confirmCaptureLivePatch()'s own comment for why the other
-		// direction needs to confirm first. Nonet-Seq has no live patch to capture from, so it
-		// keeps the single-click direct action it always had.
-		if (!processor.supportsCaptureLivePatch()) {
-			processor.resyncProgramChanges();
-			return;
-		}
+	// SYNC is D-110 only (see resyncBounds' own layout comment) - Nonet Sequencer has no live
+	// patch, so this button doesn't exist there at all and resyncBounds is never clickable.
+	if (processor.supportsCaptureLivePatch() && resyncBounds.contains(p)) {
 		juce::PopupMenu m;
 		m.addItem(1, "Send stored settings to patch now");
 		m.addItem(2, "Capture patch into song...");
