@@ -35,6 +35,39 @@ public:
 	static constexpr int kRefW = 2124;
 	static constexpr int kRefH = 256;
 
+	// Compact mode (Utility tab, "PANEL SIZE") splices sections out of the photograph entirely -
+	// docs/panel_reference_compact.png, built by cutting [0,244) (the Roland wordmark and the
+	// PHONES jack, both purely decorative - PHONES has no hit region at all, see
+	// panel_reference_notes.md's "Decorative only") and [1560,1865) (the MEMORY CARD section)
+	// out of panel_reference.png and rejoining the three remaining strips (Alan's request,
+	// 2026-08-20, matching a mockup he supplied - "only the essentials": VOLUME, the LCD, the
+	// button grid, POWER, the MIDI MESSAGE lamp). Every reference-space X coordinate used to
+	// paint or hit-test something goes through mapX() below rather than being used raw, which
+	// folds both cuts into one lookup: subtract kCompactLeftCutEnd always, and kCompactCardShift
+	// on top of that for anything at or past the card section. currentRefW() is what every
+	// window-sizing calculation in PluginEditor.cpp reads instead of the bare kRefW constant, so
+	// the whole editor - window aspect ratio, zoom percent, drawer widths - narrows along with
+	// the panel itself.
+	//
+	// Alan re-cropped the file himself afterwards (2026-08-20) to also trim the last 78px of the
+	// photo's own right edge - the decorative right rack ear, past POWER/the MIDI MESSAGE lamp
+	// (kBezelX+kBezelW=1998, kLampX+kLampW=1966, both comfortably clear) - so kCompactRefW is
+	// the actual measured width of his file (cross-checked pixel-for-pixel against
+	// panel_reference.png: [244,1560) + [1865,2046)), not just kRefW minus the two cuts above;
+	// no mapX() change needed since nothing hit-tested/painted ever sat past x=2046.
+	static constexpr float kCompactLeftCutEnd = 244.0f;
+	static constexpr float kCompactCardCutStart = 1560.0f;
+	static constexpr float kCompactCardCutEnd = 1865.0f;
+	static constexpr float kCompactCardShift = kCompactCardCutEnd - kCompactCardCutStart;
+	static constexpr int kCompactRefW = 1497;
+	static int currentRefW(bool compact) { return compact ? kCompactRefW : kRefW; }
+	static float mapX(float refX, bool compact) {
+		if (!compact) return refX;
+		float x = refX - kCompactLeftCutEnd;
+		if (refX >= kCompactCardCutEnd) x -= kCompactCardShift;
+		return x;
+	}
+
 	explicit D110Panel(D110AudioProcessor &);
 	~D110Panel() override;
 
@@ -116,6 +149,7 @@ private:
 	D110AudioProcessor &processor;
 
 	juce::Image panelImage;
+	juce::Image panelImageCompact; // see kCompactCutStart/End above
 
 	juce::Image lcdImage;                    // offscreen dot-matrix render, rebuilt only on change
 	float lcdDisplayScale = 1.0f;            // last scale passed to setDisplayScale()
@@ -301,6 +335,13 @@ public:
 	// which sequencer drawer view is visible, same as D110Panel::onSequencerModeChanged does
 	// for the right-click path.
 	std::function<void()> onSequencerModeChanged;
+
+	// Utility tab's PANEL SIZE toggle (processor.getCompactPanelMode()) - fired after the flag
+	// itself has already flipped, same "just tell the owner" shape as onSequencerModeChanged,
+	// except this one also changes the window's own width/aspect ratio, which only
+	// D110AudioProcessorEditor (holding getWidth()/setSize()/the panel/the constrainer) can do -
+	// see its own wiring for the actual resize math.
+	std::function<void()> onCompactPanelModeChanged;
 
 	// OPTIONS button (standalone only - see optionsButtonBounds below) - the owner wires this
 	// to D110Panel::showOptionsMenu() so it's the exact same menu as the panel's own

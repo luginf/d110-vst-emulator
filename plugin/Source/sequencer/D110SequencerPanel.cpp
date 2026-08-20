@@ -520,7 +520,11 @@ void D110SequencerPanel::showLoadMenu() {
 }
 
 void D110SequencerPanel::showSaveMenu() {
-	auto *chooser = new juce::FileChooser("Save all 4 sequencer songs", processor.getLastDialogDir(), "*.midiseq");
+	// Default filename dated rather than a bare "song.midiseq" so repeated saves during a
+	// session don't collide/overwrite each other by default (Alan's request, 2026-08-20).
+	const auto defaultFile =
+		processor.getLastDialogDir().getChildFile(juce::Time::getCurrentTime().formatted("song-%Y-%m-%d.midiseq"));
+	auto *chooser = new juce::FileChooser("Save all 4 sequencer songs", defaultFile, "*.midiseq");
 	chooser->launchAsync(
 		juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
 			| juce::FileBrowserComponent::warnAboutOverwriting,

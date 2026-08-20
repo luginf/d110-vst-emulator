@@ -122,12 +122,25 @@ D110AudioProcessor::D110AudioProcessor()
 	sequencerLivePrograms.fill(-1);
 	sequencerLiveVolumes.fill(-1);
 	sequencerLivePans.fill(-1);
+	sequencerLiveInternalTone.fill(-1);
 	sequencerEngine.setProgramSource(
 		[this](int track) { return sequencerLivePrograms[static_cast<size_t>(track)]; });
 	sequencerEngine.setVolumeSource(
 		[this](int track) { return sequencerLiveVolumes[static_cast<size_t>(track)]; });
 	sequencerEngine.setPanSource(
 		[this](int track) { return sequencerLivePans[static_cast<size_t>(track)]; });
+	sequencerEngine.setSysExPreambleSource([this](int track) { return buildInternalToneSysEx(track); });
+	sequencerEngine.setSysExPreambleSink(
+		[this](int track, std::vector<std::vector<juce::uint8>> sysEx) { applyLoadedSysExPreamble(track, std::move(sysEx)); });
+	// The D-110 itself has no Bank Select concept - A/B is folded straight into the Program
+	// Change byte (see the "No Bank Select (CC0) here" comment in processBlock()). But an
+	// exported .mid file is read by other software, not just this instrument: a receiver going
+	// off Roland-D110.idf's own <Patch hbank="0" lbank="0"> entries needs an explicit Bank
+	// Select MSB/LSB before it'll resolve a Program Change to a patch name at all - so always
+	// write bank 1/1 (musician-facing, same numbering as NonetSeqHost - raw wire byte 0/0,
+	// matching hbank/lbank="0" in the .idf), regardless of which track or program.
+	sequencerEngine.setBankSource([](int) { return 1; });
+	sequencerEngine.setBankLsbSource([](int) { return 1; });
 
 	sequencerTrackPrograms.fill(-1);
 	sequencerTrackBanks.fill(1);
@@ -760,6 +773,21 @@ void D110AudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
 	// that quantisation (host hands us MIDI once per callback; the firmware's clock is not
 	// the audio thread's clock) is the one piece of this delay that is not itself random.
 	setLatencySamples(samplesPerBlock);
+
+#ifdef D110_HAVE_JACK_MIDI
+	// Standalone only - see JackMidiInput.h's own comment on why. Done here rather than in
+	// the constructor on the same once-only pattern setPoweredOn(true) above already uses,
+	// for a host that calls prepareToPlay() more than once. A plain literal rather than
+	// JucePlugin_Name: that macro only exists for the actual plugin-wrapper targets (VST3/
+	// Standalone), not for the plain add_executable probes that also link this file.
+	if (!jackMidiSetupAttempted) {
+		jackMidiSetupAttempted = true;
+		if (wrapperType == wrapperType_Standalone) {
+			jackMidiIn = std::make_unique<JackMidiInput>(
+				"D-110 Emulator", [this](const juce::MidiMessage &m) { handleIncomingMidiMessage(nullptr, m); });
+		}
+	}
+#endif
 }
 
 void D110AudioProcessor::releaseResources() {
@@ -861,6 +889,21 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 						timbreTempAddr + 9 < sequencerRamScratch.size()
 							? static_cast<int>(sequencerRamScratch[timbreTempAddr + 9])
 							: -1;
+
+					// group 2 (Internal) is exactly the case sequencerLivePrograms above can't
+					// give a Program Change hint for - snapshot the Tone Memory slot it's
+					// actually using instead, for buildInternalToneSysEx() to embed into a MIDI
+					// export in place of a Program Change a real unit could never reach either.
+					const size_t toneAddr = static_cast<size_t>(D110CoreType::kRamTones)
+					                       + static_cast<size_t>(tone) * D110CoreType::kToneMemRecord;
+					if (group == 2 && tone >= 0 && tone <= 63
+					    && toneAddr + D110CoreType::kToneMemRecord <= sequencerRamScratch.size()) {
+						sequencerLiveInternalTone[static_cast<size_t>(t)] = tone;
+						std::memcpy(sequencerLiveToneMemory[static_cast<size_t>(t)].data(),
+						            sequencerRamScratch.data() + toneAddr, D110CoreType::kToneMemRecord);
+					} else {
+						sequencerLiveInternalTone[static_cast<size_t>(t)] = -1;
+					}
 				}
 			}
 		}
@@ -1802,6 +1845,51 @@ void D110AudioProcessor::sendPatchMemoryParam(int patch, int field, juce::uint8 
 	sendAreaData(D110CoreType::kSysexPatches, patch * D110CoreType::kPatchRecord + field, &v, 1);
 }
 
+// A real D-110's Program Change can only ever reach the 128 factory-fixed Timbre Memory slots
+// (each one a fixed, unchangeable Tone group/number pair) - an Internal tone, built by hand in
+// the TONE tab, was never addressable that way even on real hardware. The only way to make a
+// receiving unit play one is the same one an external librarian would use: pour the 256-byte
+// Tone Memory record straight into its own memory via DT1, then point the part's own Timbre
+// Temp at (group 2, that slot) directly - which is what Program Change does under the hood for
+// group 0/1, just done by hand here since there's no shortcut number for group 2. See
+// sequencerLiveInternalTone/sequencerLiveToneMemory's own comment for where the two inputs
+// come from (a block-refresh snapshot, same one sequencerLivePrograms already relies on).
+std::vector<std::vector<juce::uint8>> D110AudioProcessor::buildInternalToneSysEx(int track) const {
+	std::vector<std::vector<juce::uint8>> out;
+	if (track < 0 || track >= static_cast<int>(sequencerLiveInternalTone.size())) return out;
+	const int tone = sequencerLiveInternalTone[static_cast<size_t>(track)];
+	if (tone < 0 || tone > 63) return out;
+
+	juce::uint8 msg[D110CoreType::kMaxSysexBytes];
+	const auto &bytes = sequencerLiveToneMemory[static_cast<size_t>(track)];
+	// Same 244-byte-per-message ceiling sendToneBlock() already works around for the (bigger)
+	// Tone Temporary Area, same chunk size too, for one less magic number in the codebase.
+	constexpr int kChunk = 123;
+	for (int off = 0; off < D110CoreType::kToneMemRecord; off += kChunk) {
+		const int len = juce::jmin(kChunk, D110CoreType::kToneMemRecord - off);
+		const int n = D110CoreType::buildDt1Message(D110CoreType::kSysexTones,
+		                                            tone * D110CoreType::kToneMemRecord + off,
+		                                            bytes.data() + off, len, msg);
+		if (n > 2) out.emplace_back(msg + 1, msg + n - 1); // drop the F0/F7 createSysExMessage() re-adds
+	}
+
+	const juce::uint8 groupTone[2] = { 2, static_cast<juce::uint8>(tone) };
+	const int n = D110CoreType::buildDt1Message(D110CoreType::kSysexTimbreTemp,
+	                                            track * D110CoreType::kTimbreTempRecord, groupTone, 2, msg);
+	if (n > 2) out.emplace_back(msg + 1, msg + n - 1);
+	return out;
+}
+
+void D110AudioProcessor::applyLoadedSysExPreamble(int, std::vector<std::vector<juce::uint8>> sysEx) {
+	const double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
+	for (const auto &payload : sysEx) {
+		if (payload.empty()) continue;
+		auto message = juce::MidiMessage::createSysExMessage(payload.data(), int(payload.size()));
+		message.setTimeStamp(now);
+		osMidiCollector.addMessageToQueue(message);
+	}
+}
+
 void D110AudioProcessor::sendName(juce::uint32 sysexAddress, int offset,
                                   const juce::String &name) {
 	juce::uint8 data[D110CoreType::kNameChars];
@@ -2243,6 +2331,8 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	xml->setAttribute("uiThemeLight", uiThemeLight ? 1 : 0);
 	// See getSequencerRetroMode().
 	xml->setAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0);
+	// See getCompactPanelMode().
+	xml->setAttribute("compactPanelMode", compactPanelMode ? 1 : 0);
 	// See getLastDialogDir().
 	xml->setAttribute("lastDialogDir", lastDialogDir.getFullPathName());
 	// Editor drawer's own height, drag-resized via the keyboard handle band - see
@@ -2385,6 +2475,7 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 
 	setUiThemeLight(xml->getIntAttribute("uiThemeLight", uiThemeLight ? 1 : 0) != 0);
 	setSequencerRetroMode(xml->getIntAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0) != 0);
+	setCompactPanelMode(xml->getIntAttribute("compactPanelMode", compactPanelMode ? 1 : 0) != 0);
 	setLastDialogDir(juce::File(xml->getStringAttribute("lastDialogDir", lastDialogDir.getFullPathName())));
 	setEditorPaneRefH(float(xml->getDoubleAttribute("editorPaneRefH", double(editorPaneRefH))));
 	setKeyboardPaneRefH(float(xml->getDoubleAttribute("keyboardPaneRefH", double(keyboardPaneRefH))));

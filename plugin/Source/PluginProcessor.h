@@ -21,6 +21,9 @@ using D110CoreType = D110Core;
 #include "D110KeyboardHost.h"
 #include "sequencer/D110SequencerEngine.h"
 #include "sequencer/D110SequencerHost.h"
+#ifdef D110_HAVE_JACK_MIDI
+#include "JackMidiInput.h"
+#endif
 #include <array>
 #include <memory>
 #include <thread>
@@ -190,6 +193,13 @@ public:
 	bool getSequencerRetroMode() const { return sequencerRetroMode; }
 	void setSequencerRetroMode(bool retro) { sequencerRetroMode = retro; }
 
+	// Narrower front panel with the MEMORY CARD slot spliced out (Utility tab, "PANEL SIZE") -
+	// Alan's request, 2026-08-20: the card is a real, rarely-used feature (Roland cards don't
+	// exist for a plugin in practice), so hiding it buys back desktop space. See
+	// D110Panel::currentRefW()/kCompactRefW for the geometry this drives.
+	bool getCompactPanelMode() const { return compactPanelMode; }
+	void setCompactPanelMode(bool compact) { compactPanelMode = compact; }
+
 	// One shared "last used folder" for every file dialog in the app (SysEx bank import/
 	// export, memory snapshot save/load, the sequencer's own .mid/.midiseq dialogs) - set
 	// after each successful pick, offered as the starting point for the next one, so
@@ -290,6 +300,13 @@ public:
 	// The emulated D-110 control board: the firmware, its menus, its MSM6222B display and
 	// its 16 panel buttons. Supplies everything mt32emu has no notion of.
 	D110CoreType &getCore() { return core; }
+
+	// Whatever the sound engine's own mirror currently has loaded for a part's patch - the
+	// same call the fallback LCD snapshot uses (see buildLcdSnapshot()'s "row 2" comment).
+	// nullptr if no synth is open. Used for enumerating the factory patch list (send a
+	// Program Change, let the firmware/mirror catch up, read the name back) rather than
+	// hardcoding it from a manual - same "measured, not copied" bias as the rest of docs/.
+	const char *getEnginePatchName(int part) const { return synth ? synth->getPatchName(static_cast<MT32Emu::Bit8u>(part)) : nullptr; }
 
 	// Reads the LA engine's own copy of a parameter area back out. `packedAddress` is a
 	// Roland address in mt32emu's packed form (three 7-bit bytes squeezed together, so
@@ -401,6 +418,22 @@ public:
 	void sendSystemParam(int field, juce::uint8 value);
 	void sendTimbreMemoryParam(int slot, int field, juce::uint8 value);
 	void sendPatchMemoryParam(int patch, int field, juce::uint8 value);
+	// Wired to sequencerEngine's setSysExPreambleSource() in the constructor - see
+	// sequencerLiveInternalTone/sequencerLiveToneMemory's own comment for what it reads. Empty
+	// if the track isn't currently on an Internal tone (the common case). Each returned element
+	// is one DT1 message's own payload bytes (Roland header through checksum, no F0/F7 - see
+	// buildDt1Message()), ready for juce::MidiMessage::createSysExMessage(), which adds the
+	// wrapper itself.
+	std::vector<std::vector<juce::uint8>> buildInternalToneSysEx(int track) const;
+	// The load-side mirror: wired to sequencerEngine's setSysExPreambleSink() in the
+	// constructor. loadMidiFile() hands back exactly the payload bytes buildInternalToneSysEx()
+	// wrote out (a Tone Memory dump + a Timbre Temp group/tone write, in order) - re-wrapped
+	// here and fed into osMidiCollector, the same queue a real MIDI IN port or injectTestNote()
+	// feeds, so they reach the firmware on the very next processBlock exactly like they would
+	// coming from outside. track is unused (the payload already carries its own destination
+	// address - a Timbre Temp write for whichever part/track it was captured from), kept for
+	// symmetry with the Source side and in case a future caller wants it.
+	void applyLoadedSysExPreamble(int track, std::vector<std::vector<juce::uint8>> sysEx);
 	// Имена - те же десять знаков, что показывает индикатор: только печатные ASCII, добито
 	// пробелами. Прибор других не знает, и в эксклюзивном сообщении байт выше 0x7F невозможен.
 	void sendName(juce::uint32 sysexAddress, int offset, const juce::String &name);
@@ -539,6 +572,15 @@ private:
 	juce::CriticalSection osMidiLock;
 	juce::MidiMessageCollector osMidiCollector;
 
+#ifdef D110_HAVE_JACK_MIDI
+	// Standalone only (checked at runtime in prepareToPlay(), where wrapperType is reliably
+	// set - see its own comment): a real JACK MIDI input port, separate from the ALSA device
+	// picker above. Feeds the very same handleIncomingMidiMessage() path, so omni/rechannel
+	// behaves identically regardless of which of the two a message arrived through.
+	std::unique_ptr<JackMidiInput> jackMidiIn;
+	bool jackMidiSetupAttempted = false;
+#endif
+
 	// Opens the synth from whatever is currently in controlRomData/pcmRomData.
 	bool openSynthIfReady();
 	// Scans getAutoRomFolder() for a Control ROM and PCM ROM by content (not filename) and
@@ -630,6 +672,7 @@ private:
 	bool uiThemeLight = false;
 	// See getSequencerRetroMode()/setSequencerRetroMode() above.
 	bool sequencerRetroMode = false;
+	bool compactPanelMode = false;
 	bool debugModeEnabled = false;
 	// See getLastDialogDir()/setLastDialogDir() above.
 	juce::File lastDialogDir;
@@ -661,6 +704,16 @@ private:
 	// -1 = unreadable (same fallback reasoning as sequencerLivePrograms).
 	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerLiveVolumes{};
 	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerLivePans{};
+	// Same block-refresh, TimbreTemp field 0 (TONE GROUP): -1 unless it reads exactly 2
+	// (Internal - see sequencerLivePrograms' own comment on why group 2/3 report no Program
+	// Change hint), in which case this holds the Tone Memory slot (0-63, field 1) instead, and
+	// sequencerLiveToneMemory below holds that slot's own 256 raw bytes, snapshotted the same
+	// block. Both exist for exactly one reason - buildInternalToneSysEx(), which
+	// setSysExPreambleSource() reads at MIDI-export time to embed a DT1 dump of the custom tone
+	// into the file, since a plain Program Change can never reach group 2 on a real unit either.
+	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerLiveInternalTone{};
+	std::array<std::array<juce::uint8, D110CoreType::kToneMemRecord>, d110seq::D110SequencerEngine::kNumTracks>
+		sequencerLiveToneMemory{};
 	// Reused across blocks so refreshing sequencerLiveChannels/sequencerLivePrograms doesn't
 	// reallocate 32KB every time - see their use beside sequencerLiveChannels above.
 	std::vector<juce::uint8> sequencerRamScratch;

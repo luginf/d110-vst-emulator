@@ -29,6 +29,15 @@ The built `.vst3` is copied automatically to the platform's shared VST3 folder
 (`C:\Program Files\Common Files\VST3` on Windows, `~/Library/Audio/Plug-Ins/VST3` on macOS,
 `~/.vst3` on Linux).
 
+### Optional: JACK MIDI input port (Linux Standalone only)
+
+If libjack's dev headers are found at configure time (`libjack-dev`/`libjack-jackd2-dev`, or
+PipeWire's own JACK-compatible package), the Linux Standalone build also gets a real JACK MIDI
+input port (`D-110 Emulator:midi_in`) so a DAW's MIDI Out can be wired into it directly through
+any JACK patchbay. Nothing to turn on - detected automatically, silently absent everywhere else
+(Windows/macOS, or a Linux box without those headers). See
+[`docs/host_compatibility.md`](host_compatibility.md) for the details.
+
 ## Optional: also building the MAME-backed `D110Emulator`
 
 **MAME is not vendored here and must be built first**, because its libraries are what run the

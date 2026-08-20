@@ -392,15 +392,53 @@ carry the beat in that degraded mode).
 A plain click on **LOAD**/**SAVE** loads/saves just the *current* song as a standard `.mid`
 file (Bank Select MSB/LSB, then a Program Change, then CC7/CC10 for Volume/Pan, are written ahead
 of each track's notes, wherever there's something to write - a track with none of these set gets
-none of these events, not placeholders). The source differs by app: the **D-110 plugin** has no
-Bank Select to export (it predates that convention, same reasoning as everywhere else in this
-doc) and writes Program Change/Volume/Pan from whatever's actually live on that part at export
-time; **Nonet Sequencer** has no synth of its own to read a "live" value from at all, so it
+none of these events, not placeholders). The source differs by app: the D-110 firmware itself
+has no Bank Select concept (it predates that convention, same reasoning as everywhere else in
+this doc), so the **D-110 plugin** writes Program Change/Volume/Pan from whatever's actually live
+on that part at export time and, ahead of it, a constant Bank Select MSB/LSB = 1/1 (raw wire byte
+0/0) - not because the D-110 needs one, but so other software reading the file (e.g. MusE via
+`Roland-D110.idf`'s own `hbank="0" lbank="0"` entries) can resolve the Program Change to a patch
+name; **Nonet Sequencer** has no synth of its own to read a "live" value from at all, so it
 exports the stored per-track Program Change/Bank/Bank LSB/Volume/Pan instead (2026-08-19, Alan's
 call) - the same values [Per-track Program Change](#per-track-program-change) above sets, and the
 same ones actually sent over MIDI Out at PLAY/REC, *not* corrected by the Program Change/Bank
 offset knobs (those correct today's cable/device, not the song itself, so they don't get baked
-into a file that might be reopened elsewhere). **Right-click** LOAD/SAVE for all 4 song slots at once, as a single
+into a file that might be reopened elsewhere).
+
+**The D-110 plugin** also writes a SysEx preamble ahead of the Program Change for a track
+whose live Timbre is an Internal tone (built in the TONE tab, tone group 2) - a real D-110's
+Program Change can only ever reach the 128 factory-fixed Timbre Memory slots, so on real
+hardware too the only way to make a receiving unit play a custom tone is what an external
+librarian would do: a Roland DT1 dump of the 256-byte Tone Memory record itself (chunked into
+≤123-byte messages, same ceiling and chunk size `sendToneBlock()` already uses for the bigger
+Tone Temporary Area), followed by a DT1 write pointing the part's own Timbre Temp at (group 2,
+that slot) - the hand-done equivalent of what Program Change does automatically for group 0/1.
+`D110AudioProcessor::buildInternalToneSysEx()` builds it from a block-refreshed snapshot
+(`sequencerLiveInternalTone`/`sequencerLiveToneMemory`, alongside `sequencerLivePrograms`'s own
+refresh). A track on a preset tone (group 0/1) gets none of this - just the plain Program Change
+above, as before.
+
+When any track needs this preamble, bar 1 of the exported file is reserved for it alone: every
+other event (Bank/Program Change/Volume/Pan, every note, on every track) is pushed one full bar
+later, so the song audibly starts on bar 2. Alan found in real-world testing (2026-08-20) that
+without this margin, a receiver still busy absorbing the ~260-byte dump while notes/CCs were
+already arriving on its heels would drop or garble bytes - heard as an audio glitch right at the
+start of playback, with the tone data left stale. One bar (hundreds of ms to a few seconds at any
+real tempo) reliably fixes it. Songs with no Internal-tone track are unaffected - no wasted bar of
+silence for the common case.
+
+Reimporting the file - into this same plugin, or a real D-110 through an external player -
+replays the tone into memory before the notes that use it, the same way a vintage MT-32 song
+file bundles its own custom-patch bulk dumps at the top of the track. Loading back into *this*
+plugin actually restores it: `D110SequencerEngine::loadMidiFile()` hands any SysEx it finds in a
+track to a sink (`D110AudioProcessor::applyLoadedSysExPreamble()`), which re-queues those exact
+bytes through `osMidiCollector` - the same queue a real MIDI IN port feeds - so the Tone Memory
+dump and Timbre Temp write land on the firmware right away, at load time, well ahead of any
+playback. (Nonet Sequencer has no firmware of its own to write into, so it doesn't wire this sink
+at all - loading such a file there just drops the SysEx, same as any other non-note event always
+has.)
+
+**Right-click** LOAD/SAVE for all 4 song slots at once, as a single
 portable `.midiseq` file - an XML wrapper around a gzip-compressed standard MIDI file per
 track, plus the transport preferences below; not a raw memory snapshot, hence the name
 (renamed from `.d110songs` - a file saved under the old name still loads, it's the same

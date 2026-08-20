@@ -63,6 +63,10 @@ build details, see [`docs/building.md`](docs/building.md).
   [`docs/memory_card.md`](docs/memory_card.md),
   [`docs/factory_defaults.md`](docs/factory_defaults.md) - measured ground truth referenced by
   the code.
+- [`docs/host_compatibility.md`](docs/host_compatibility.md) - the optional JACK MIDI input port
+  (Linux Standalone), and known VST3 hosting quirks in specific DAWs (Ardour/Carla/Qtractor).
+- [`Roland-D110.idf`](Roland-D110.idf) - a MusE instrument definition with all 128 factory Patch
+  names, measured off the real firmware rather than copied from a manual.
 
 ## Legal Notice
 

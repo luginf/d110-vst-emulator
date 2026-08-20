@@ -82,6 +82,14 @@ void D110SequencerEngine::setBankLsbSource(std::function<int(int)> f) {
 	bankLsbSource = std::move(f);
 }
 
+void D110SequencerEngine::setSysExPreambleSource(std::function<std::vector<std::vector<juce::uint8>>(int)> f) {
+	sysExPreambleSource = std::move(f);
+}
+
+void D110SequencerEngine::setSysExPreambleSink(std::function<void(int, std::vector<std::vector<juce::uint8>>)> f) {
+	sysExPreambleSink = std::move(f);
+}
+
 void D110SequencerEngine::setTempo(double bpm) {
 	tempoBpm = juce::jlimit(20.0, 300.0, bpm);
 }
@@ -921,6 +929,24 @@ bool D110SequencerEngine::saveMidiFile(const juce::File &file) const {
 	constexpr int tpqn = 960;
 	mf.setTicksPerQuarterNote(tpqn);
 
+	// Any track carrying a SysEx preamble (an Internal-tone Tone Memory dump, see
+	// setSysExPreambleSource()'s own comment) means bar 1 is reserved for that bulk transfer
+	// alone: on real hardware and in every DAW we've tested, a receiver still busy absorbing a
+	// ~260-byte DT1 dump while Program Change/CC/notes are already arriving on its heels drops
+	// or garbles bytes (heard as an audio glitch right at the start of playback, tone data left
+	// stale). One whole bar (typically hundreds of ms to a few seconds, at any real-world
+	// tempo) is a generous margin - so when any preamble exists, every other event (Program
+	// Change, Bank, Volume, Pan, every note, across every track) is pushed one full bar later,
+	// keeping all tracks in sync with each other. Songs with no Internal-tone track are
+	// unaffected - no wasted bar of silence for the common case.
+	bool needsLeadBar = false;
+	if (sysExPreambleSource) {
+		for (int t = 0; t < activeTrackCount() && !needsLeadBar; ++t)
+			for (const auto &payload : sysExPreambleSource(t))
+				if (!payload.empty()) { needsLeadBar = true; break; }
+	}
+	const double leadBarTicks = needsLeadBar ? barLengthBeats() * tpqn : 0.0;
+
 	juce::MidiMessageSequence meta;
 	meta.addEvent(juce::MidiMessage::tempoMetaEvent(static_cast<int>(60000000.0 / tempoBpm)), 0.0);
 	meta.addEvent(juce::MidiMessage::timeSignatureMetaEvent(timeSigNum, timeSigDen), 0.0);
@@ -933,10 +959,19 @@ bool D110SequencerEngine::saveMidiFile(const juce::File &file) const {
 		// same fallback label used everywhere else (see trackLabel()), so a track never
 		// reaches the exported file unnamed.
 		seq.addEvent(juce::MidiMessage::textMetaEvent(3, trackLabel(t)), 0.0);
-		// A Program Change at time 0, ahead of the track's own notes, so a receiving synth
-		// (including this same plugin, reimporting the file) starts the piece on
-		// approximately the sound that was live when this was exported. See setProgramSource's
-		// own comment for why "approximately", and for what changing it later actually means.
+		// Any custom-sound data the track's own Program Change needs already sitting in the
+		// receiving instrument's memory - see setSysExPreambleSource()'s own comment. Always at
+		// time 0, alone in bar 1 when needsLeadBar is set (see above), so it has the whole bar
+		// to land before anything else competes with it on the wire.
+		if (sysExPreambleSource) {
+			for (const auto &payload : sysExPreambleSource(t))
+				if (!payload.empty())
+					seq.addEvent(juce::MidiMessage::createSysExMessage(payload.data(), int(payload.size())), 0.0);
+		}
+		// A Program Change ahead of the track's own notes, so a receiving synth (including this
+		// same plugin, reimporting the file) starts the piece on approximately the sound that
+		// was live when this was exported. See setProgramSource's own comment for why
+		// "approximately", and for what changing it later actually means.
 		if (programSource) {
 			const int program = programSource(t);
 			if (program >= 0 && program < 128) {
@@ -946,15 +981,16 @@ bool D110SequencerEngine::saveMidiFile(const juce::File &file) const {
 					const int bank = bankSource(t);
 					if (bank >= 1)
 						seq.addEvent(juce::MidiMessage::controllerEvent(channel, 0, juce::jlimit(0, 127, bank - 1)),
-						             0.0);
+						             leadBarTicks);
 				}
 				if (bankLsbSource) {
 					const int bankLsb = bankLsbSource(t);
 					if (bankLsb >= 1)
 						seq.addEvent(
-						    juce::MidiMessage::controllerEvent(channel, 32, juce::jlimit(0, 127, bankLsb - 1)), 0.0);
+						    juce::MidiMessage::controllerEvent(channel, 32, juce::jlimit(0, 127, bankLsb - 1)),
+						    leadBarTicks);
 				}
-				seq.addEvent(juce::MidiMessage::programChange(channel, program), 0.0);
+				seq.addEvent(juce::MidiMessage::programChange(channel, program), leadBarTicks);
 			}
 		}
 		// Same idea, CC7 (Volume)/CC10 (Pan) - see setVolumeSource()/setPanSource()'s own
@@ -965,20 +1001,20 @@ bool D110SequencerEngine::saveMidiFile(const juce::File &file) const {
 			if (volume >= 0 && volume <= 100)
 				seq.addEvent(juce::MidiMessage::controllerEvent(
 				                 channel, 7, juce::jlimit(0, 127, juce::roundToInt(volume * 127.0f / 100.0f))),
-				             0.0);
+				             leadBarTicks);
 		}
 		if (panSource) {
 			const int pan = panSource(t);
 			if (pan >= 0 && pan <= 14)
 				seq.addEvent(juce::MidiMessage::controllerEvent(
 				                 channel, 10, juce::jlimit(0, 127, juce::roundToInt(pan * 127.0f / 14.0f))),
-				             0.0);
+				             leadBarTicks);
 		}
 		const auto &src = trackAt(t).events;
 		for (int i = 0; i < src.getNumEvents(); ++i) {
 			auto msg = src.getEventPointer(i)->message;
 			if (msg.getChannel() > 0) msg.setChannel(channel);
-			msg.setTimeStamp(msg.getTimeStamp() * tpqn);
+			msg.setTimeStamp(msg.getTimeStamp() * tpqn + leadBarTicks);
 			seq.addEvent(msg);
 		}
 		seq.updateMatchedPairs();
@@ -1037,12 +1073,17 @@ bool D110SequencerEngine::loadMidiFile(const juce::File &file) {
 	for (int t = 0; t < activeTrackCount(); ++t) {
 		juce::MidiMessageSequence fresh;
 		juce::String newName; // stays empty if the source track carries no name of its own
+		std::vector<std::vector<juce::uint8>> sysEx; // see setSysExPreambleSink()'s own comment
 		const int srcIndex = startTrack + t;
 		if (srcIndex < mf.getNumTracks()) {
 			const auto *seq = mf.getTrack(srcIndex);
 			for (int i = 0; i < seq->getNumEvents(); ++i) {
 				auto msg = seq->getEventPointer(i)->message;
 				if (msg.isTrackNameEvent()) newName = msg.getTextFromTextMetaEvent();
+				if (msg.isSysEx()) {
+					sysEx.emplace_back(msg.getSysExData(), msg.getSysExData() + msg.getSysExDataSize());
+					continue;
+				}
 				// Tracks are note-only in this model (see captureEvent); drop meta
 				// events like End-Of-Track that MidiFile::writeTo appends per track,
 				// or they'd otherwise get emitted verbatim by renderInto().
@@ -1054,6 +1095,7 @@ bool D110SequencerEngine::loadMidiFile(const juce::File &file) {
 		}
 		trackAt(t).events = std::move(fresh);
 		trackAt(t).name = newName;
+		if (sysExPreambleSink && !sysEx.empty()) sysExPreambleSink(t, std::move(sysEx));
 	}
 
 	setTempo(newTempo);

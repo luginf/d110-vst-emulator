@@ -250,3 +250,51 @@ mt32emu, since mt32emu never executes the startup code.
 PHONES jack       centred (204, 150), Ø 56
 MEMORY CARD slot  around  (1588..1846, 100..166)
 ```
+
+## Compact mode (Utility tab, "PANEL SIZE")
+
+`docs/panel_reference_compact.png`, 1497 × 256, is `panel_reference.png` with
+three sections cut out and the three remaining strips rejoined:
+
+- `[0, 244)` - the Roland wordmark and the PHONES jack (purely decorative, no hit
+  region at all - see "Decorative only" above), plus the left rack ear. Cut right
+  after "Roland"'s own "d" (ends x 237) and before "D-110"'s own "D" (starts
+  x 259, cyan text detected by `b>150 and b>r+30`), leaving the "D-110 MULTI
+  TIMBRAL SOUND MODULE" wordmark and the VOLUME knob as the new leftmost content -
+  Alan's request, 2026-08-20, matching a mockup he supplied ("only the
+  essentials").
+- `[1560, 1865)` - the whole MEMORY CARD section (label, slot, and its
+  surrounding dead brushed-metal margin), added 2026-08-20 in the first pass at
+  this feature.
+- `[2046, 2124)` - the right rack ear, trimmed by Alan himself in a second pass
+  the same day, re-editing `panel_reference_compact.png` directly rather than
+  asking for a code change. Measured back out of his file by cross-correlating
+  it against `panel_reference.png` (`np.abs(candidate - strip).mean()` over
+  candidate offsets, zero-diff exact matches at every seam) rather than assumed -
+  both earlier seams came back identical to the first pass, only this third cut
+  was new. Safe with no further code change since nothing hit-tested or painted
+  ever sat past x 2046 (`kBezelX+kBezelW=1998`, `kLampX+kLampW=1966`, both well
+  inside).
+
+All three seam pairs were picked (his by eye, the first two originally by
+profiling) for flat background clear of the button grid (which ends at x 1536,
+measured off cap-edge luminance jumps), the VOLUME label/tick ring
+(x 315..425), and the MEMORY CARD/MIDI MESSAGE text (x 1690..1810 and x 1887..
+respectively). Not regenerated at runtime - `panel_reference_compact.png` is a
+plain checked-in asset, editable by hand like any other.
+
+`D110Panel::mapX(refX, compact)` is what every reference-space X coordinate used
+to paint or hit-test something - `kButtons[i].x`, `kKnobCx`, `kLcdX`, `kPowerX`,
+`kBezelX`, `kLampX` - goes through instead of being used raw: subtract
+`kCompactLeftCutEnd` (244) always, and `kCompactCardShift` (305, = 1865 − 1560)
+on top of that for anything at or past the card section. The MEMORY CARD slot's
+own hit region and the `D110MemoryCard` component are simply skipped/hidden
+rather than mapped, there being nothing left of them to click.
+`D110Panel::kCompactRefW` (1497) is the actual measured width of the checked-in
+file, not derived from the two `mapX` cuts alone (the third, right-edge trim
+isn't one of them) - if the file is ever re-cropped again, this constant has to
+be updated to match, by measurement, the same way. `currentRefW()` (`kRefW` or
+`kCompactRefW`) is what every window-sizing calculation in `PluginEditor.cpp`
+reads instead of the bare
+`kRefW` constant, so the aspect ratio, zoom percent and drawer widths all narrow
+along with the panel itself.

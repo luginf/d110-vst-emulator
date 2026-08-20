@@ -42,6 +42,34 @@ if(D110_BUILD_MAME_BACKEND)
     include("${CMAKE_CURRENT_SOURCE_DIR}/mame.cmake")
 endif()
 
+# Optional: a real JACK MIDI input port for the Standalone app (Alan's request, 2026-08-20 -
+# see JackMidiInput.h). Linux-only concept, and entirely opt-in on top of that - only turns
+# on when libjack's dev headers are actually installed, so this stays a no-op on Windows/
+# macOS CI and on any Linux box without libjack-dev (or libjack-jackd2-dev/PipeWire's own
+# jack-compatible package). Genuinely absent, not just disabled: D110_HAVE_JACK_MIDI unset
+# means JackMidiInput.cpp is never even added to the target, and PluginProcessor.*'s own
+# #ifdef D110_HAVE_JACK_MIDI blocks compile out completely.
+set(D110_HAVE_JACK_MIDI FALSE)
+if(UNIX AND NOT APPLE)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(JACK QUIET jack)
+    endif()
+    if(NOT JACK_FOUND)
+        find_library(JACK_LIBRARY_PATH NAMES jack)
+        find_path(JACK_INCLUDE_PATH NAMES jack/jack.h)
+        if(JACK_LIBRARY_PATH AND JACK_INCLUDE_PATH)
+            set(JACK_FOUND TRUE)
+            set(JACK_LIBRARIES "${JACK_LIBRARY_PATH}")
+            set(JACK_INCLUDE_DIRS "${JACK_INCLUDE_PATH}")
+        endif()
+    endif()
+    if(JACK_FOUND)
+        set(D110_HAVE_JACK_MIDI TRUE)
+        message(STATUS "D-110: libjack found, building the Standalone JACK MIDI input port")
+    endif()
+endif()
+
 include(FetchContent)
 FetchContent_Declare(
     JUCE
@@ -63,6 +91,7 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../munt/mt32emu" "${CMAKE_CURRENT_
 # The front panel IS the reference photograph - see docs/panel_reference_notes.md.
 juce_add_binary_data(D110PanelData
     SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../docs/panel_reference.png"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../docs/panel_reference_compact.png"
             "${CMAKE_CURRENT_SOURCE_DIR}/../docs/memory_card_m256d.png"
             "${CMAKE_CURRENT_SOURCE_DIR}/../docs/D20infos.png")
 
@@ -246,11 +275,36 @@ target_sources(D110EmulatorNative PRIVATE
 
 target_compile_definitions(D110EmulatorNative PRIVATE D110_NATIVE_CORE=1)
 
+if(D110_HAVE_JACK_MIDI)
+    target_sources(D110EmulatorNative PRIVATE Source/JackMidiInput.cpp)
+    target_compile_definitions(D110EmulatorNative PRIVATE D110_HAVE_JACK_MIDI=1)
+    target_include_directories(D110EmulatorNative PRIVATE ${JACK_INCLUDE_DIRS})
+    target_link_libraries(D110EmulatorNative PRIVATE ${JACK_LIBRARIES})
+endif()
+
 target_compile_definitions(D110EmulatorNative PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
     JUCE_DISPLAY_SPLASH_SCREEN=0
+    # Off (JUCE defaults it ON for any plugin that wants MIDI input): a legacy VST2/VST3
+    # compatibility shim that shadows every MIDI CC/pitch bend/aftertouch, on every channel,
+    # as its own separate automatable VST3 parameter (~2050 of them), purely so a host that
+    # can only automate parameters - never send real MIDI - can still reach them. We always
+    # receive real MIDI directly (data.inputEvents, unaffected by this flag), so we have no
+    # use for the shadow path - and Alan reported (2026-08-20) the D-110 arriving detuned by
+    # a fixed amount specifically when hosted by Carla, and only this plugin among everything
+    # else he runs there: a host that proactively resets every declared parameter to its
+    # default on load (Carla's own log: "Previous plugin state ... non-existent, will start
+    # from default state") would hit the shadow pitch-bend parameter's default (0, i.e. fully
+    # down, not centred) and JUCE would convert that straight back into a real MIDI Pitch
+    # Bend message - which this plugin, unlike most synths, forwards straight to the real
+    # firmware (forwardMidiToFirmware()'s own comment: "notes, controllers, program changes,
+    # bend, exclusive - goes through"), landing wherever the current Timbre's PITCH BEND
+    # RANGE puts it and staying there for the rest of the session. Strong candidate, not
+    # confirmed live in Carla (attempted repro hit an unrelated, broken sandbox here - no
+    # realtime audio permissions, heavy xruns) - ask Alan to confirm this actually fixes it.
+    JUCE_VST3_EMULATE_MIDI_CC_WITH_PARAMETERS=0
 )
 
 target_link_libraries(D110EmulatorNative PRIVATE
@@ -1475,6 +1529,75 @@ target_compile_definitions(d110_native_plugin_smoke PRIVATE
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
     JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(d110_native_plugin_smoke PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
+# Same shape as d110_native_plugin_smoke - the real D110AudioProcessor, wrapperType forced to
+# Standalone exactly as JUCE's own Standalone wrapper does it (see the probe's own header
+# comment), driven by prepareToPlay()/processBlock() directly. Only built when libjack was
+# found (D110_HAVE_JACK_MIDI, see this file's own detection block near the top) - otherwise
+# the probe still builds and runs, it just skips the JACK-specific checks.
+add_executable(d110_jack_midi_input_probe jack_midi_input_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
+target_include_directories(d110_jack_midi_input_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_jack_midi_input_probe PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_jack_midi_input_probe PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+if(D110_HAVE_JACK_MIDI)
+    target_sources(d110_jack_midi_input_probe PRIVATE Source/JackMidiInput.cpp)
+    target_compile_definitions(d110_jack_midi_input_probe PRIVATE D110_HAVE_JACK_MIDI=1)
+    target_include_directories(d110_jack_midi_input_probe PRIVATE ${JACK_INCLUDE_DIRS})
+    target_link_libraries(d110_jack_midi_input_probe PRIVATE ${JACK_LIBRARIES})
+endif()
+
+# Ground-truth reference note (no host, no Carla) for comparing against a Carla-hosted
+# recording of the exact same note/patch - see the probe's own header comment.
+add_executable(d110_reference_pitch_probe reference_pitch_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
+target_include_directories(d110_reference_pitch_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_reference_pitch_probe PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_reference_pitch_probe PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors juce::juce_audio_formats)
+
+# Dumps the real firmware's 128 factory Patch names (Program Change 0-127) - see the probe's
+# own header comment. One-off data generation for a MusE .idf, not a regression test.
+add_executable(d110_patch_name_dump_probe patch_name_dump_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
+target_include_directories(d110_patch_name_dump_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_patch_name_dump_probe PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_patch_name_dump_probe PRIVATE
     D110PanelData MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
 

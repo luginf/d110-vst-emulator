@@ -1449,7 +1449,11 @@ void D110SequencerRetroPanel::doLoadAllSongs() {
 }
 
 void D110SequencerRetroPanel::doSaveAllSongs() {
-	auto *chooser = new juce::FileChooser("Save all 4 sequencer songs", processor.getLastDialogDir(), "*.midiseq");
+	// Default filename dated rather than a bare "song.midiseq" - see D110SequencerPanel's own
+	// showSaveMenu() comment.
+	const auto defaultFile =
+		processor.getLastDialogDir().getChildFile(juce::Time::getCurrentTime().formatted("song-%Y-%m-%d.midiseq"));
+	auto *chooser = new juce::FileChooser("Save all 4 sequencer songs", defaultFile, "*.midiseq");
 	chooser->launchAsync(
 		juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
 			| juce::FileBrowserComponent::warnAboutOverwriting,

@@ -160,6 +160,8 @@ D110Panel::D110Panel(D110AudioProcessor &p)
 {
 	panelImage = juce::ImageCache::getFromMemory(BinaryData::panel_reference_png,
 	                                             BinaryData::panel_reference_pngSize);
+	panelImageCompact = juce::ImageCache::getFromMemory(
+		BinaryData::panel_reference_compact_png, BinaryData::panel_reference_compact_pngSize);
 
 	for (const auto &b : kButtons) {
 		const juce::Rectangle<float> face(b.x, b.y, b.w, b.h);
@@ -357,7 +359,7 @@ void D110Panel::timerCallback()
 
 void D110Panel::paint(juce::Graphics &g)
 {
-	g.drawImageAt(panelImage, 0, 0);
+	g.drawImageAt(processor.getCompactPanelMode() ? panelImageCompact : panelImage, 0, 0);
 
 	for (int i = 0; i < kNumButtons; ++i)
 		paintButton(g, i);
@@ -412,7 +414,8 @@ void D110Panel::paintButton(juce::Graphics &g, int index) const
 		return; // untouched: the photograph already shows the cap correctly
 
 	const auto &b = kButtons[index];
-	const juce::Rectangle<float> face(b.x, b.y, b.w, b.h);
+	const bool compact = processor.getCompactPanelMode();
+	const juce::Rectangle<float> face(mapX(b.x, compact), b.y, b.w, b.h);
 	paintPressedCap(g, capImages[size_t(index)], recessColours[size_t(index)], face,
 	                pressedRect(face, depth, kPressShrink, kPressDrop), depth);
 }
@@ -422,7 +425,7 @@ void D110Panel::paintPowerSwitch(juce::Graphics &g) const
 	if (powerMotion.depth < 0.02f)
 		return;
 
-	const juce::Rectangle<float> face(kPowerX, kPowerY, kPowerW, kPowerH);
+	const juce::Rectangle<float> face(mapX(kPowerX, processor.getCompactPanelMode()), kPowerY, kPowerW, kPowerH);
 	paintPressedCap(g, powerCap, powerRecessColour, face,
 	                pressedRect(face, powerMotion.depth, kPowerPressShrink, kPowerPressDrop),
 	                powerMotion.depth);
@@ -438,17 +441,19 @@ void D110Panel::paintVolumeKnob(juce::Graphics &g) const
 	if (std::abs(deg) < 0.05f)
 		return; // at rest: the photograph is already correct
 
+	const float cx = mapX(kKnobCx, processor.getCompactPanelMode());
+
 	juce::Graphics::ScopedSaveState ss(g);
 	juce::Path clip;
-	clip.addEllipse(kKnobCx - kKnobSpinR, kKnobCy - kKnobSpinR, kKnobSpinR * 2.0f, kKnobSpinR * 2.0f);
+	clip.addEllipse(cx - kKnobSpinR, kKnobCy - kKnobSpinR, kKnobSpinR * 2.0f, kKnobSpinR * 2.0f);
 	g.reduceClipRegion(clip);
 
 	// The cut-out was taken from the panel at this origin, so put it back exactly
-	// there and spin about the true centre.
-	const float ox = std::floor(kKnobCx - kKnobSpinR - 1.0f);
+	// there (shifted, in compact mode) and spin about the true centre.
+	const float ox = std::floor(cx - kKnobSpinR - 1.0f);
 	const float oy = std::floor(kKnobCy - kKnobSpinR - 1.0f);
 	g.drawImageTransformed(volumeDisc, juce::AffineTransform::translation(ox, oy)
-	                                       .rotated(juce::degreesToRadians(deg), kKnobCx, kKnobCy));
+	                                       .rotated(juce::degreesToRadians(deg), cx, kKnobCy));
 }
 
 void D110Panel::paintMidiLamp(juce::Graphics &g) const
@@ -467,7 +472,7 @@ void D110Panel::paintMidiLamp(juce::Graphics &g) const
 	if (!processor.isPoweredOn() || !lastSnapshot.midiLedOn)
 		return;
 
-	const juce::Rectangle<float> lens(kLampX, kLampY, kLampW, kLampH);
+	const juce::Rectangle<float> lens(mapX(kLampX, processor.getCompactPanelMode()), kLampY, kLampW, kLampH);
 	g.setColour(juce::Colour(0xffe0472a));
 	g.fillRect(lens);
 	g.setColour(juce::Colour(0xffffc9b0).withAlpha(0.75f));
@@ -476,29 +481,33 @@ void D110Panel::paintMidiLamp(juce::Graphics &g) const
 
 void D110Panel::paintLcd(juce::Graphics &g) const
 {
+	const float lcdX = mapX(kLcdX, processor.getCompactPanelMode());
+
 	// Blank the window first and unconditionally: the photograph was taken of a
 	// unit with its own glass showing, and anything less than a guaranteed opaque
 	// cover here lets that ghost through under the live render.
 	g.setColour(processor.isPoweredOn() ? kGlassOn : kGlassOff);
-	g.fillRect(kLcdX, kLcdY, kLcdW, kLcdH);
+	g.fillRect(lcdX, kLcdY, kLcdW, kLcdH);
 
 	if (lcdImage.isValid()) {
 		// The display is the one part of this panel anybody reads, and the window is often
 		// scaled well away from the artwork's own size, so it is worth resampling properly
 		// rather than at the default quality.
 		g.setImageResamplingQuality(juce::Graphics::highResamplingQuality);
-		g.drawImage(lcdImage, int(kLcdX), int(kLcdY), int(kLcdW), int(kLcdH),
+		g.drawImage(lcdImage, int(lcdX), int(kLcdY), int(kLcdW), int(kLcdH),
 		            0, 0, lcdImage.getWidth(), lcdImage.getHeight(), false);
 	}
 }
 
 int D110Panel::buttonAt(juce::Point<float> p) const
 {
-	if (juce::Rectangle<float>(kBezelX, kBezelY, kBezelW, kBezelH).contains(p))
+	const bool compact = processor.getCompactPanelMode();
+	if (juce::Rectangle<float>(mapX(kBezelX, compact), kBezelY, kBezelW, kBezelH).contains(p))
 		return kPowerIndex;
 
 	for (int i = 0; i < kNumButtons; ++i)
-		if (juce::Rectangle<float>(kButtons[i].x, kButtons[i].y, kButtons[i].w, kButtons[i].h).contains(p))
+		if (juce::Rectangle<float>(mapX(kButtons[i].x, compact), kButtons[i].y, kButtons[i].w, kButtons[i].h)
+		        .contains(p))
 			return i;
 
 	return -1;
@@ -546,7 +555,10 @@ void D110Panel::mouseDown(const juce::MouseEvent &e)
 
 	// Щель карты памяти. Сама карта панели не принадлежит - она ездит по всему окну и живёт
 	// отдельным компонентом, - но щель нарисована на приборе, и попадание в неё ловит панель.
-	if (juce::Rectangle<float>(kSlotHitX, kSlotHitY, kSlotHitW, kSlotHitH).contains(p)) {
+	// Compact mode splices this whole section out of the photo - see kCompactCardCutStart/End -
+	// so there is nothing here to hit at all.
+	if (!processor.getCompactPanelMode()
+	    && juce::Rectangle<float>(kSlotHitX, kSlotHitY, kSlotHitW, kSlotHitH).contains(p)) {
 		if (onCardSlotClicked) onCardSlotClicked();
 		return;
 	}
@@ -594,7 +606,7 @@ void D110Panel::mouseDown(const juce::MouseEvent &e)
 		return;
 	}
 
-	if (p.getDistanceFrom({ kKnobCx, kKnobCy }) <= kKnobHitR) {
+	if (p.getDistanceFrom({ mapX(kKnobCx, processor.getCompactPanelMode()), kKnobCy }) <= kKnobHitR) {
 		drag = Drag::volume;
 		dragStart = p;
 		dragStartValue = processor.getMasterVolume();
@@ -628,7 +640,7 @@ void D110Panel::mouseDoubleClick(const juce::MouseEvent &) {}
 
 void D110Panel::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w)
 {
-	if (e.position.getDistanceFrom({ kKnobCx, kKnobCy }) <= kKnobHitR)
+	if (e.position.getDistanceFrom({ mapX(kKnobCx, processor.getCompactPanelMode()), kKnobCy }) <= kKnobHitR)
 		processor.setMasterVolume(processor.getMasterVolume() + w.deltaY * 0.5f);
 }
 
@@ -1585,7 +1597,7 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 	labels.push_back({ area.removeFromTop(15.0f), "WINDOW SIZE", true });
 	{
 		auto row = area.removeFromTop(28.0f);
-		const int currentPercent = juce::roundToInt(float(getWidth()) / float(D110Panel::kRefW) * 100.0f);
+		const int currentPercent = juce::roundToInt(float(getWidth()) / float(D110Panel::currentRefW(processor.getCompactPanelMode())) * 100.0f);
 		zoomBounds = row.removeFromLeft(150.0f);
 		buttons.push_back({ zoomBounds, juce::String(currentPercent) + "%", 10 });
 		labels.push_back({ row.reduced(12.0f, 0.0f),
@@ -1615,6 +1627,18 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 		                   "click to switch the sequencer drawer between the mouse-driven "
 		                   "grid and the D-20-style LCD+buttons view - same toggle as the "
 		                   "panel's own right-click Options menu", false });
+	}
+	area.removeFromTop(18.0f);
+
+	labels.push_back({ area.removeFromTop(15.0f), "PANEL SIZE", true });
+	{
+		auto row = area.removeFromTop(28.0f);
+		buttons.push_back({ row.removeFromLeft(150.0f), processor.getCompactPanelMode() ? "COMPACT" : "FULL", 14 });
+		labels.push_back({ row.reduced(12.0f, 0.0f),
+		                   "compact splices out the Roland wordmark, PHONES jack and MEMORY CARD "
+		                   "slot and narrows the window to match, keeping only VOLUME, the LCD, "
+		                   "the button grid and POWER - the card becomes unreachable while it's "
+		                   "on, switch back to FULL to use it again", false });
 	}
 	area.removeFromTop(18.0f);
 
@@ -2306,6 +2330,18 @@ void D110EditorPane::paintMonitor(juce::Graphics &g, juce::Rectangle<float> area
 	               + juce::String(juce::int64(processor.getCore().midiDropped())),
 	           area.removeFromTop(18.0f), juce::Justification::centredLeft);
 	area.removeFromTop(4.0f);
+	// Sample rate this instance was actually told by its host in prepareToPlay() - added
+	// 2026-08-20 while chasing Alan's "notes arrive pitched up, only in Carla" report, to see
+	// straight from the running instance whether the host handed it a different rate than
+	// expected rather than guessing from outside. munt/mt32emu's own native rate is a fixed
+	// 32000 Hz (MT32EMU_SAMPLE_RATE) - the sound engine's SampleRateConverter always converts
+	// from that to whatever this line shows, so a wrong value here would explain a constant
+	// pitch/speed shift with no MIDI event involved at all.
+	g.setColour(kEdDim());
+	g.setFont(valueFont);
+	g.drawText("host sample rate: " + juce::String(processor.getSampleRate(), 0) + " Hz",
+	           area.removeFromTop(18.0f), juce::Justification::centredLeft);
+	area.removeFromTop(4.0f);
 	// Diagnostic counter for the stuck-continuous-note report Alan filed 2026-08-18/19 (see
 	// project_sequencer_channel_collision_fix memory) - Part::abortFirstPoly()'s fallback
 	// release (munt/mt32emu/src/Part.cpp) increments this every time it fires. Should stay at
@@ -2383,9 +2419,16 @@ void D110EditorPane::buttonPressed(int id) {
 		repaint();
 		return;
 	}
+	if (id == 14) {
+		processor.setCompactPanelMode(!processor.getCompactPanelMode());
+		if (onCompactPanelModeChanged) onCompactPanelModeChanged();
+		layout();
+		repaint();
+		return;
+	}
 	if (id == 10) {
 		static constexpr int kZoomPresets[] = { 50, 75, 100, 125, 150 };
-		const int current = juce::roundToInt(float(getWidth()) / float(D110Panel::kRefW) * 100.0f);
+		const int current = juce::roundToInt(float(getWidth()) / float(D110Panel::currentRefW(processor.getCompactPanelMode())) * 100.0f);
 		int next = kZoomPresets[0];
 		for (size_t i = 0; i < std::size(kZoomPresets); ++i)
 			if (kZoomPresets[i] > current) { next = kZoomPresets[i]; break; }
@@ -2443,7 +2486,11 @@ void D110EditorPane::buttonPressed(int id) {
 		return;
 	}
 	if (id == 5) {
-		auto *chooser = new juce::FileChooser("Save memory snapshot as", processor.getLastDialogDir(), "*.d110snap");
+		// Default filename dated rather than a bare "song.d110snap" - see
+		// D110SequencerPanel::showSaveMenu()'s own comment (same reasoning, same "song-" prefix).
+		const auto defaultFile = processor.getLastDialogDir().getChildFile(
+			juce::Time::getCurrentTime().formatted("song-%Y-%m-%d.d110snap"));
+		auto *chooser = new juce::FileChooser("Save memory snapshot as", defaultFile, "*.d110snap");
 		chooser->launchAsync(juce::FileBrowserComponent::saveMode
 		                         | juce::FileBrowserComponent::canSelectFiles
 		                         | juce::FileBrowserComponent::warnAboutOverwriting,
@@ -2632,7 +2679,7 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 		if (tab == Tab::Utility && zoomBounds.contains(p)) {
 			juce::PopupMenu m;
 			static constexpr int kZoomPresets[] = { 50, 75, 100, 125, 150 };
-			const int current = juce::roundToInt(float(getWidth()) / float(D110Panel::kRefW) * 100.0f);
+			const int current = juce::roundToInt(float(getWidth()) / float(D110Panel::currentRefW(processor.getCompactPanelMode())) * 100.0f);
 			for (int pct : kZoomPresets) m.addItem(pct, juce::String(pct) + "%", true, pct == current);
 			m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [this](int result) {
 				if (result > 0 && onRequestZoom) onRequestZoom(result);
@@ -2971,6 +3018,8 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 
 	sequencerPanel.setVisible(!processor.getSequencerRetroMode());
 	sequencerRetroPanel.setVisible(processor.getSequencerRetroMode());
+	// Nothing to show in compact mode - the slot itself is spliced out of the panel photo.
+	card.setVisible(!processor.getCompactPanelMode());
 
 	panel.onCardSlotClicked = [this] { card.toggle(); };
 	auto refreshSequencerMode = [this] {
@@ -2987,22 +3036,42 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 		applySize();
 	};
 
+	// Utility tab's PANEL SIZE toggle (see D110EditorPane::onCompactPanelModeChanged's own
+	// comment). processor.getCompactPanelMode() has already flipped by the time this runs -
+	// D110EditorPane::buttonPressed sets it before calling the callback, same order as the
+	// SEQUENCER toggle above. Keeps the window at the same reference-to-screen scale it was
+	// already at, re-measured against the new (narrower/wider) reference width, so the window
+	// shrinks/grows by exactly the spliced section's own screen size rather than jumping to a
+	// fixed zoom percent; a card left out of its slot is put back first, the same guard the
+	// drawer-close handler above already needs, since compact mode hides the card outright.
+	editorPane.onCompactPanelModeChanged = [this] {
+		if (card.isOut()) card.insert();
+		const bool compact = processor.getCompactPanelMode();
+		const float s = float(getWidth()) / float(D110Panel::currentRefW(!compact));
+		const int targetW = juce::roundToInt(float(D110Panel::currentRefW(compact)) * s);
+		constrainer.setFixedAspectRatio(double(D110Panel::currentRefW(compact)) / double(totalRefHeight()));
+		constrainer.setSizeLimits(900, 100, D110Panel::currentRefW(compact) * 2, 4000);
+		card.setVisible(!compact);
+		setSize(targetW, int(totalRefHeight() * (float(targetW) / float(D110Panel::currentRefW(compact))) + 0.5f));
+		repaint();
+	};
+
 	// Ящик закрыт при открытии окна: плагин - это прибор, а редактор к нему добавлен, и до
 	// тех пор, пока его не попросили, он не занимает места.
-	constrainer.setFixedAspectRatio(double(D110Panel::kRefW) / double(totalRefHeight()));
-	constrainer.setSizeLimits(900, 100, D110Panel::kRefW * 2, 4000);
+	constrainer.setFixedAspectRatio(double(D110Panel::currentRefW(processor.getCompactPanelMode())) / double(totalRefHeight()));
+	constrainer.setSizeLimits(900, 100, D110Panel::currentRefW(processor.getCompactPanelMode()) * 2, 4000);
 	setConstrainer(&constrainer);
 
 	setResizable(true, true);
-	setSize(1500, int(totalRefHeight() * (1500.0f / float(D110Panel::kRefW)) + 0.5f));
+	setSize(1500, int(totalRefHeight() * (1500.0f / float(D110Panel::currentRefW(processor.getCompactPanelMode()))) + 0.5f));
 
 	// Zoom presets (Utility tab) call this to resize precisely, the same way a manual
 	// drag-resize already does reliably - see D110EditorPane::onRequestZoom's own comment for
 	// why this exists instead of a maximise button (feedback_no_blind_wm_fixes memory: a native
 	// one sent the window off-screen on Alan's real desktop, twice now).
 	editorPane.onRequestZoom = [this](int percent) {
-		const int targetW = juce::roundToInt(float(D110Panel::kRefW) * float(percent) / 100.0f);
-		setSize(targetW, int(totalRefHeight() * (float(targetW) / float(D110Panel::kRefW)) + 0.5f));
+		const int targetW = juce::roundToInt(float(D110Panel::currentRefW(processor.getCompactPanelMode())) * float(percent) / 100.0f);
+		setSize(targetW, int(totalRefHeight() * (float(targetW) / float(D110Panel::currentRefW(processor.getCompactPanelMode()))) + 0.5f));
 	};
 
 	// The THEME toggle flips a process-wide palette (UiTheme.h) - every drawer needs a
@@ -3045,15 +3114,15 @@ float D110AudioProcessorEditor::totalRefHeight() const {
 }
 
 void D110AudioProcessorEditor::applySize() {
-	constrainer.setFixedAspectRatio(double(D110Panel::kRefW) / double(totalRefHeight()));
-	const float s = float(getWidth()) / float(D110Panel::kRefW);
+	constrainer.setFixedAspectRatio(double(D110Panel::currentRefW(processor.getCompactPanelMode())) / double(totalRefHeight()));
+	const float s = float(getWidth()) / float(D110Panel::currentRefW(processor.getCompactPanelMode()));
 	setSize(getWidth(), int(totalRefHeight() * s + 0.5f));
 }
 
 // Полоса-ручка: во всю ширину, сразу под фотографией. Полная ширина затем, чтобы она
 // читалась ящиком, который выдвигают, а не кнопкой.
 juce::Rectangle<float> D110AudioProcessorEditor::handleBand() const {
-	const float s = float(getWidth()) / float(D110Panel::kRefW);
+	const float s = float(getWidth()) / float(D110Panel::currentRefW(processor.getCompactPanelMode()));
 	return { 0.0f, float(D110Panel::kRefH) * s, float(getWidth()), kHandleRefH * s };
 }
 
@@ -3061,14 +3130,14 @@ juce::Rectangle<float> D110AudioProcessorEditor::handleBand() const {
 // it follows that drawer up and down as it opens and closes, exactly as the drawer's own
 // band follows the panel.
 juce::Rectangle<float> D110AudioProcessorEditor::keyboardHandleBand() const {
-	const float s = float(getWidth()) / float(D110Panel::kRefW);
+	const float s = float(getWidth()) / float(D110Panel::currentRefW(processor.getCompactPanelMode()));
 	const float top = (float(D110Panel::kRefH) + kHandleRefH + expansion * editorPaneRefH) * s;
 	return { 0.0f, top, float(getWidth()), kKeyboardHandleRefH * s };
 }
 
 // Same trick a third time: stacked below wherever the keyboard drawer currently ends.
 juce::Rectangle<float> D110AudioProcessorEditor::sequencerHandleBand() const {
-	const float s = float(getWidth()) / float(D110Panel::kRefW);
+	const float s = float(getWidth()) / float(D110Panel::currentRefW(processor.getCompactPanelMode()));
 	const float top = (float(D110Panel::kRefH) + kHandleRefH + expansion * editorPaneRefH
 	                  + kKeyboardHandleRefH + keyboardExpansion * keyboardPaneRefH) * s;
 	return { 0.0f, top, float(getWidth()), kSequencerHandleRefH * s };
@@ -3079,7 +3148,7 @@ juce::Rectangle<float> D110AudioProcessorEditor::sequencerHandleBand() const {
 // never hit-tests true) whenever the drawer itself is collapsed, exactly like the drawer's
 // own bounds in resized() below.
 juce::Rectangle<float> D110AudioProcessorEditor::sequencerResizeBand() const {
-	const float s = float(getWidth()) / float(D110Panel::kRefW);
+	const float s = float(getWidth()) / float(D110Panel::currentRefW(processor.getCompactPanelMode()));
 	const float top = (float(D110Panel::kRefH) + kHandleRefH + expansion * editorPaneRefH
 	                  + kKeyboardHandleRefH + keyboardExpansion * keyboardPaneRefH
 	                  + kSequencerHandleRefH + sequencerExpansion * sequencerPaneRefH) * s;
@@ -3189,7 +3258,7 @@ void D110AudioProcessorEditor::mouseDown(const juce::MouseEvent &e)
 
 void D110AudioProcessorEditor::mouseDrag(const juce::MouseEvent &e)
 {
-	const float s = float(getWidth()) / float(D110Panel::kRefW);
+	const float s = float(getWidth()) / float(D110Panel::currentRefW(processor.getCompactPanelMode()));
 	const float deltaY = e.position.y - resizeDragStartY;
 
 	if (keyboardHandlePressed) {
@@ -3296,8 +3365,8 @@ void D110AudioProcessorEditor::mouseExit(const juce::MouseEvent &)
 
 void D110AudioProcessorEditor::resized()
 {
-	const float s = float(getWidth()) / float(D110Panel::kRefW);
-	panel.setBounds(0, 0, D110Panel::kRefW, D110Panel::kRefH);
+	const float s = float(getWidth()) / float(D110Panel::currentRefW(processor.getCompactPanelMode()));
+	panel.setBounds(0, 0, D110Panel::currentRefW(processor.getCompactPanelMode()), D110Panel::kRefH);
 	panel.setTransform(juce::AffineTransform::scale(s));
 	panel.setDisplayScale(s);
 
@@ -3324,6 +3393,8 @@ void D110AudioProcessorEditor::resized()
 	sequencerRetroPanel.setBounds(0, seqTop, getWidth(), juce::jmax(0, seqH));
 
 	// Карта живёт в тех же опорных точках, что и панель, поэтому ей нужен только масштаб и
-	// то, докуда сейчас доходит окно: по ним она сама поставит себе границы.
-	card.setGeometry(s, totalRefHeight());
+	// то, докуда сейчас доходит окно: по ним она сама поставит себе границы. Nothing to
+	// position in compact mode - the slot itself is spliced out of the photo, and the card
+	// stays hidden (see the constructor and onCompactPanelModeChanged).
+	if (!processor.getCompactPanelMode()) card.setGeometry(s, totalRefHeight());
 }

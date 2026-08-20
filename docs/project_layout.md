@@ -8,6 +8,10 @@
   machine on its own thread with a headless OSD, and exposes the display, the sixteen buttons
   and the firmware's parameter memory. Opt-in (`D110_BUILD_MAME_BACKEND`), not built by default.
 - `plugin/Source/PluginProcessor.*`, `PluginEditor.*` - the JUCE plugin and the photo-composite panel.
+  Utility tab's "PANEL SIZE" toggle (`processor.getCompactPanelMode()`) swaps in
+  `docs/panel_reference_compact.png`, the same photo with the MEMORY CARD section spliced out
+  and the window narrowed to match - see `panel_reference_notes.md`'s own "Compact mode" section
+  for the seam geometry and `D110Panel::currentRefW()`/`kCompactShift`.
 - `plugin/Source/D110Keyboard.h/.cpp` - the on-screen test keyboard (mouse piano + tracker-
   style PC keyboard input, MIDI channel/omni routing via right-click), extracted out of
   `PluginEditor.*` so it can be reused outside the plugin. Talks to its owner only through
@@ -33,6 +37,11 @@
 - `plugin/mame.cmake` - the MAME library/include/define lists and how the subset was built.
 - `docs/` - the measured panel geometry and the SysEx address map, both derived by profiling
   rather than by eye. Every number in the code is justified there.
+- `plugin/Source/JackMidiInput.h/.cpp` - optional (Linux + libjack dev headers found at configure
+  time), Standalone-only real JACK MIDI input port (`D-110 Emulator:midi_in`), separate from the
+  ALSA-based "MIDI ports opened directly" picker in the Options menu. See
+  [`host_compatibility.md`](host_compatibility.md) for both this and known VST3 host quirks
+  (Carla/Qtractor).
 - `rom_test/` - a console tool that renders a test chord from a Control + PCM ROM pair.
 - `plugin/audio_test.cpp` - offline check with no DAW: powers the plugin on, plays a note, proves
   a panel edit changes the sound, checks that re-sending an *unedited* state changes nothing, and

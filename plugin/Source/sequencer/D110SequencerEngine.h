@@ -119,13 +119,40 @@ public:
 	// Same idea again, Bank Select MSB/LSB (1-128 musician-facing, same numbering as
 	// D110SequencerHost::getTrackBank()/getTrackBankLsb()) - written as CC0/CC32 right before
 	// the Program Change, only consulted when the Program Change itself is also being written
-	// (a bank with no program is meaningless). D-110 has no bank concept to export (it predates
-	// Bank Select and folds A/B straight into the Program Change number itself, already
-	// reflected in whatever programSource returns) so it never sets these; Nonet Sequencer does,
-	// reading the stored per-track Bank/Bank LSB (2026-08-19, Alan's request - export from the
-	// stored settings, not a "live" value there being no synth to read one from).
+	// (a bank with no program is meaningless). The D-110 firmware itself has no bank concept
+	// (it predates Bank Select and folds A/B straight into the Program Change number itself,
+	// already reflected in whatever programSource returns), but the exported file is read by
+	// other software too: the D-110 plugin always writes a constant bank 1/1 (raw wire byte
+	// 0/0), matching Roland-D110.idf's own hbank="0" lbank="0", so a receiver going off that
+	// file resolves the patch name; Nonet Sequencer instead reads the stored per-track
+	// Bank/Bank LSB (2026-08-19, Alan's request - export from the stored settings, not a
+	// "live" value there being no synth to read one from).
 	void setBankSource(std::function<int(int trackIndex)> bankForTrack);
 	void setBankLsbSource(std::function<int(int trackIndex)> bankLsbForTrack);
+
+	// Same idea once more: a track's exported SysEx "preamble", any custom-sound data that has
+	// to reach the receiving instrument's own memory before its Program Change can select it
+	// (the D-110 plugin uses this for tracks whose live Timbre is an Internal tone - Program
+	// Change alone can never reach one, on a real unit either - see
+	// D110AudioProcessor::buildInternalToneSysEx()). Each element of the returned vector is one
+	// complete SysEx message's own payload bytes, NOT including the F0/F7 wrapper -
+	// juce::MidiMessage::createSysExMessage() adds those - written in order, all at time 0,
+	// ahead of the Bank Select/Program Change/Volume/Pan events above (a Program Change with no
+	// data behind it yet would be meaningless). Empty vector or no callback set = nothing
+	// written, the common case. D-110-agnostic like every other Source callback here - what the
+	// bytes actually mean is entirely up to whatever sets this.
+	void setSysExPreambleSource(std::function<std::vector<std::vector<juce::uint8>>(int trackIndex)> sysExForTrack);
+
+	// The load-side mirror of setSysExPreambleSource(): loadMidiFile() hands back, per track,
+	// whatever SysEx messages it found sitting at time 0 in the source file (typically its own
+	// prior export's preamble - see above), payload bytes only, same convention (no F0/F7). Not
+	// applied to anything by the engine itself - D-110-agnostic like every Source/Sink here, it's
+	// purely a courier - the D-110 plugin uses this to replay an Internal-tone dump straight back
+	// into the firmware's memory on load, the one thing loadMidiFile()'s own note-only track
+	// model can't represent. Called once per track, only when that track's source events include
+	// at least one SysEx message; not called otherwise, and no callback set = the bytes are just
+	// dropped, same as loadMidiFile()'s pre-existing behaviour for every other non-note event.
+	void setSysExPreambleSink(std::function<void(int trackIndex, std::vector<std::vector<juce::uint8>> sysEx)> sysExSink);
 
 	// Transport
 	void setTempo(double bpm);
@@ -525,6 +552,8 @@ private:
 	std::function<int(int)> panSource;
 	std::function<int(int)> bankSource;
 	std::function<int(int)> bankLsbSource;
+	std::function<std::vector<std::vector<juce::uint8>>(int)> sysExPreambleSource;
+	std::function<void(int, std::vector<std::vector<juce::uint8>>)> sysExPreambleSink;
 	bool extraTracksEnabled = false;
 
 	// Storage for slots other than currentSlot - see selectSongSlot()'s own comment for why
