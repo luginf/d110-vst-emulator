@@ -58,7 +58,12 @@ public:
 	// getTrackBank()'s own comment) - NonetSeqHost sends a real Bank Select (CC0) + Program
 	// Change out over MIDI Out, to whatever external synth is listening; D110AudioProcessor
 	// sends a bare Program Change into the firmware's own MIDI IN (plus MIDI Out), since the
-	// D-110 has no Bank Select of its own to receive.
+	// D-110 has no Bank Select of its own to receive. The VALUE itself lives directly on
+	// D110SequencerEngine, per song slot - see its own getTrackProgram()'s comment (2026-08-21:
+	// this used to be a workspace-wide value shared by all 4 songs, which Alan pointed out
+	// doesn't make sense - a song's own instrumentation is part of what makes it that song).
+	// These two methods are just a thin pass-through to the engine, kept on the host interface
+	// only because the actual SENDING mechanism (below) is genuinely host-specific.
 	virtual bool supportsProgramChange() const { return false; }
 	virtual int getTrackProgram(int /*track*/) const { return -1; }
 	virtual void setTrackProgram(int /*track*/, int /*program*/) {}
@@ -121,6 +126,15 @@ public:
 	virtual int getTrackPan(int /*track*/) const { return -1; }
 	virtual void setTrackPan(int /*track*/, int /*pan*/) {}
 
+	// Optional narrowing of supportsTrackVolumePan() to specific tracks, same idea as
+	// supportsProgramChangeForTrack() narrows supportsProgramChange() - default mirrors the
+	// blanket flag (NonetSeqHost doesn't override: its Rhythm track already gets real CC7/CC10
+	// like any other track, nothing D-110-specific to exclude). D110AudioProcessor overrides
+	// this to stay true for Rhythm even though supportsProgramChangeForTrack() excludes it -
+	// Rhythm has no Program Change equivalent, but it has exactly as real a LEVEL/PAN as any
+	// melodic Part (2026-08-21, Alan's request: a fixed default Volume for the rhythm track).
+	virtual bool supportsTrackVolumePanForTrack(int track) const { return supportsTrackVolumePan(); }
+
 	// Optional: whether this host can read back its OWN current live sound per part (D110AudioProcessor
 	// only - Nonet Sequencer has no synth of its own to read from) and use it to overwrite the
 	// per-track Program Change/Bank/Volume/Pan above, one melodic part at a time - the opposite
@@ -141,12 +155,19 @@ public:
 	// D110AudioProcessor::getTrackProgramHint().
 	virtual int getTrackProgramHint(int /*track*/) const { return -1; }
 
+	// Same idea as getTrackProgramHint(), for Volume/Pan - see
+	// D110AudioProcessor::getTrackVolumeHint()/getTrackPanHint(). Nonet-Seq has no synth of its
+	// own to hint from, so these stay -1 there, same reasoning as getTrackProgramHint().
+	virtual int getTrackVolumeHint(int /*track*/) const { return -1; }
+	virtual int getTrackPanHint(int /*track*/) const { return -1; }
+
 	// Per-song sound snapshot: the instrument's whole memory (every Patch, Timbre, Tone and
 	// System setting - see docs/sysex_address_map.md), captured/restored per song slot so
-	// switching which song is loaded can also recall which sounds it used, instead of the
-	// Program Change override above (which is one global value regardless of song). Plugin-
-	// only - Nonet-Seq has no firmware/memory of its own to snapshot, so these stay false/
-	// no-op there, same reasoning as supportsTrackChannelEdit(). See
+	// switching which song is loaded can also recall which sounds it used - a much bigger,
+	// heavier-handed recall than the per-track Program Change override above (which only ever
+	// covers Program Change/Bank/Volume/Pan, now also per-slot in its own right - see that
+	// override's own comment). Plugin-only - Nonet-Seq has no firmware/memory of its own to
+	// snapshot, so these stay false/no-op there, same reasoning as supportsTrackChannelEdit(). See
 	// D110AudioProcessor::storeSoundSnapshotForSlot()/loadSoundSnapshotForSlot() and
 	// D110SequencerPanel::showCopySongMenu(), which offers both from the song-slot buttons'
 	// right-click menu.

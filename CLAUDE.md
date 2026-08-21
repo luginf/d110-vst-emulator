@@ -71,11 +71,19 @@ behaviour. Don't duplicate that here; this file is about how to work in the repo
   regardless. Both hosts now implement `supportsProgramChange()`: any track can get a fixed
   Program Change/Bank (click its CH readout), sent once when PLAY/REC starts - over MIDI Out
   in Nonet Sequencer, over the firmware's own MIDI IN (plus MIDI Out) in the plugin. That
-  override is a single workspace-wide value, not tied to a song slot, so it never changes
-  which instrument plays when you switch songs - the plugin-only per-song **sound snapshot**
-  (`supportsSoundSnapshots()`, right-click a song-slot button) is the real fix for that: each
-  of the 4 slots can store/recall the instrument's ENTIRE memory (every Patch/Timbre/Tone/
-  System byte), applied with a power cycle. State persists in
+  override (Program Change/Bank/BankLsb/Volume/Pan, plain fields on
+  `D110SequencerEngine::Track`) is per song slot, like the track's own notes/mute/solo/
+  quantize/name - it used to be one workspace-wide value shared by all 4 songs, until Alan
+  pointed out (2026-08-21) that doesn't make sense, a song's own instrumentation being part of
+  what makes it that song. `newSong()` resets it (and tempo, to 120) for the slot it's called
+  on only. Rhythm (`kRhythmTrack`, D-110 plugin only) has no Program Change equivalent - its
+  sounds are per-key, not a single patch number - but does get Volume/Pan (`supportsProgram
+  ChangeForTrack()` excludes it, `supportsTrackVolumePanForTrack()` doesn't; 2026-08-21, Alan's
+  request), surfaced as "CC Change" instead of "Program Change" in both UIs. The plugin-only
+  per-song **sound snapshot** (`supportsSoundSnapshots()`, right-click
+  a song-slot button) is a separate, much bigger per-slot recall on top of that: each of the 4
+  slots can store/recall the instrument's ENTIRE memory (every Patch/Timbre/Tone/System byte),
+  applied with a power cycle. State persists in
   `getStateInformation`/`setStateInformation` the same way the firmware NVRAM does (plugin)
   or its own settings file (independent app), both via the shared `D110SequencerSongsFile.h/.cpp`.
   `plugin/sequencer_probe.cpp` and `plugin/sequencer_state_probe.cpp` are its headless tests

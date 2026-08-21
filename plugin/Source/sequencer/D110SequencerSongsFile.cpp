@@ -43,6 +43,13 @@ void writeSongsXml(const D110SequencerEngine &engine, juce::XmlElement &xml, int
 			xml.setAttribute("seqQuantize" + suffix, static_cast<int>(engine.slotTrackQuantize(slot, t)));
 			xml.setAttribute("seqName" + suffix, engine.slotTrackName(slot, t));
 			xml.setAttribute("seqTrack" + suffix, packBlock(engine.slotTrackToBytes(slot, t)));
+			// The fixed Program Change/Bank/BankLsb/Volume/Pan override - per-slot since
+			// 2026-08-21 (see D110SequencerEngine::getTrackProgram()'s own comment).
+			xml.setAttribute("seqProgram" + suffix, engine.slotTrackProgram(slot, t));
+			xml.setAttribute("seqBank" + suffix, engine.slotTrackBank(slot, t));
+			xml.setAttribute("seqBankLsb" + suffix, engine.slotTrackBankLsb(slot, t));
+			xml.setAttribute("seqVolume" + suffix, engine.slotTrackVolume(slot, t));
+			xml.setAttribute("seqPan" + suffix, engine.slotTrackPan(slot, t));
 		}
 	}
 }
@@ -67,6 +74,11 @@ void readSongsXml(D110SequencerEngine &engine, const juce::XmlElement &xml, int 
 			engine.setSlotTrackQuantize(
 				slot, t, static_cast<QuantizeGrid>(xml.getIntAttribute("seqQuantize" + suffix, 0)));
 			engine.setSlotTrackName(slot, t, xml.getStringAttribute("seqName" + suffix));
+			engine.setSlotTrackProgram(slot, t, xml.getIntAttribute("seqProgram" + suffix, -1));
+			engine.setSlotTrackBank(slot, t, xml.getIntAttribute("seqBank" + suffix, 1));
+			engine.setSlotTrackBankLsb(slot, t, xml.getIntAttribute("seqBankLsb" + suffix, 1));
+			engine.setSlotTrackVolume(slot, t, xml.getIntAttribute("seqVolume" + suffix, -1));
+			engine.setSlotTrackPan(slot, t, xml.getIntAttribute("seqPan" + suffix, -1));
 		}
 	}
 }

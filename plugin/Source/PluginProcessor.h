@@ -115,6 +115,16 @@ public:
 	juce::String getLastError() const { return lastError; }
 	static juce::File getAutoRomFolder();
 
+	// A user-chosen ROM folder override (Utility tab, "ROM FOLDER"), checked before any of
+	// getAutoRomFolder()'s own automatic locations - Alan's request 2026-08-21, for a ROM
+	// location none of the automatic ones happen to cover. Deliberately a plain machine-wide
+	// settings file (getCustomRomPathFile()), NOT part of getStateInformation/project state:
+	// where ROMs sit on disk is a fact about this machine/install, not about a specific DAW
+	// project, and a project saved with one baked in would misbehave the moment it's opened
+	// somewhere else. Empty string = no override, same meaning as never having set one.
+	static juce::String getCustomRomFolder();
+	static void setCustomRomFolder(const juce::String &path);
+
 	// Snapshot of everything the virtual front panel needs to redraw itself each frame.
 	// Built entirely from stable, always-current getters (not mt32emu's own getDisplayState() text,
 	// which is designed to flash transient messages and revert after a couple of seconds, and whose
@@ -256,6 +266,10 @@ public:
 	void setTrackBank(int track, int bank) override;
 	// -1 = no hint. See sequencerLivePrograms's own comment for what this actually reads.
 	int getTrackProgramHint(int track) const override;
+	// Same idea as getTrackProgramHint(), backed by sequencerLiveVolumes/sequencerLivePans -
+	// see their own comment.
+	int getTrackVolumeHint(int track) const override;
+	int getTrackPanHint(int track) const override;
 
 	// Manual "resend now" escape hatch - see D110SequencerHost.h's own comment. Just flags a
 	// request; processBlock() does the actual send (same code as the PLAY/REC edge), since only
@@ -265,6 +279,15 @@ public:
 	// Part Volume/Pan alongside the Program Change above - see D110SequencerHost.h's own
 	// comment on why these are D-110-only and sent as SysEx (Part LEVEL/PAN), not MIDI CC.
 	bool supportsTrackVolumePan() const override { return true; }
+	// Unlike Program Change, Volume/Pan DOES cover the Rhythm track (2026-08-21, Alan's
+	// request: a fixed default Volume for it) - Rhythm's own TimbreTemp record has a real
+	// LEVEL/PAN, same as any melodic Part's (see D110EditorPane::layoutParts()'s own row for
+	// it). supportsProgramChangeForTrack() stays melodic-only; this is the separate gate
+	// getTrackVolume()/setTrackVolume()/getTrackPan()/setTrackPan() and their hints actually
+	// check.
+	bool supportsTrackVolumePanForTrack(int track) const override {
+		return track >= 0 && track < d110seq::D110SequencerEngine::kNumTracks;
+	}
 	int getTrackVolume(int track) const override;
 	void setTrackVolume(int track, int volume) override;
 	int getTrackPan(int track) const override;
@@ -339,6 +362,15 @@ public:
 	// MAME rompath for the d110 romset: the plugin's own data folder first, then the
 	// machine's standing MAME ROM folders so a development box works without copying.
 	static juce::String getMameRomPath();
+
+	// Where the custom ROM folder override (see getCustomRomFolder()) is stored - a plain
+	// one-line text file, deliberately outside getNvramRoot()/getAutoRomFolder() (there's no
+	// ROM folder to resolve yet at the point this itself needs to be read).
+	static juce::File getCustomRomPathFile() {
+		return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+			.getChildFile("D-110 Emulator")
+			.getChildFile("custom_rom_path.txt");
+	}
 
 	// The panel draws its own VOLUME knob out of the reference photograph, so it talks to the
 	// parameter directly rather than through a SliderAttachment.
@@ -425,15 +457,16 @@ public:
 	// buildDt1Message()), ready for juce::MidiMessage::createSysExMessage(), which adds the
 	// wrapper itself.
 	std::vector<std::vector<juce::uint8>> buildInternalToneSysEx(int track) const;
-	// The load-side mirror: wired to sequencerEngine's setSysExPreambleSink() in the
-	// constructor. loadMidiFile() hands back exactly the payload bytes buildInternalToneSysEx()
-	// wrote out (a Tone Memory dump + a Timbre Temp group/tone write, in order) - re-wrapped
-	// here and fed into osMidiCollector, the same queue a real MIDI IN port or injectTestNote()
-	// feeds, so they reach the firmware on the very next processBlock exactly like they would
-	// coming from outside. track is unused (the payload already carries its own destination
-	// address - a Timbre Temp write for whichever part/track it was captured from), kept for
-	// symmetry with the Source side and in case a future caller wants it.
-	void applyLoadedSysExPreamble(int track, std::vector<std::vector<juce::uint8>> sysEx);
+	// The load-side mirror: wired to sequencerEngine's setLoadedTrackSetupSink() in the
+	// constructor. loadMidiFile() hands back whatever SysEx/Program Change/Volume/Pan it found
+	// in a track (see that setter's own comment for why - Alan noticed reimporting a track could
+	// change how it sounded, 2026-08-21). Program Change and the Internal-tone SysEx preamble
+	// are replayed as plain live MIDI through osMidiCollector; Volume/Pan (CC7/CC10) instead go
+	// out as direct sendTimbreTempParam() writes, confirmed necessary against a real DAW
+	// session - live CC7/CC10 has no audible effect on this instrument at all, see this
+	// method's own .cpp comment for the full story (including an intermediate, reverted
+	// attempt at live-replaying these too, same day).
+	void applyLoadedTrackSetup(int track, std::vector<juce::MidiMessage> setup);
 	// Имена - те же десять знаков, что показывает индикатор: только печатные ASCII, добито
 	// пробелами. Прибор других не знает, и в эксклюзивном сообщении байт выше 0x7F невозможен.
 	void sendName(juce::uint32 sysexAddress, int offset, const juce::String &name);
@@ -592,7 +625,10 @@ private:
 	// into exactly the images mt32emu expects. Returns whether both were assembled.
 	bool tryAssembleRomsFromChipDumps(const juce::File &folder);
 	// Reads `file` and hands it to mt32emu, returning its ROMInfo type via `typeOut`.
-	bool identifyRomData(const juce::MemoryBlock &data, MT32Emu::ROMInfo::Type &typeOut) const;
+	static bool identifyRomData(const juce::MemoryBlock &data, MT32Emu::ROMInfo::Type &typeOut);
+	// See this method's own .cpp comment: copies any recognisable whole ROM image found loose
+	// next to the VST3 bundle/Standalone binary into `dest`, if `dest` doesn't already have one.
+	static void materializeLooseRomsIfNeeded(const juce::File &dest);
 	// D110CoreNative::start() (unlike the content-based loading above) looks up its firmware
 	// and presets files by exact, hardcoded name - see setPoweredOn(). Writes those two exact
 	// filenames, derived from controlRomData (already identified/assembled above, in whatever
@@ -717,16 +753,10 @@ private:
 	// Reused across blocks so refreshing sequencerLiveChannels/sequencerLivePrograms doesn't
 	// reallocate 32KB every time - see their use beside sequencerLiveChannels above.
 	std::vector<juce::uint8> sequencerRamScratch;
-	// Per-Part Program Change/Bank override - see getTrackProgram()/setTrackProgram()/
-	// getTrackBank()/setTrackBank(). -1 = no override (send nothing), same "none" meaning as
-	// NonetSeqHost's own trackPrograms. Bank has no "none" state - see D110SequencerHost.h.
-	// Index kRhythmTrack is never read/written - see supportsProgramChangeForTrack().
-	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerTrackPrograms{};
-	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerTrackBanks{};
-	// Same idea, Part LEVEL/PAN - see getTrackVolume()/setTrackVolume()/getTrackPan()/
-	// setTrackPan(). -1 = no override for either (send neither).
-	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerTrackVolumes{};
-	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerTrackPans{};
+	// The fixed per-track Program Change/Bank/Volume/Pan override itself now lives directly on
+	// D110SequencerEngine (per song slot - see D110SequencerEngine::getTrackProgram()'s own
+	// comment, 2026-08-21). getTrackProgram()/setTrackProgram()/etc. below just delegate to it;
+	// no storage of its own here any more.
 	// Set by resyncProgramChanges() (any thread, hence atomic - the UI thread is who actually
 	// calls it), cleared by processBlock() once it's acted on it - see its own comment.
 	std::atomic<bool> sequencerResyncRequested{false};

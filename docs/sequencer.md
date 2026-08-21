@@ -147,8 +147,26 @@ they're entered - capture is a side channel, not a detour.
 ## Quantize
 
 Right-click any track row for **Quantize**: off, 1/4, 1/8, 1/16, 1/8 triplet, 1/16 triplet, or
-1/32. Snaps every note-on to the nearest grid line and carries its note-off along by the same
-offset, so note length survives the snap.
+1/32. What picking a grid actually *does* depends on the workspace-wide **Quantize mode** -
+D-110 plugin: Utility tab, "QUANTIZE MODE"; Nonet Sequencer: OPTIONS, "Quantize mode":
+
+- **HARD** (the default, and the original behaviour) - moves every note-on for real onto the
+  nearest grid line and carries its note-off along by the same offset, so note length survives
+  the snap. This rewrites the track's own recorded data; the original timing is gone (short of
+  UNDO, which still reaches back through it as long as nothing else has been done since).
+- **SOFT** - the recording itself is never touched. Instead, every note is snapped to the grid
+  live, on every read, exactly when the sequencer plays it back - note-on and note-off are each
+  snapped independently to the same grid rather than duration-preserved the way HARD keeps
+  note length exact, which can nudge a note's felt length by up to one grid step in the rare
+  case it straddles a grid line asymmetrically. Picking a track's own quantize back to **off**
+  in this mode instantly restores the exact original, unsnapped performance - nothing was ever
+  lost, because nothing was ever rewritten in the first place. Useful for trying a grid before
+  committing to it, or for keeping the human feel available to switch back to at any time.
+
+Switching the workspace mode doesn't touch anything already on a track by itself: a track
+already hard-quantized stays exactly where HARD left it (SOFT applying the same grid on top is
+a no-op, since the notes are already sitting on it); a track's own quantize *setting* just
+starts meaning something different going forward.
 
 ## Editing bars
 
@@ -170,8 +188,12 @@ From the same right-click menu (per-track) or the BAR readout's menu (every trac
   (negative to go down), in place - no destination to choose, since the notes stay on whatever
   track and bar they were already on. Clamped to the valid MIDI note range rather than wrapping.
 
-**NEW** clears every track in the current song slot (tempo/time signature/other transport
-settings are left alone) - "new song" within the slot you're on.
+**NEW** clears every track in the current song slot, resets tempo to 120 (most DAWs' own
+default) and clears any fixed per-track Program Change/Bank/Volume/Pan override (see
+[Per-track Program Change](#per-track-program-change) below) - "new song" within the slot
+you're on, and only that slot: the override is per-song-slot data, exactly like the track's own
+notes/mute/solo/quantize, so the other 3 songs' own overrides are untouched. Time signature is
+left alone.
 
 ## Editing single notes
 
@@ -216,10 +238,9 @@ it replaces whatever's live and isn't undoable through **UNDO**). The stored sou
 themselves persist in the project's own saved state, right alongside that slot's tracks.
 
 This is genuinely separate from [Per-track Program Change](#per-track-program-change)
-below: that one is a single value good for nudging one Part to a different *already
-stored* Timbre, the same regardless of which song is loaded. A sound snapshot instead swaps
-the instrument's whole memory to match the song, exactly as if you'd reached for a different
-memory card.
+below: that one is per-song-slot data too, but it's only ever good for nudging one Part to a
+different *already stored* Timbre. A sound snapshot instead swaps the instrument's whole
+memory to match the song, exactly as if you'd reached for a different memory card.
 
 ## Per-track Program Change
 
@@ -230,6 +251,24 @@ that has one set). Whichever tracks have a program set get a Program Change sent
 moment **PLAY** or **REC** starts (precount included, so the patch has already switched
 before any notes arrive) - not re-sent mid-song, since a track only ever holds one fixed
 program for the whole song slot. Works in both apps, but the wire format differs:
+
+**Rhythm** (D-110 plugin only, 2026-08-21) has no Program Change equivalent - its sounds are
+picked per key on the `RHYTHM` tab, not by a single patch number - so its menu item and dialog
+title read **CC Change** instead of Program Change, with no Program/Bank fields at all, just
+Volume/Pan: a way to give the rhythm track a different default level than whatever's set on the
+`RHYTHM`/`PARTS` tab, sent the same PLAY/REC-edge moment as everything else here. Nonet
+Sequencer's Rhythm track never had this restriction - it already got full Program Change/Bank/
+Volume/Pan, the same as any other track.
+
+An empty Program/Volume/Pan field (D-110 plugin only) shows a grey **"now: N"** placeholder
+when the instrument has something to suggest - whatever that Part is actually playing right
+now, read straight from the firmware. It's only ever a suggestion, never a stored value: the
+field stays genuinely empty underneath, so pressing OK without typing anything still sends/
+stores nothing, and **New** or loading a song with no override of its own correctly leaves the
+field looking properly empty (grey placeholder aside) rather than showing what looks like a
+real leftover setting. This is also how Volume/Pan let you confirm "yes, that's the level a
+just-loaded MIDI file actually restored" without there being a separate override for it -
+see the "Load / Save" section above.
 
 - **Nonet Sequencer** sends real Bank Select - both controllers MIDI actually defines, CC0
   (labelled Bank/high, the MSB) and CC32 (Bank LSB/low) - ahead of the Program Change, in that
@@ -249,10 +288,13 @@ program for the whole song slot. Works in both apps, but the wire format differs
   the 128 slots can be repointed at an internal tone), then address that same slot's number
   here.
 
-**This is one value per track, shared by every song slot - it is not song content**, so
-switching which song is loaded never changes it. In the D-110 plugin, if what you actually
-want is different instruments *per song*, see
-[Per-song sound snapshot](#per-song-sound-snapshot-d-110-plugin-only) above instead.
+**This is per-song-slot data**, exactly like a track's own notes/mute/solo/quantize (2026-08-21:
+it used to be one value per track shared by every song slot, which Alan pointed out doesn't
+make sense - a song's own instrumentation is part of what makes it that song). Switching which
+song is loaded switches this too; "New" (above) clears it for the slot being reset, leaving the
+other 3 songs' own overrides untouched. In the D-110 plugin, if what you actually want is a much
+bigger recall - the instrument's *entire* memory, not just one Program Change/Bank/Volume/Pan -
+see [Per-song sound snapshot](#per-song-sound-snapshot-d-110-plugin-only) above instead.
 
 The same dialog also has **Volume (0-100)** and **Pan (0-14, 7 = centre)** fields, sent the same
 moment as the Program Change, in both apps - Leave either blank to send neither. The wire format
@@ -429,14 +471,35 @@ silence for the common case.
 
 Reimporting the file - into this same plugin, or a real D-110 through an external player -
 replays the tone into memory before the notes that use it, the same way a vintage MT-32 song
-file bundles its own custom-patch bulk dumps at the top of the track. Loading back into *this*
-plugin actually restores it: `D110SequencerEngine::loadMidiFile()` hands any SysEx it finds in a
-track to a sink (`D110AudioProcessor::applyLoadedSysExPreamble()`), which re-queues those exact
-bytes through `osMidiCollector` - the same queue a real MIDI IN port feeds - so the Tone Memory
-dump and Timbre Temp write land on the firmware right away, at load time, well ahead of any
-playback. (Nonet Sequencer has no firmware of its own to write into, so it doesn't wire this sink
-at all - loading such a file there just drops the SysEx, same as any other non-note event always
-has.)
+file bundles its own custom-patch bulk dumps at the top of the track.
+
+**Loading back into the D-110 plugin actually restores all of it** - the SysEx preamble, but
+also Program Change/Volume/Pan, which `loadMidiFile()` used to just silently drop (its track
+model is note-only, see `captureEvent()`'s own comment) until Alan noticed a reimported track
+could sound different from what was exported (2026-08-21). `D110SequencerEngine::loadMidiFile()`
+now hands every such non-note event it finds in a track, in order, to a sink
+(`D110SequencerEngine::setLoadedTrackSetupSink()` / `D110AudioProcessor::applyLoadedTrackSetup()`).
+Program Change and the SysEx preamble are replayed as plain live MIDI through `osMidiCollector` -
+confirmed reliable. **Volume/Pan (CC7/CC10) are not** - two reverted attempts at replaying them
+as live MIDI both turned out to be chasing a mechanism that doesn't exist: confirmed directly
+against a real DAW session that live CC7/CC10 have **no audible effect on this instrument at
+all**, on real hardware and in this emulation both - the D-110 never implements MIDI Channel
+Volume/Pan as their own concept. The only real "how loud/where panned" values it has are the
+Timbre's own LEVEL/PAN fields (TimbreTemp offsets 8/9 - what the PARTS tab edits), so Volume/Pan
+restoration writes there directly (`sendTimbreTempParam()`, address-based rather than
+channel-based, sidestepping a separate unexplained bug where live CC10 replay only worked for
+some channels). Verified against a real exported file: CC7=127/CC10=64 in the file correctly
+produced LEVEL=100/PAN=7 after reload, matching the exact scaling `saveMidiFile()` used going
+the other way. Nonet Sequencer has no firmware of its own to write into, so it doesn't wire this
+sink at all - loading such a file there just drops all of this, same as any other non-note event
+always has.
+
+**Also fixed the same day**: some DAWs insert their own General MIDI/Roland GS initialisation
+SysEx (Universal Non-Realtime "GM System On", GS Reset - a different manufacturer/model header
+entirely) at the start of an exported track - confirmed with one of Alan's own files. Replaying
+that at the firmware was a real bug; `applyLoadedTrackSetup()` now only forwards a SysEx message
+that actually matches the D-110's own DT1 header (Roland/device ID/D-110 model/DT1 - the same
+four bytes `buildDt1Message()` itself writes), silently dropping anything else.
 
 **Right-click** LOAD/SAVE for all 4 song slots at once, as a single
 portable `.midiseq` file - an XML wrapper around a gzip-compressed standard MIDI file per

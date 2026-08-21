@@ -1630,6 +1630,19 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 	}
 	area.removeFromTop(18.0f);
 
+	labels.push_back({ area.removeFromTop(15.0f), "QUANTIZE MODE", true });
+	{
+		auto row = area.removeFromTop(28.0f);
+		const bool soft = processor.getSequencer().getQuantizeMode() == d110seq::QuantizeMode::soft;
+		buttons.push_back({ row.removeFromLeft(150.0f), soft ? "SOFT" : "HARD", 15 });
+		labels.push_back({ row.reduced(12.0f, 0.0f),
+		                   "HARD moves a track's own recorded notes onto the grid for good; "
+		                   "SOFT leaves them exactly as played and only snaps them live during "
+		                   "playback - picking OFF on a track's own quantize control then plays "
+		                   "the original recording again, unchanged", false });
+	}
+	area.removeFromTop(18.0f);
+
 	labels.push_back({ area.removeFromTop(15.0f), "PANEL SIZE", true });
 	{
 		auto row = area.removeFromTop(28.0f);
@@ -1651,6 +1664,19 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 		                   "when on, writes a running note-attempt tally to "
 		                   "~/d110_diagnostic_log.txt every few seconds - off by default, only "
 		                   "useful while chasing a real playback issue", false });
+	}
+	area.removeFromTop(18.0f);
+
+	labels.push_back({ area.removeFromTop(15.0f), "ROM FOLDER", true });
+	{
+		auto row = area.removeFromTop(28.0f);
+		const auto custom = D110AudioProcessor::getCustomRomFolder();
+		romFolderBounds = row.removeFromLeft(220.0f);
+		buttons.push_back({ romFolderBounds, custom.isEmpty() ? juce::String("AUTO") : custom, 16 });
+		labels.push_back({ row.reduced(12.0f, 0.0f),
+		                   "click to pick a folder to search for the ROM files, instead of the "
+		                   "usual automatic locations (beside the plugin/binary, or its own data "
+		                   "folder) - right-click to go back to AUTO", false });
 	}
 	area.removeFromTop(18.0f);
 
@@ -2426,6 +2452,31 @@ void D110EditorPane::buttonPressed(int id) {
 		repaint();
 		return;
 	}
+	if (id == 15) {
+		auto &eng = processor.getSequencer();
+		eng.setQuantizeMode(eng.getQuantizeMode() == d110seq::QuantizeMode::soft ? d110seq::QuantizeMode::hard
+		                                                                         : d110seq::QuantizeMode::soft);
+		layout();
+		repaint();
+		return;
+	}
+	if (id == 16) {
+		// Асинхронный диалог, поэтому объект должен пережить вызов - тот же приём, что и у
+		// остальных FileChooser в этом файле.
+		const auto startDir = D110AudioProcessor::getCustomRomFolder().isNotEmpty()
+		                           ? juce::File(D110AudioProcessor::getCustomRomFolder())
+		                           : D110AudioProcessor::getAutoRomFolder();
+		auto *chooser = new juce::FileChooser("Choose a folder to search for the D-110 ROM files", startDir);
+		chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+		                     [this, chooser](const juce::FileChooser &fc) {
+			                     const auto dir = fc.getResult();
+			                     if (dir != juce::File()) D110AudioProcessor::setCustomRomFolder(dir.getFullPathName());
+			                     layout();
+			                     repaint();
+			                     delete chooser;
+		                     });
+		return;
+	}
 	if (id == 10) {
 		static constexpr int kZoomPresets[] = { 50, 75, 100, 125, 150 };
 		const int current = juce::roundToInt(float(getWidth()) / float(D110Panel::currentRefW(processor.getCompactPanelMode())) * 100.0f);
@@ -2676,6 +2727,12 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 	// области партии (Parts), и на записи патча (PARTS OF PATCH внутри Patches), и на DRUM
 	// SOUND ритм-секции (Rhythm) - три разных поля со своим адресом, но один и тот же приём.
 	if (e.mods.isPopupMenu()) {
+		if (tab == Tab::Utility && romFolderBounds.contains(p)) {
+			D110AudioProcessor::setCustomRomFolder({});
+			layout();
+			repaint();
+			return;
+		}
 		if (tab == Tab::Utility && zoomBounds.contains(p)) {
 			juce::PopupMenu m;
 			static constexpr int kZoomPresets[] = { 50, 75, 100, 125, 150 };

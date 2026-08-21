@@ -692,9 +692,19 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildTrackMenu(int trac
 			items.push_back({ "CHANNEL", juce::String(eng.channelForTrack(track)), true,
 			                   [this, track] { pushScreen(buildChannelForm(track)); } });
 		items.push_back({ "QUANTIZE", "", true, [this, track] { pushScreen(buildQuantizeMenu(track)); } });
+		// Rhythm has no Program Change equivalent but does have its own fixed Volume/Pan
+		// (2026-08-21, Alan's request) - "CC CHANGE" there instead, since PRG/BANK don't apply.
 		if (processor.supportsProgramChangeForTrack(track)) {
 			const int program = processor.getTrackProgram(track);
 			items.push_back({ "PROGRAM CHG", program < 0 ? "OFF" : juce::String(program + 1), true,
+			                   [this, track] { pushScreen(buildProgramForm(track)); } });
+		} else if (processor.supportsTrackVolumePanForTrack(track)) {
+			const int volume = processor.getTrackVolume(track);
+			const int pan = processor.getTrackPan(track);
+			juce::StringArray parts;
+			if (volume >= 0) parts.add("V" + juce::String(volume));
+			if (pan >= 0) parts.add("P" + juce::String(pan));
+			items.push_back({ "CC CHANGE", parts.isEmpty() ? "OFF" : parts.joinIntoString(" "), true,
 			                   [this, track] { pushScreen(buildProgramForm(track)); } });
 		}
 		items.push_back(
@@ -746,38 +756,46 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildChannelForm(int tr
 	return s;
 }
 
+// Rhythm (D-110 plugin only) has no Program Change equivalent but does have its own fixed
+// Volume/Pan (2026-08-21, Alan's request) - hasProgram is false there, so PRG/BANK fields are
+// skipped entirely and the screen title becomes "CC CHANGE".
 D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildProgramForm(int track) {
 	Screen s;
 	s.kind = ScreenKind::form;
-	s.title = "PROGRAM CHG";
-	const int currentProgram = processor.getTrackProgram(track);
-	const bool hasLsb = processor.supportsBankLsb();
-	const bool hasVolPan = processor.supportsTrackVolumePan();
+	const bool hasProgram = processor.supportsProgramChangeForTrack(track);
+	s.title = hasProgram ? "PROGRAM CHG" : "CC CHANGE";
+	const int currentProgram = hasProgram ? processor.getTrackProgram(track) : -1;
+	const bool hasLsb = hasProgram && processor.supportsBankLsb();
+	const bool hasVolPan = processor.supportsTrackVolumePanForTrack(track);
 	auto program = std::make_shared<int>(currentProgram >= 0 ? currentProgram + 1 : 0);
-	auto bank = std::make_shared<int>(processor.getTrackBank(track));
-	auto bankLsb = std::make_shared<int>(processor.getTrackBankLsb(track));
+	auto bank = std::make_shared<int>(hasProgram ? processor.getTrackBank(track) : 1);
+	auto bankLsb = std::make_shared<int>(hasLsb ? processor.getTrackBankLsb(track) : 1);
 	// Same "0 = OFF, else value+1" trick PRG uses above - 0 is otherwise a perfectly meaningful
 	// LEVEL/PAN, so it can't double as "unset" the way it does for PRG (there, 0 is never a
 	// real Program Change value, this dialog numbers those 1-128 like Bank).
-	auto volume = std::make_shared<int>(processor.getTrackVolume(track) + 1);
-	auto pan = std::make_shared<int>(processor.getTrackPan(track) + 1);
-	s.fields.push_back(
-		{ "PRG(0=OFF)", program, 0, 128, [](int v) { return v == 0 ? juce::String("OFF") : juce::String(v); } });
-	// MIDI has two Bank Select controllers (CC0/high/MSB, CC32/low/LSB) - see
-	// D110SequencerPanel::promptForTrackProgram's own comment. Only NonetSeqHost sends either;
-	// the D-110 has neither, so this second field only shows up there.
-	s.fields.push_back({ hasLsb ? "BANK(HIGH)" : "BANK", bank, 1, 128, [](int v) { return juce::String(v); } });
-	if (hasLsb) s.fields.push_back({ "BANK(LOW)", bankLsb, 1, 128, [](int v) { return juce::String(v); } });
+	auto volume = std::make_shared<int>(hasVolPan ? processor.getTrackVolume(track) + 1 : 0);
+	auto pan = std::make_shared<int>(hasVolPan ? processor.getTrackPan(track) + 1 : 0);
+	if (hasProgram) {
+		s.fields.push_back(
+			{ "PRG(0=OFF)", program, 0, 128, [](int v) { return v == 0 ? juce::String("OFF") : juce::String(v); } });
+		// MIDI has two Bank Select controllers (CC0/high/MSB, CC32/low/LSB) - see
+		// D110SequencerPanel::promptForTrackProgram's own comment. Only NonetSeqHost sends either;
+		// the D-110 has neither, so this second field only shows up there.
+		s.fields.push_back({ hasLsb ? "BANK(HIGH)" : "BANK", bank, 1, 128, [](int v) { return juce::String(v); } });
+		if (hasLsb) s.fields.push_back({ "BANK(LOW)", bankLsb, 1, 128, [](int v) { return juce::String(v); } });
+	}
 	if (hasVolPan) {
 		s.fields.push_back({ "VOL(0=OFF)", volume, 0, 101,
 		                      [](int v) { return v == 0 ? juce::String("OFF") : juce::String(v - 1); } });
 		s.fields.push_back({ "PAN(0=OFF)", pan, 0, 15,
 		                      [](int v) { return v == 0 ? juce::String("OFF") : juce::String(v - 1); } });
 	}
-	s.onConfirm = [this, track, program, bank, bankLsb, hasLsb, volume, pan, hasVolPan] {
-		processor.setTrackProgram(track, *program == 0 ? -1 : *program - 1);
-		processor.setTrackBank(track, *bank);
-		if (hasLsb) processor.setTrackBankLsb(track, *bankLsb);
+	s.onConfirm = [this, track, program, bank, bankLsb, hasProgram, hasLsb, volume, pan, hasVolPan] {
+		if (hasProgram) {
+			processor.setTrackProgram(track, *program == 0 ? -1 : *program - 1);
+			processor.setTrackBank(track, *bank);
+			if (hasLsb) processor.setTrackBankLsb(track, *bankLsb);
+		}
 		if (hasVolPan) {
 			processor.setTrackVolume(track, *volume == 0 ? -1 : *volume - 1);
 			processor.setTrackPan(track, *pan == 0 ? -1 : *pan - 1);
@@ -1299,6 +1317,8 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildNewSongConfirm() {
 	s.message = "CLEARS EVERY TRACK IN THIS SLOT";
 	s.onConfirm = [this] {
 		engine().pushUndoSnapshot("New song (Slot " + juce::String(engine().getCurrentSongSlot() + 1) + ")");
+		// newSong() also resets tempo and the fixed per-track Program Change/Bank/Volume/Pan
+		// override for this slot's own tracks - see its own comment.
 		engine().newSong();
 	};
 	return s;

@@ -6,22 +6,31 @@ firmware back to factory settings if you ever need to.
 
 ## Where to put the files
 
-Two locations are checked, in this order - whichever one actually has ROMs in it wins:
+Checked in this order - whichever one actually has ROMs in it wins:
 
-1. **Colocated with the shared VST3 folder** - the default, and what every existing install
+1. **A custom folder you point it at yourself** - Utility tab, "ROM FOLDER" (click to pick one,
+   right-click to go back to automatic detection). Added 2026-08-21 for whatever case none of
+   the automatic locations below happen to cover. Takes effect on the next power-on.
+2. **Colocated with the shared VST3 folder** - the default, and what every existing install
    already uses:
    - Windows: `C:\Program Files\Common Files\VST3\D-110 Data\`
    - macOS: `~/Library/Audio/Plug-Ins/VST3/D-110 Data/`
    - Linux: `~/.vst3/D-110_Data/`
-2. **The plugin's own app-data folder** - makes more sense for the **Standalone** build, which
+3. **The plugin's own app-data folder** - makes more sense for the **Standalone** build, which
    has nothing to do with VST3 or DAWs and may not even have a `~/.vst3` folder to put things
    in; the same per-OS root the NVRAM fallback and the Standalone's settings file already use:
    - Windows: `%APPDATA%\D-110 Emulator\D-110 Data\`
    - macOS: `~/Library/Application Support/D-110 Emulator/D-110 Data/`
    - Linux: `~/.config/D-110 Emulator/D-110 Data/`
+4. **Loose, directly beside the VST3 bundle itself** (the shared VST3 folder from #2, but with
+   no `D-110 Data` subfolder at all - e.g. straight in `~/.vst3/` on Linux) **or directly beside
+   the Standalone binary** - added 2026-08-21 for anyone who'd rather not create a subfolder at
+   all. Only the files themselves are picked up from there (copied into the `D-110 Data`
+   location from #2 the first time they're found) - nothing else in that shared folder is ever
+   touched or scanned recursively.
 
-Either one works for either build (VST3 or Standalone) - the second location is just there so
-Standalone users aren't asked to dig into a VST3-specific folder for no reason. `D-110_Data`
+Either of #2/#3 works for either build (VST3 or Standalone) - the second location is just there
+so Standalone users aren't asked to dig into a VST3-specific folder for no reason. `D-110_Data`
 (underscore) is also accepted at either location, in case an older install already used it.
 
 ## Where files are matched by name vs. by content

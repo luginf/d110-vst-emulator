@@ -373,6 +373,73 @@ void testQuantize() {
 	      "note-off kept original note length after quantize");
 }
 
+// ---- 3b. soft quantize: playback snaps to the grid, but the recording itself never
+// changes - proven by reading the raw stored bytes back AND by turning it back off and
+// getting the exact original (unsnapped) timing again, not a baked-in approximation.
+void testSoftQuantize() {
+	std::printf("-- soft quantize --\n");
+	D110SequencerEngine engine;
+	engine.setChannelSource(defaultChannelForTrack);
+	engine.setTempo(120.0);
+	engine.setTimeSignature(4, 4);
+	engine.setPrecountBars(0);
+
+	engine.armTrack(2);
+	engine.startRecording();
+	engine.captureEvent(juce::MidiMessage::noteOn(1, 60, (juce::uint8)100), 0.93);
+	engine.captureEvent(juce::MidiMessage::noteOff(1, 60), 1.87);
+	engine.stopRecording();
+
+	engine.setQuantizeMode(d110seq::QuantizeMode::soft);
+	engine.quantizeTrack(2, QuantizeGrid::quarter); // same 1.0-beat grid as testQuantize()
+
+	// The stored bytes themselves must still read the original 0.93 - unlike hard quantize,
+	// nothing here should have moved anything on disk/in memory.
+	{
+		auto bytes = engine.trackToBytes(2);
+		juce::MemoryInputStream in(bytes.getData(), bytes.getSize(), false);
+		juce::MidiFile mf;
+		mf.readFrom(in);
+		bool foundOriginalOnset = false;
+		const auto *seq = mf.getTrack(0);
+		for (int i = 0; i < seq->getNumEvents(); ++i) {
+			const auto &m = seq->getEventPointer(i)->message;
+			if (m.isNoteOn() && std::abs(m.getTimeStamp() / 960.0 - 0.93) < 0.001) foundOriginalOnset = true;
+		}
+		check(foundOriginalOnset, "soft quantizeTrack left the recorded note-on at its original 0.93");
+	}
+
+	constexpr double sr = 48000.0;
+	constexpr double beatsPerSample = (120.0 / 60.0) / sr;
+	constexpr int blockSamples = 24000; // [0,1) beats
+
+	// Playback still snaps live, exactly like the hard-quantize case above.
+	engine.gotoBar(1);
+	engine.play();
+	auto b0 = renderBlock(engine, blockSamples, sr);
+	check(b0.empty(), "soft-quantized note-on doesn't sound before beat 1 either");
+	auto b1 = renderBlock(engine, blockSamples, sr);
+	bool sawOn = false;
+	int onOffset = -1;
+	for (const auto &e : b1)
+		if (e.message.isNoteOn()) { sawOn = true; onOffset = e.sampleOffset; }
+	check(sawOn && onOffset == 0, "soft quantize snaps playback to beat 1.0 just like hard quantize does");
+
+	// Turn it back off: the original, never-touched recording plays exactly where it was
+	// actually played, not wherever quantize last left it.
+	engine.quantizeTrack(2, QuantizeGrid::off);
+	engine.gotoBar(1);
+	engine.play();
+	auto c0 = renderBlock(engine, blockSamples, sr);
+	bool sawOriginalOn = false;
+	int originalOnOffset = -1;
+	for (const auto &e : c0)
+		if (e.message.isNoteOn()) { sawOriginalOn = true; originalOnOffset = e.sampleOffset; }
+	const int expectedOriginalOffset = juce::roundToInt(0.93 / beatsPerSample);
+	check(sawOriginalOn && std::abs(originalOnOffset - expectedOriginalOffset) <= 1,
+	      "quantize off plays back the exact original 0.93 timing again, nothing was lost");
+}
+
 // ---- 4b. clearTrack erases one track's events and leaves the rest alone ---------
 void testClearTrack() {
 	std::printf("-- clear track --\n");
@@ -439,6 +506,58 @@ void testMidiFileRoundTrip() {
 	check(!b0.empty() && b0[0].message.isNoteOn() && b0[0].message.getNoteNumber() == 36 &&
 	          b0[0].message.getChannel() == 10,
 	      "reloaded rhythm note-on at expected position/channel");
+	check(!b0.empty() && b0[0].message.getVelocity() == 110,
+	      "reloaded note-on kept its original velocity (110), not flattened/rescaled");
+}
+
+// ---- 5a2. every individual note's own velocity survives record -> save -> load -> play,
+// not just one flat value - Alan asked 2026-08-21 after noticing some instruments played
+// back louder than expected post-reimport.
+void testVelocityPreservedThroughReimport() {
+	std::printf("-- velocity preserved through .mid reimport --\n");
+	D110SequencerEngine engine;
+	engine.setChannelSource(defaultChannelForTrack);
+	engine.setTempo(120.0);
+	engine.setTimeSignature(4, 4);
+	engine.setPrecountBars(0);
+
+	engine.armTrack(0);
+	engine.startRecording();
+	engine.captureEvent(juce::MidiMessage::noteOn(1, 60, (juce::uint8)5), 0.0);
+	engine.captureEvent(juce::MidiMessage::noteOff(1, 60), 0.5);
+	engine.captureEvent(juce::MidiMessage::noteOn(1, 64, (juce::uint8)64), 1.0);
+	engine.captureEvent(juce::MidiMessage::noteOff(1, 64), 1.5);
+	engine.captureEvent(juce::MidiMessage::noteOn(1, 67, (juce::uint8)127), 2.0);
+	engine.captureEvent(juce::MidiMessage::noteOff(1, 67), 2.5);
+	engine.stopRecording();
+
+	const auto tempFile =
+	    juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("d110_sequencer_probe_velocity.mid");
+	check(engine.saveMidiFile(tempFile), "saveMidiFile succeeds");
+
+	D110SequencerEngine reloaded;
+	reloaded.setChannelSource(defaultChannelForTrack);
+	check(reloaded.loadMidiFile(tempFile), "loadMidiFile succeeds");
+	tempFile.deleteFile();
+
+	reloaded.gotoBar(1);
+	reloaded.play();
+	constexpr double sr = 48000.0;
+	constexpr int blockSamples = 24000; // 0.5s = 1 beat at 120bpm
+	int expectedVelocities[] = { 5, 64, 127 };
+	int seen = 0;
+	for (int block = 0; block < 6 && seen < 3; ++block) {
+		auto b = renderBlock(reloaded, blockSamples, sr);
+		for (const auto &e : b) {
+			if (!e.message.isNoteOn()) continue;
+			check(e.message.getVelocity() == expectedVelocities[seen],
+			      seen == 0   ? "quietest note (5) kept its exact velocity after reimport"
+			      : seen == 1 ? "mid-velocity note (64) kept its exact velocity after reimport"
+			                  : "loudest note (127) kept its exact velocity after reimport");
+			++seen;
+		}
+	}
+	check(seen == 3, "all 3 notes were actually found during playback");
 }
 
 // ---- 5b. saveMidiFile embeds a Program Change from the program source -----------
@@ -778,13 +897,52 @@ void testNewSong() {
 	engine.stopRecording();
 	engine.setTrackMuted(1, true);
 	engine.quantizeTrack(0, QuantizeGrid::eighth);
+	engine.setTrackName(2, "Bassline");
 	check(engine.trackHasEvents(0), "track has events before New");
 
 	engine.newSong();
 	check(!engine.trackHasEvents(0), "New cleared the recorded track");
 	check(!engine.isTrackMuted(1), "New also reset mute state");
 	check(engine.getTrackQuantize(0) == QuantizeGrid::off, "New also reset quantize state");
-	check(std::abs(engine.getTempo() - 140.0) < 0.01, "New left tempo (a workspace setting) untouched");
+	check(engine.getTrackName(2).isEmpty(), "New also reset a custom track rename (2026-08-21)");
+	check(std::abs(engine.getTempo() - 120.0) < 0.01, "New reset tempo to 120 (per-slot, Alan's request 2026-08-21)");
+}
+
+// ---- 11b. the fixed per-track Program Change/Bank/Volume/Pan override is per-slot data,
+// not a workspace-wide value shared by all 4 songs (Alan's explicit correction, 2026-08-21:
+// sharing it across songs "n'a pas de sens") - so switching slots must NOT carry it over, and
+// newSong() must only clear the slot it's called on.
+void testTrackOverrideIsPerSlot() {
+	std::printf("-- fixed track override is per-slot --\n");
+	D110SequencerEngine engine;
+	engine.setChannelSource(defaultChannelForTrack);
+
+	engine.setTrackProgram(0, 41);
+	engine.setTrackBank(0, 2);
+	engine.setTrackBankLsb(0, 3);
+	engine.setTrackVolume(0, 77);
+	engine.setTrackPan(0, 5);
+	check(engine.getTrackProgram(0) == 41 && engine.getTrackBank(0) == 2 && engine.getTrackBankLsb(0) == 3
+	          && engine.getTrackVolume(0) == 77 && engine.getTrackPan(0) == 5,
+	      "slot 0: override set correctly");
+
+	engine.selectSongSlot(1);
+	check(engine.getTrackProgram(0) == -1 && engine.getTrackBank(0) == 1 && engine.getTrackBankLsb(0) == 1
+	          && engine.getTrackVolume(0) == -1 && engine.getTrackPan(0) == -1,
+	      "slot 1: starts with no override of its own, unaffected by slot 0's");
+	engine.setTrackProgram(0, 9); // slot 1's own, independent override
+
+	engine.selectSongSlot(0);
+	check(engine.getTrackProgram(0) == 41 && engine.getTrackVolume(0) == 77 && engine.getTrackPan(0) == 5,
+	      "switching back to slot 0 restores its own override intact");
+
+	engine.newSong(); // clears slot 0 only
+	check(engine.getTrackProgram(0) == -1 && engine.getTrackBank(0) == 1 && engine.getTrackVolume(0) == -1
+	          && engine.getTrackPan(0) == -1,
+	      "New cleared slot 0's own override");
+
+	engine.selectSongSlot(1);
+	check(engine.getTrackProgram(0) == 9, "slot 1's own override survived slot 0's New untouched");
 }
 
 // ---- 12. song slots are independent and persist across switches ------------------
@@ -1447,9 +1605,10 @@ void testUndo() {
 	}
 
 	// Multiple checkpoints unwind one at a time, most recent first - tempo/time signature are
-	// deliberately NOT part of a snapshot (they're workspace settings, same as newSong() leaving
-	// them alone), so this stacks two content edits (transposeBars) instead, on top of the
-	// recording checkpoint startRecording() adds on its own.
+	// deliberately NOT part of a snapshot (a tempo change while dialing in a song shouldn't be
+	// on the same undo stack as note edits, even though newSong() itself does now reset tempo -
+	// see testNewSong()), so this stacks two content edits (transposeBars) instead, on top of
+	// the recording checkpoint startRecording() adds on its own.
 	{
 		D110SequencerEngine engine;
 		engine.setChannelSource(defaultChannelForTrack);
@@ -1762,8 +1921,10 @@ int main() {
 	testStopResetsBeatCounter();
 	testMuteSolo();
 	testQuantize();
+	testSoftQuantize();
 	testClearTrack();
 	testMidiFileRoundTrip();
+	testVelocityPreservedThroughReimport();
 	testProgramChangeExport();
 	testByteRoundTrip();
 	testPunchReplacePreservesSurroundings();
@@ -1772,6 +1933,7 @@ int main() {
 	testLoopBar();
 	testLoopPunchRestrictsRecording();
 	testNewSong();
+	testTrackOverrideIsPerSlot();
 	testSongSlots();
 	testCopySongSlot();
 	testPrecountIsFictitious();

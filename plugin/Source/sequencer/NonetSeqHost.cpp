@@ -19,11 +19,6 @@ NonetSeqHost::NonetSeqHost() {
 			t == d110seq::D110SequencerEngine::kRhythmTrack ? 10 : t + 2;
 	for (int t = d110seq::D110SequencerEngine::kNumTracks; t < d110seq::D110SequencerEngine::kMaxTracks; ++t)
 		trackChannels[static_cast<size_t>(t)] = t == d110seq::D110SequencerEngine::kNumTracks ? 1 : t + 1;
-	trackPrograms.fill(-1);
-	trackBanks.fill(1);
-	trackBankLsb.fill(1);
-	trackVolumes.fill(-1);
-	trackPans.fill(-1);
 	engine.setChannelSource([this](int trackIndex) { return trackChannels[static_cast<size_t>(trackIndex)]; });
 	// No live sound to read a "current" Program Change/Bank/Volume/Pan from - there's no synth
 	// here - so saveMidiFile() instead exports the stored per-track settings directly (the same
@@ -140,16 +135,16 @@ void NonetSeqHost::advance(int numSamples, float *const *outputChannelData, int 
 	if ((nowPlaying && !wasPlayingForProgramSend) || doResync) {
 		juce::MidiBuffer pcOut;
 		for (int t = 0; t < engine.activeTrackCount(); ++t) {
-			const int program = trackPrograms[static_cast<size_t>(t)];
-			const int volume = trackVolumes[static_cast<size_t>(t)];
-			const int pan = trackPans[static_cast<size_t>(t)];
+			const int program = getTrackProgram(t);
+			const int volume = getTrackVolume(t);
+			const int pan = getTrackPan(t);
 			// Volume/Pan are independent of Program Change - a track can have either without
 			// the other - so only skip this track once all three are unset, not just PC.
 			if (program < 0 && volume < 0 && pan < 0) continue;
 			const int channel = engine.channelForTrack(t);
 			if (program >= 0) {
-				const int bank = trackBanks[static_cast<size_t>(t)];
-				const int bankLsb = trackBankLsb[static_cast<size_t>(t)];
+				const int bank = getTrackBank(t);
+				const int bankLsb = getTrackBankLsb(t);
 				const int rawProgram = juce::jlimit(0, 127, program + programChangeOffset);
 				const int rawBank = juce::jlimit(0, 127, (bank - 1) + bankOffset);
 				const int rawBankLsb = juce::jlimit(0, 127, bankLsb - 1);
@@ -294,52 +289,52 @@ void NonetSeqHost::setTrackChannel(int track, int channel) {
 
 int NonetSeqHost::getTrackProgram(int track) const {
 	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return -1;
-	return trackPrograms[static_cast<size_t>(track)];
+	return engine.getTrackProgram(track);
 }
 
 void NonetSeqHost::setTrackProgram(int track, int program) {
 	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return;
-	trackPrograms[static_cast<size_t>(track)] = program < 0 ? -1 : juce::jlimit(0, 127, program);
+	engine.setTrackProgram(track, program);
 }
 
 int NonetSeqHost::getTrackBank(int track) const {
 	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return 1;
-	return trackBanks[static_cast<size_t>(track)];
+	return engine.getTrackBank(track);
 }
 
 void NonetSeqHost::setTrackBank(int track, int bank) {
 	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return;
-	trackBanks[static_cast<size_t>(track)] = juce::jlimit(1, 128, bank);
+	engine.setTrackBank(track, bank);
 }
 
 int NonetSeqHost::getTrackBankLsb(int track) const {
 	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return 1;
-	return trackBankLsb[static_cast<size_t>(track)];
+	return engine.getTrackBankLsb(track);
 }
 
 void NonetSeqHost::setTrackBankLsb(int track, int bankLsb) {
 	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return;
-	trackBankLsb[static_cast<size_t>(track)] = juce::jlimit(1, 128, bankLsb);
+	engine.setTrackBankLsb(track, bankLsb);
 }
 
 int NonetSeqHost::getTrackVolume(int track) const {
 	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return -1;
-	return trackVolumes[static_cast<size_t>(track)];
+	return engine.getTrackVolume(track);
 }
 
 void NonetSeqHost::setTrackVolume(int track, int volume) {
 	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return;
-	trackVolumes[static_cast<size_t>(track)] = volume < 0 ? -1 : juce::jlimit(0, 100, volume);
+	engine.setTrackVolume(track, volume);
 }
 
 int NonetSeqHost::getTrackPan(int track) const {
 	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return -1;
-	return trackPans[static_cast<size_t>(track)];
+	return engine.getTrackPan(track);
 }
 
 void NonetSeqHost::setTrackPan(int track, int pan) {
 	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return;
-	trackPans[static_cast<size_t>(track)] = pan < 0 ? -1 : juce::jlimit(0, 14, pan);
+	engine.setTrackPan(track, pan);
 }
 
 void NonetSeqHost::injectTestNote(int channel, int note, float velocity, bool on) {
@@ -411,6 +406,7 @@ void NonetSeqHost::loadSettings() {
 	engine.setMetronomeVolume(static_cast<float>(xml->getDoubleAttribute("seqMetronomeVolume", 1.0)));
 	engine.setPrecountBars(xml->getIntAttribute("seqPrecountBars", 1));
 	engine.setRecordMode(static_cast<d110seq::RecordMode>(xml->getIntAttribute("seqRecordMode", 0)));
+	engine.setQuantizeMode(static_cast<d110seq::QuantizeMode>(xml->getIntAttribute("seqQuantizeMode", 0)));
 	engine.setStepDuration(static_cast<d110seq::QuantizeGrid>(
 		xml->getIntAttribute("seqStepGrid", static_cast<int>(d110seq::QuantizeGrid::eighth))));
 	engine.setStepDotted(xml->getIntAttribute("seqStepDotted", 0) != 0);
@@ -432,15 +428,14 @@ void NonetSeqHost::loadSettings() {
 	setProgramChangeOffset(xml->getIntAttribute("pcOffset", 0));
 	setBankOffset(xml->getIntAttribute("bankOffset", 0));
 
-	for (int t = 0; t < d110seq::D110SequencerEngine::kMaxTracks; ++t) {
+	for (int t = 0; t < d110seq::D110SequencerEngine::kMaxTracks; ++t)
 		setTrackChannel(t, xml->getIntAttribute("chTrack" + juce::String(t), trackChannels[static_cast<size_t>(t)]));
-		setTrackProgram(t, xml->getIntAttribute("pcTrack" + juce::String(t), -1));
-		setTrackBank(t, xml->getIntAttribute("bankTrack" + juce::String(t), 1));
-		setTrackBankLsb(t, xml->getIntAttribute("bankLsbTrack" + juce::String(t), 1));
-		setTrackVolume(t, xml->getIntAttribute("volTrack" + juce::String(t), -1));
-		setTrackPan(t, xml->getIntAttribute("panTrack" + juce::String(t), -1));
-	}
-
+	// pcTrack<n>/bankTrack<n>/bankLsbTrack<n>/volTrack<n>/panTrack<n> (a workspace-wide
+	// override, one value shared by all 4 songs) are no longer read here - see saveSettings()'s
+	// own comment. readSongsXml() below now restores it per slot instead, from that project's
+	// own (already-per-slot) seqProgram<slot><track> etc. attributes if saved after the change,
+	// or leaves it at "off" (Track's own default) if the settings file predates it.
+	//
 	// kMaxTracks unconditionally - see D110SequencerSongsFile.h's own comment on why.
 	d110seq::readSongsXml(engine, *xml, d110seq::D110SequencerEngine::kMaxTracks);
 }
@@ -459,6 +454,7 @@ void NonetSeqHost::saveSettings() const {
 	xml.setAttribute("seqMetronomeVolume", static_cast<double>(engine.getMetronomeVolume()));
 	xml.setAttribute("seqPrecountBars", engine.getPrecountBars());
 	xml.setAttribute("seqRecordMode", static_cast<int>(engine.getRecordMode()));
+	xml.setAttribute("seqQuantizeMode", static_cast<int>(engine.getQuantizeMode()));
 	xml.setAttribute("seqStepGrid", static_cast<int>(engine.getStepDuration()));
 	xml.setAttribute("seqStepDotted", engine.getStepDotted() ? 1 : 0);
 	xml.setAttribute("seqLoopMode", static_cast<int>(engine.getLoopMode()));
@@ -475,15 +471,13 @@ void NonetSeqHost::saveSettings() const {
 	xml.setAttribute("pcOffset", programChangeOffset);
 	xml.setAttribute("bankOffset", bankOffset);
 
-	for (int t = 0; t < d110seq::D110SequencerEngine::kMaxTracks; ++t) {
+	for (int t = 0; t < d110seq::D110SequencerEngine::kMaxTracks; ++t)
 		xml.setAttribute("chTrack" + juce::String(t), trackChannels[static_cast<size_t>(t)]);
-		xml.setAttribute("pcTrack" + juce::String(t), trackPrograms[static_cast<size_t>(t)]);
-		xml.setAttribute("bankTrack" + juce::String(t), trackBanks[static_cast<size_t>(t)]);
-		xml.setAttribute("bankLsbTrack" + juce::String(t), trackBankLsb[static_cast<size_t>(t)]);
-		xml.setAttribute("volTrack" + juce::String(t), trackVolumes[static_cast<size_t>(t)]);
-		xml.setAttribute("panTrack" + juce::String(t), trackPans[static_cast<size_t>(t)]);
-	}
-
+	// The per-track Program Change/Bank/BankLsb/Volume/Pan override used to be saved here
+	// (pcTrack<n>/bankTrack<n>/etc., a workspace preference) - it's per-slot data now
+	// (2026-08-21, Alan's explicit correction: sharing it across all 4 songs "n'a pas de sens"),
+	// saved by writeSongsXml() below along with everything else that's part of a song.
+	//
 	// kMaxTracks unconditionally - see D110SequencerSongsFile.h's own comment on why.
 	d110seq::writeSongsXml(engine, xml, d110seq::D110SequencerEngine::kMaxTracks);
 

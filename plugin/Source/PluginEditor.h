@@ -460,6 +460,7 @@ private:
 	// (which only dispatches left-clicks) because right-click on it also needs handling, in
 	// mouseDown()'s popup-menu branch.
 	juce::Rectangle<float> zoomBounds;
+	juce::Rectangle<float> romFolderBounds;
 	int tonePartial = 0;
 	std::array<juce::Rectangle<float>, 4> tonePartialBounds{};
 

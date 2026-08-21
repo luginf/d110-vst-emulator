@@ -86,8 +86,8 @@ void D110SequencerEngine::setSysExPreambleSource(std::function<std::vector<std::
 	sysExPreambleSource = std::move(f);
 }
 
-void D110SequencerEngine::setSysExPreambleSink(std::function<void(int, std::vector<std::vector<juce::uint8>>)> f) {
-	sysExPreambleSink = std::move(f);
+void D110SequencerEngine::setLoadedTrackSetupSink(std::function<void(int, std::vector<juce::MidiMessage>)> f) {
+	loadedTrackSetupSink = std::move(f);
 }
 
 void D110SequencerEngine::setTempo(double bpm) {
@@ -395,6 +395,25 @@ void D110SequencerEngine::setTrackMuted(int index, bool muted) { trackAt(index).
 bool D110SequencerEngine::isTrackMuted(int index) const { return trackAt(index).muted; }
 void D110SequencerEngine::setTrackName(int index, const juce::String &name) { trackAt(index).name = name; }
 juce::String D110SequencerEngine::getTrackName(int index) const { return trackAt(index).name; }
+
+int D110SequencerEngine::getTrackProgram(int index) const { return trackAt(index).program; }
+void D110SequencerEngine::setTrackProgram(int index, int program) {
+	trackAt(index).program = program < 0 ? -1 : juce::jlimit(0, 127, program);
+}
+int D110SequencerEngine::getTrackBank(int index) const { return trackAt(index).bank; }
+void D110SequencerEngine::setTrackBank(int index, int bank) { trackAt(index).bank = juce::jlimit(1, 128, bank); }
+int D110SequencerEngine::getTrackBankLsb(int index) const { return trackAt(index).bankLsb; }
+void D110SequencerEngine::setTrackBankLsb(int index, int bankLsb) {
+	trackAt(index).bankLsb = juce::jlimit(1, 128, bankLsb);
+}
+int D110SequencerEngine::getTrackVolume(int index) const { return trackAt(index).volume; }
+void D110SequencerEngine::setTrackVolume(int index, int volume) {
+	trackAt(index).volume = volume < 0 ? -1 : juce::jlimit(0, 100, volume);
+}
+int D110SequencerEngine::getTrackPan(int index) const { return trackAt(index).pan; }
+void D110SequencerEngine::setTrackPan(int index, int pan) {
+	trackAt(index).pan = pan < 0 ? -1 : juce::jlimit(0, 14, pan);
+}
 void D110SequencerEngine::setTrackSoloed(int index, bool soloed) { trackAt(index).soloed = soloed; }
 bool D110SequencerEngine::isTrackSoloed(int index) const { return trackAt(index).soloed; }
 bool D110SequencerEngine::trackHasEvents(int index) const { return trackAt(index).events.getNumEvents() > 0; }
@@ -420,6 +439,12 @@ double D110SequencerEngine::gridBeats(QuantizeGrid grid) const {
 	}
 }
 
+double D110SequencerEngine::snapBeat(double beat, QuantizeGrid grid) const {
+	const double step = gridBeats(grid);
+	if (step <= 0.0) return beat;
+	return juce::jmax(0.0, std::round(beat / step) * step);
+}
+
 void D110SequencerEngine::snapTrackToGrid(Track &track, QuantizeGrid grid) const {
 	track.quantize = grid;
 	const double step = gridBeats(grid);
@@ -431,7 +456,7 @@ void D110SequencerEngine::snapTrackToGrid(Track &track, QuantizeGrid grid) const
 		auto *ev = seq.getEventPointer(i);
 		if (!ev->message.isNoteOn()) continue;
 		const double original = ev->message.getTimeStamp();
-		const double snapped = juce::jmax(0.0, std::round(original / step) * step);
+		const double snapped = snapBeat(original, grid);
 		const double delta = snapped - original;
 		if (delta == 0.0) continue;
 		ev->message.setTimeStamp(snapped);
@@ -480,7 +505,15 @@ void D110SequencerEngine::redo() {
 
 void D110SequencerEngine::quantizeTrack(int index, QuantizeGrid grid) {
 	jassert(index >= 0 && index < kMaxTracks);
-	snapTrackToGrid(trackAt(index), grid);
+	if (quantizeMode == QuantizeMode::hard) {
+		snapTrackToGrid(trackAt(index), grid);
+		return;
+	}
+	// Soft: the recorded events themselves are never touched - only the grid marker changes,
+	// which is all renderInto() needs to start snapping this track's playback live. Picking
+	// QuantizeGrid::off here is exactly "stop live-snapping", the soft equivalent of never
+	// having quantized at all - no separate "un-quantize" operation needed.
+	trackAt(index).quantize = grid;
 }
 
 QuantizeGrid D110SequencerEngine::getTrackQuantize(int index) const { return trackAt(index).quantize; }
@@ -643,10 +676,27 @@ void D110SequencerEngine::newSong() {
 		t.muted = false;
 		t.soloed = false;
 		t.quantize = QuantizeGrid::off;
+		// Clearing this drops back to the default label (defaultTrackLabel()) - a custom
+		// RENAME is song content just like everything else here, so NEW resets it too.
+		t.name.clear();
+		// The fixed Program Change/Bank/BankLsb/Volume/Pan override is per-track/per-slot data
+		// like everything else here (2026-08-21 - Alan was explicit that sharing this across
+		// all 4 songs "n'a pas de sens", each song's own instrumentation is part of what makes
+		// it that song) - reset along with the rest of this slot's tracks, and only this slot's.
+		t.program = -1;
+		t.bank = 1;
+		t.bankLsb = 1;
+		t.volume = -1;
+		t.pan = -1;
 	}
 	armedTrack = -1;
 	positionBeats = 0.0;
 	playing = false;
+	// Tempo is per-slot (see selectSongSlot()'s own swap), unlike the truly workspace-wide
+	// settings (precount/metronome/loop) - so resetting it here only affects this song, exactly
+	// like the track wipe above. 120 BPM matches most DAWs' own default (Alan's request,
+	// 2026-08-21) - deliberately not resetting time signature, which he didn't ask for.
+	tempoBpm = 120.0;
 }
 
 void D110SequencerEngine::selectSongSlot(int slot) {
@@ -733,6 +783,27 @@ void D110SequencerEngine::setSlotTrackName(int slot, int track, const juce::Stri
 }
 void D110SequencerEngine::setSlotTrackQuantize(int slot, int track, QuantizeGrid grid) {
 	snapTrackToGrid(songTrackAt(slot, track), grid);
+}
+
+int D110SequencerEngine::slotTrackProgram(int slot, int track) const { return songTrackAt(slot, track).program; }
+void D110SequencerEngine::setSlotTrackProgram(int slot, int track, int program) {
+	songTrackAt(slot, track).program = program < 0 ? -1 : juce::jlimit(0, 127, program);
+}
+int D110SequencerEngine::slotTrackBank(int slot, int track) const { return songTrackAt(slot, track).bank; }
+void D110SequencerEngine::setSlotTrackBank(int slot, int track, int bank) {
+	songTrackAt(slot, track).bank = juce::jlimit(1, 128, bank);
+}
+int D110SequencerEngine::slotTrackBankLsb(int slot, int track) const { return songTrackAt(slot, track).bankLsb; }
+void D110SequencerEngine::setSlotTrackBankLsb(int slot, int track, int bankLsb) {
+	songTrackAt(slot, track).bankLsb = juce::jlimit(1, 128, bankLsb);
+}
+int D110SequencerEngine::slotTrackVolume(int slot, int track) const { return songTrackAt(slot, track).volume; }
+void D110SequencerEngine::setSlotTrackVolume(int slot, int track, int volume) {
+	songTrackAt(slot, track).volume = volume < 0 ? -1 : juce::jlimit(0, 100, volume);
+}
+int D110SequencerEngine::slotTrackPan(int slot, int track) const { return songTrackAt(slot, track).pan; }
+void D110SequencerEngine::setSlotTrackPan(int slot, int track, int pan) {
+	songTrackAt(slot, track).pan = pan < 0 ? -1 : juce::jlimit(0, 14, pan);
 }
 
 void D110SequencerEngine::renderInto(juce::MidiBuffer &midiMessages, int numSamples, double sampleRate,
@@ -858,12 +929,28 @@ void D110SequencerEngine::renderInto(juce::MidiBuffer &midiMessages, int numSamp
 			if (solo && !track.soloed) continue;
 			if (recording && t == armedTrack && recordMode != RecordMode::overdub) continue;
 
+			// Soft quantize (see QuantizeMode's own comment): the track's own recorded events
+			// stay exactly as played - each one's PLAYBACK time is snapped to the grid here,
+			// freshly on every read, rather than ever being written back into the track. Note-on
+			// and note-off are each snapped independently to the same grid, not delta-preserved
+			// from the original take the way hard quantize keeps duration exact - allocation-free
+			// and impossible to leave stale after an edit (there is nothing cached to invalidate),
+			// at the cost of occasionally nudging a note's felt duration by up to one grid step;
+			// acceptable for a live preview whose entire point is that the recording underneath
+			// never changes. The scan window is widened by half a grid step on each side so an
+			// event just outside [windowStart, windowEnd) that snaps INTO this window (or the
+			// reverse) is neither missed nor double-fired.
+			const bool softQuantize = quantizeMode == QuantizeMode::soft && track.quantize != QuantizeGrid::off;
+			const double halfGrid = softQuantize ? gridBeats(track.quantize) * 0.5 : 0.0;
+
 			const auto &seq = track.events;
-			for (int i = seq.getNextIndexAtTime(windowStart); i < seq.getNumEvents(); ++i) {
+			for (int i = seq.getNextIndexAtTime(windowStart - halfGrid); i < seq.getNumEvents(); ++i) {
 				const auto *ev = seq.getEventPointer(i);
-				const double ts = ev->message.getTimeStamp();
-				if (ts >= windowEnd) break;
+				const double rawTs = ev->message.getTimeStamp();
+				if (rawTs >= windowEnd + halfGrid) break;
 				if (!isNoteEvent(ev->message)) continue; // tracks are note-only in this model
+				const double ts = softQuantize ? snapBeat(rawTs, track.quantize) : rawTs;
+				if (ts < windowStart || ts >= windowEnd) continue;
 				auto msg = ev->message;
 				if (msg.getChannel() > 0) msg.setChannel(channelForTrack(t));
 				int sampleOffset = samplesRendered + juce::roundToInt((ts - windowStart) / beatsPerSample);
@@ -1073,7 +1160,7 @@ bool D110SequencerEngine::loadMidiFile(const juce::File &file) {
 	for (int t = 0; t < activeTrackCount(); ++t) {
 		juce::MidiMessageSequence fresh;
 		juce::String newName; // stays empty if the source track carries no name of its own
-		std::vector<std::vector<juce::uint8>> sysEx; // see setSysExPreambleSink()'s own comment
+		std::vector<juce::MidiMessage> setup; // see setLoadedTrackSetupSink()'s own comment
 		const int srcIndex = startTrack + t;
 		if (srcIndex < mf.getNumTracks()) {
 			const auto *seq = mf.getTrack(srcIndex);
@@ -1081,7 +1168,13 @@ bool D110SequencerEngine::loadMidiFile(const juce::File &file) {
 				auto msg = seq->getEventPointer(i)->message;
 				if (msg.isTrackNameEvent()) newName = msg.getTextFromTextMetaEvent();
 				if (msg.isSysEx()) {
-					sysEx.emplace_back(msg.getSysExData(), msg.getSysExData() + msg.getSysExDataSize());
+					setup.push_back(msg);
+					continue;
+				}
+				if (msg.isProgramChange()
+				    || (msg.isController() && (msg.getControllerNumber() == 7 || msg.getControllerNumber() == 10))) {
+					if (msg.getChannel() > 0) msg.setChannel(channelForTrack(t));
+					setup.push_back(msg);
 					continue;
 				}
 				// Tracks are note-only in this model (see captureEvent); drop meta
@@ -1095,7 +1188,7 @@ bool D110SequencerEngine::loadMidiFile(const juce::File &file) {
 		}
 		trackAt(t).events = std::move(fresh);
 		trackAt(t).name = newName;
-		if (sysExPreambleSink && !sysEx.empty()) sysExPreambleSink(t, std::move(sysEx));
+		if (loadedTrackSetupSink && !setup.empty()) loadedTrackSetupSink(t, std::move(setup));
 	}
 
 	setTempo(newTempo);

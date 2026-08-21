@@ -548,13 +548,25 @@ void D110SequencerPanel::showQuantizeMenu(int track) {
 	// Same dialog as the CH readout's own "Program Change..." submenu item (see
 	// showTrackChannelMenu()) - just a second way to reach it, since a right-click on the row
 	// itself is a more discoverable spot for it than the narrow channel readout.
-	if (processor.supportsProgramChangeForTrack(track)) {
+	// Rhythm has no Program Change equivalent but does have its own fixed Volume/Pan (2026-08-21,
+	// Alan's request) - labelled "CC Change" there instead, since Program/Bank don't apply.
+	const bool hasProgram = processor.supportsProgramChangeForTrack(track);
+	const bool hasVolPanOnly = !hasProgram && processor.supportsTrackVolumePanForTrack(track);
+	if (hasProgram) {
 		const int program = processor.getTrackProgram(track);
 		m.addItem(14,
 		          program < 0 ? juce::String("Program Change: none...")
 		                      : "Program change " + juce::String(program + 1) + " / bank "
 		                            + juce::String(processor.getTrackBank(track)) + "...",
 		          true);
+	} else if (hasVolPanOnly) {
+		const int volume = processor.getTrackVolume(track);
+		const int pan = processor.getTrackPan(track);
+		juce::StringArray parts;
+		if (volume >= 0) parts.add("vol " + juce::String(volume));
+		if (pan >= 0) parts.add("pan " + juce::String(pan));
+		m.addItem(14, "CC Change: " + (parts.isEmpty() ? juce::String("none") : parts.joinIntoString(", ")) + "...",
+		           true);
 	}
 	m.addSeparator();
 	m.addItem(1, "Quantize: Off", true, current == QuantizeGrid::off);
@@ -624,63 +636,96 @@ void D110SequencerPanel::showTrackChannelMenu(int track) {
 	                 });
 }
 
-// Only ever called when processor.supportsProgramChangeForTrack(track) - see
-// D110SequencerHost.h. Values entered/shown 1-128 (standard musician-facing patch/bank
-// numbering); stored/sent as raw MIDI 0-127 - see setTrackProgram()/getTrackProgram()/
+// Called when either supportsProgramChangeForTrack(track) or supportsTrackVolumePanForTrack(track)
+// is true - see D110SequencerHost.h. Values entered/shown 1-128 (standard musician-facing
+// patch/bank numbering); stored/sent as raw MIDI 0-127 - see setTrackProgram()/getTrackProgram()/
 // setTrackBank()/getTrackBank() (NonetSeqHost.cpp or PluginProcessor.cpp, depending on host).
+// Rhythm (D-110 plugin only) has no Program Change equivalent but does have its own fixed
+// Volume/Pan (2026-08-21, Alan's request) - hasProgram is false there, so Bank/BankLsb/Program
+// are skipped entirely and the dialog becomes a plain "CC Change" (Volume/Pan only).
 void D110SequencerPanel::promptForTrackProgram(int track) {
-	const int current = processor.getTrackProgram(track);
-	const int currentBank = processor.getTrackBank(track);
-	const bool hasLsb = processor.supportsBankLsb();
-	const int currentBankLsb = processor.getTrackBankLsb(track);
-	const bool hasVolPan = processor.supportsTrackVolumePan();
-	const int currentVolume = processor.getTrackVolume(track);
-	const int currentPan = processor.getTrackPan(track);
-	// No override set yet - pre-fill from getTrackProgramHint() instead of an arbitrary blank
-	// field, when the host has one to offer (the D-110 plugin does: whatever this Part is
-	// playing right now - see its own override's comment). Still blank if the host has no
-	// hint (Nonet-Seq, or the plugin before the firmware/RAM has been read even once).
-	const int hint = processor.getTrackProgramHint(track);
-	const juce::String programDefault = current >= 0 ? juce::String(current + 1)
-	                                     : hint >= 0  ? juce::String(hint + 1)
-	                                                  : juce::String();
+	const bool hasProgram = processor.supportsProgramChangeForTrack(track);
+	const int current = hasProgram ? processor.getTrackProgram(track) : -1;
+	const int currentBank = hasProgram ? processor.getTrackBank(track) : 1;
+	const bool hasLsb = hasProgram && processor.supportsBankLsb();
+	const int currentBankLsb = hasLsb ? processor.getTrackBankLsb(track) : 1;
+	const bool hasVolPan = processor.supportsTrackVolumePanForTrack(track);
+	const int currentVolume = hasVolPan ? processor.getTrackVolume(track) : -1;
+	const int currentPan = hasVolPan ? processor.getTrackPan(track) : -1;
+	// No override set yet - offer getTrackProgramHint()/getTrackVolumeHint()/getTrackPanHint()
+	// (whatever this Part is actually playing right now - the D-110 plugin has these, Nonet-Seq
+	// doesn't) as a greyed placeholder rather than committed text: these fields must stay
+	// genuinely EMPTY when no override is set, so (a) it's visually obvious nothing's actually
+	// stored here - important right after New, which resets the override but not whatever the
+	// instrument happens to still be playing - and (b) pressing OK without touching a field
+	// can't silently turn a mere hint into a real stored override.
+	const int programHint = hasProgram ? processor.getTrackProgramHint(track) : -1;
+	const int volumeHint = hasVolPan ? processor.getTrackVolumeHint(track) : -1;
+	const int panHint = hasVolPan ? processor.getTrackPanHint(track) : -1;
 	auto *aw = new juce::AlertWindow(
-		"Program Change",
-		"Sent once on this track's channel when PLAY or REC starts, so the receiving synth "
-		"picks the right patch on its own. Leave Program blank to send none.\n\n"
-		"On the D-110 itself: no separate Bank Select exists on this instrument, so BANK just "
-		"folds into the raw value - Bank 1/Program 1-128 addresses one of its 128 Timbre "
-		"Memory slots directly (same numbering as the TIMBRES tab), Bank 2/Program 1-64 reaches "
-		"the second half, the \"B\" page on the instrument's own panel. On any other synth "
-		"(Nonet Sequencer), MIDI actually has two Bank Select controllers - CC0 (Bank/high, "
-		"the MSB) and CC32 (Bank LSB/low) - sent ahead of the Program Change, in that order, "
-		"as most external gear expects; many synths only look at one of the two, but both are "
-		"here since which one varies by device."
-		+ juce::String(hasVolPan
-			? (hasLsb ? "\n\nVOLUME (0-100) and PAN (0-14, 7=centre) send real MIDI CC7/CC10, "
-			            "scaled to the wire's 0-127, the same moment as the Program Change. "
-			            "Leave either blank to send neither."
-			          : "\n\nVOLUME (0-100) and PAN (0-14, 7=centre) are the same Part LEVEL/PAN "
-			            "the PARTS tab edits, sent the same moment as the Program Change. Leave "
-			            "either blank to send neither.")
-			: ""),
+		hasProgram ? "Program Change" : "CC Change",
+		(hasProgram
+			 ? juce::String(
+				   "Sent once on this track's channel when PLAY or REC starts, so the receiving synth "
+				   "picks the right patch on its own. Leave Program blank to send none.\n\n"
+				   "On the D-110 itself: no separate Bank Select exists on this instrument, so BANK just "
+				   "folds into the raw value - Bank 1/Program 1-128 addresses one of its 128 Timbre "
+				   "Memory slots directly (same numbering as the TIMBRES tab), Bank 2/Program 1-64 reaches "
+				   "the second half, the \"B\" page on the instrument's own panel. On any other synth "
+				   "(Nonet Sequencer), MIDI actually has two Bank Select controllers - CC0 (Bank/high, "
+				   "the MSB) and CC32 (Bank LSB/low) - sent ahead of the Program Change, in that order, "
+				   "as most external gear expects; many synths only look at one of the two, but both are "
+				   "here since which one varies by device.")
+			 : juce::String(
+				   "This track has no Program Change equivalent (its sounds are picked per key on the "
+				   "RHYTHM tab, not by a single patch number), but it can still carry a fixed Volume/Pan, "
+				   "sent once the same moment PLAY or REC starts."))
+			+ juce::String(hasVolPan
+				? (hasLsb ? "\n\nVOLUME (0-100) and PAN (0-14, 7=centre) send real MIDI CC7/CC10, "
+				            "scaled to the wire's 0-127, the same moment as the Program Change. "
+				            "Leave either blank to send neither."
+				          : "\n\nVOLUME (0-100) and PAN (0-14, 7=centre) are the same Part LEVEL/PAN "
+				            "the PARTS tab edits, sent the same moment as the Program Change. Leave "
+				            "either blank to send neither.")
+				: ""),
 		juce::AlertWindow::NoIcon);
-	aw->addTextEditor("bank", juce::String(currentBank), hasLsb ? "Bank/high (1-128):" : "Bank (1-128):");
-	if (hasLsb) aw->addTextEditor("bankLsb", juce::String(currentBankLsb), "Bank LSB/low (1-128):");
-	aw->addTextEditor("program", programDefault, "Program (1-128):");
+	if (hasProgram) {
+		aw->addTextEditor("bank", juce::String(currentBank), hasLsb ? "Bank/high (1-128):" : "Bank (1-128):");
+		if (hasLsb) aw->addTextEditor("bankLsb", juce::String(currentBankLsb), "Bank LSB/low (1-128):");
+		aw->addTextEditor("program", current >= 0 ? juce::String(current + 1) : juce::String(), "Program (1-128):");
+	}
 	if (hasVolPan) {
 		aw->addTextEditor("volume", currentVolume >= 0 ? juce::String(currentVolume) : juce::String(),
 		                   "Volume (0-100):");
 		aw->addTextEditor("pan", currentPan >= 0 ? juce::String(currentPan) : juce::String(), "Pan (0-14):");
 	}
+	// Greyed placeholder, shown only while the field itself is genuinely empty - see this
+	// function's own comment above on why a hint must never become committed text.
+	if (hasProgram) {
+		if (auto *programEditor = aw->getTextEditor("program"))
+			if (current < 0 && programHint >= 0)
+				programEditor->setTextToShowWhenEmpty(
+					"now: " + juce::String(programHint + 1), juce::Colours::grey);
+	}
+	if (hasVolPan) {
+		if (auto *volumeEditor = aw->getTextEditor("volume"))
+			if (currentVolume < 0 && volumeHint >= 0)
+				volumeEditor->setTextToShowWhenEmpty("now: " + juce::String(volumeHint), juce::Colours::grey);
+		if (auto *panEditor = aw->getTextEditor("pan"))
+			if (currentPan < 0 && panHint >= 0)
+				panEditor->setTextToShowWhenEmpty("now: " + juce::String(panHint), juce::Colours::grey);
+	}
 	aw->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
 	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, track, hasLsb, hasVolPan](int result) {
+	aw->enterModalState(true, juce::ModalCallbackFunction::create(
+		[this, aw, track, hasProgram, hasLsb, hasVolPan](int result) {
 		if (result == 1) {
-			const juce::String text = aw->getTextEditorContents("program").trim();
-			processor.setTrackProgram(track, text.isEmpty() ? -1 : juce::jlimit(1, 128, text.getIntValue()) - 1);
-			processor.setTrackBank(track, aw->getTextEditorContents("bank").trim().getIntValue());
-			if (hasLsb) processor.setTrackBankLsb(track, aw->getTextEditorContents("bankLsb").trim().getIntValue());
+			if (hasProgram) {
+				const juce::String text = aw->getTextEditorContents("program").trim();
+				processor.setTrackProgram(track, text.isEmpty() ? -1 : juce::jlimit(1, 128, text.getIntValue()) - 1);
+				processor.setTrackBank(track, aw->getTextEditorContents("bank").trim().getIntValue());
+				if (hasLsb) processor.setTrackBankLsb(track, aw->getTextEditorContents("bankLsb").trim().getIntValue());
+			}
 			if (hasVolPan) {
 				const juce::String volText = aw->getTextEditorContents("volume").trim();
 				processor.setTrackVolume(track, volText.isEmpty() ? -1 : volText.getIntValue());
@@ -1139,6 +1184,8 @@ void D110SequencerPanel::confirmNewSong() {
 	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, description](int result) {
 		if (result == 1) {
 			engine().pushUndoSnapshot(description);
+			// newSong() also resets tempo and the fixed per-track Program Change/Bank/Volume/
+			// Pan override for this slot's own tracks - see its own comment.
 			engine().newSong();
 			repaint();
 		}

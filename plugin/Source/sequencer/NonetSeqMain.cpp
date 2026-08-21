@@ -33,14 +33,16 @@ public:
 	std::function<void()> onExtraTracksToggled;
 	std::function<void()> onRetroModeToggled;
 	std::function<void()> onAudioSettingsRequested;
+	std::function<void()> onQuantizeModeToggled;
 
 	void setValues(bool themeLightIn, int programOffsetIn, int bankOffsetIn, bool extraTracksOnIn,
-	               bool retroModeOnIn) {
+	               bool retroModeOnIn, bool quantizeSoftIn) {
 		themeLight = themeLightIn;
 		programOffset = programOffsetIn;
 		bankOffset = bankOffsetIn;
 		extraTracksOn = extraTracksOnIn;
 		retroModeOn = retroModeOnIn;
+		quantizeSoft = quantizeSoftIn;
 		repaint();
 	}
 
@@ -59,6 +61,8 @@ public:
 		b.removeFromTop(kRowGap);
 		retroModeRowBounds = b.removeFromTop(kRowH);
 		b.removeFromTop(kRowGap);
+		quantizeModeRowBounds = b.removeFromTop(kRowH);
+		b.removeFromTop(kRowGap);
 		audioRowBounds = b.removeFromTop(kRowH);
 
 		paintToggleRow(g, pal, themeRowBounds, "Theme", themeLight ? "LIGHT" : "DARK");
@@ -66,6 +70,7 @@ public:
 		paintOffsetRow(g, pal, bankRow, "Bank offset", bankOffset, bankMinusBounds, bankPlusBounds);
 		paintToggleRow(g, pal, extraTracksRowBounds, "Extra tracks (16 total)", extraTracksOn ? "ON" : "OFF");
 		paintToggleRow(g, pal, retroModeRowBounds, "Retro Sequencer (D-20 style)", retroModeOn ? "ON" : "OFF");
+		paintToggleRow(g, pal, quantizeModeRowBounds, "Quantize mode", quantizeSoft ? "SOFT" : "HARD");
 		paintToggleRow(g, pal, audioRowBounds, "Audio Device", "Configure...");
 	}
 
@@ -77,6 +82,7 @@ public:
 		if (bankPlusBounds.contains(e.position)) { if (onBankOffsetChanged) onBankOffsetChanged(bankOffset + 1); return; }
 		if (extraTracksRowBounds.contains(e.position)) { if (onExtraTracksToggled) onExtraTracksToggled(); return; }
 		if (retroModeRowBounds.contains(e.position)) { if (onRetroModeToggled) onRetroModeToggled(); return; }
+		if (quantizeModeRowBounds.contains(e.position)) { if (onQuantizeModeToggled) onQuantizeModeToggled(); return; }
 		if (audioRowBounds.contains(e.position)) { if (onAudioSettingsRequested) onAudioSettingsRequested(); return; }
 	}
 
@@ -126,8 +132,9 @@ private:
 	int programOffset = 0, bankOffset = 0;
 	bool extraTracksOn = false;
 	bool retroModeOn = false;
+	bool quantizeSoft = false;
 	juce::Rectangle<float> themeRowBounds, progMinusBounds, progPlusBounds, bankMinusBounds, bankPlusBounds,
-		extraTracksRowBounds, retroModeRowBounds, audioRowBounds;
+		extraTracksRowBounds, retroModeRowBounds, quantizeModeRowBounds, audioRowBounds;
 };
 
 // Three clickable fields: MIDI In and MIDI Out (the same idea as
@@ -185,11 +192,12 @@ private:
 
 	void showOptionsDialog() {
 		auto *content = new OptionsDialogContent();
-		content->setSize(320, 6 * 30 + 5 * 10 + 12);
+		content->setSize(320, 7 * 30 + 6 * 10 + 12);
 		auto refresh = [this, content] {
 			content->setValues(d110ui::getTheme() == d110ui::Theme::Light, host.getProgramChangeOffset(),
 			                    host.getBankOffset(), host.getSequencer().getExtraTracksEnabled(),
-			                    host.getSequencerRetroMode());
+			                    host.getSequencerRetroMode(),
+			                    host.getSequencer().getQuantizeMode() == d110seq::QuantizeMode::soft);
 		};
 		refresh();
 		content->onThemeToggled = [this, content, refresh] {
@@ -216,6 +224,12 @@ private:
 			if (onSequencerModeChanged) onSequencerModeChanged();
 			refresh();
 		};
+		content->onQuantizeModeToggled = [this, refresh] {
+			auto &eng = host.getSequencer();
+			eng.setQuantizeMode(eng.getQuantizeMode() == d110seq::QuantizeMode::soft ? d110seq::QuantizeMode::hard
+			                                                                        : d110seq::QuantizeMode::soft);
+			refresh();
+		};
 		content->onAudioSettingsRequested = [this] { showAudioSettingsDialog(); };
 
 		auto *aw = new juce::AlertWindow(
@@ -223,9 +237,12 @@ private:
 			"The offsets below correct the raw Program Change/Bank Select bytes actually sent, in "
 			"case an external synth's own manual numbers them differently (from 0 or from 1) than "
 			"this app's Program/Bank fields do. Extra tracks: same switch as right-clicking above "
-			"the track rows, see docs/sequencer.md. Audio Device opens the usual JUCE device "
-			"picker - this app doesn't output sound, but the device chosen there is what the "
-			"transport's low-jitter clock is tied to (see docs/sequencer.md's Timing section).",
+			"the track rows, see docs/sequencer.md. Quantize mode: HARD moves a track's own "
+			"recorded notes onto the grid for good; SOFT leaves them exactly as played and only "
+			"snaps them live during playback - picking OFF on a track's own quantize control then "
+			"plays the original recording again, unchanged. Audio Device opens the usual JUCE "
+			"device picker - this app doesn't output sound, but the device chosen there is what "
+			"the transport's low-jitter clock is tied to (see docs/sequencer.md's Timing section).",
 			juce::AlertWindow::NoIcon);
 		aw->addCustomComponent(content);
 		aw->addButton("Close", 0, juce::KeyPress(juce::KeyPress::returnKey), juce::KeyPress(juce::KeyPress::escapeKey));

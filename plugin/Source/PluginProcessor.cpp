@@ -130,8 +130,8 @@ D110AudioProcessor::D110AudioProcessor()
 	sequencerEngine.setPanSource(
 		[this](int track) { return sequencerLivePans[static_cast<size_t>(track)]; });
 	sequencerEngine.setSysExPreambleSource([this](int track) { return buildInternalToneSysEx(track); });
-	sequencerEngine.setSysExPreambleSink(
-		[this](int track, std::vector<std::vector<juce::uint8>> sysEx) { applyLoadedSysExPreamble(track, std::move(sysEx)); });
+	sequencerEngine.setLoadedTrackSetupSink(
+		[this](int track, std::vector<juce::MidiMessage> setup) { applyLoadedTrackSetup(track, std::move(setup)); });
 	// The D-110 itself has no Bank Select concept - A/B is folded straight into the Program
 	// Change byte (see the "No Bank Select (CC0) here" comment in processBlock()). But an
 	// exported .mid file is read by other software, not just this instrument: a receiver going
@@ -142,10 +142,6 @@ D110AudioProcessor::D110AudioProcessor()
 	sequencerEngine.setBankSource([](int) { return 1; });
 	sequencerEngine.setBankLsbSource([](int) { return 1; });
 
-	sequencerTrackPrograms.fill(-1);
-	sequencerTrackBanks.fill(1);
-	sequencerTrackVolumes.fill(-1);
-	sequencerTrackPans.fill(-1);
 
 	tryAutoLoadRoms();
 }
@@ -418,7 +414,69 @@ juce::String D110AudioProcessor::getMameRomPath() {
 	return root.getFullPathName();
 }
 
+// A ROM whole-image (Control or PCM) dropped LOOSE right next to the plugin/binary itself -
+// the VST3-colocated shared folder (e.g. `~/.vst3`, home to every OTHER plugin's own bundle
+// too) or the Standalone executable's own folder - rather than inside a dedicated "D-110 Data"
+// subfolder (Alan's request 2026-08-21: "permettre d'avoir les ROM ... dans le même dossier que
+// le VST3/le binaire"). Deliberately non-recursive (`RangedDirectoryIterator(base, false, ...)`):
+// the VST3-colocated folder in particular can hold dozens of other plugins' own bundles, and a
+// RECURSIVE scan of all of that looking for ROM-shaped files would be needlessly slow (and is
+// exactly what materializeNativeRomFiles()/getMameRomPath() already do safely today, but only
+// because getAutoRomFolder() has only ever pointed them at a small, dedicated subfolder - never
+// at a big shared one). A non-recursive listing only ever sees LOOSE FILES sitting directly in
+// that top folder, never walks into another plugin's own bundle directory, so this stays cheap
+// regardless of how much else is installed there. Found files get copied into `dest` (the
+// dedicated "D-110 Data" folder) so every other part of the ROM/NVRAM machinery keeps working
+// completely unchanged - this is purely "make loose files show up where the rest of the app
+// already expects them to be", not a new place the app reads ROMs FROM at runtime.
+void D110AudioProcessor::materializeLooseRomsIfNeeded(const juce::File &dest) {
+	if (folderIsPopulated(dest)) return;
+
+	juce::Array<juce::File> looseBases;
+#if JUCE_WINDOWS
+	looseBases.add(juce::File("C:/Program Files/Common Files/VST3"));
+#elif JUCE_MAC
+	looseBases.add(
+		juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile("Library/Audio/Plug-Ins/VST3"));
+#else
+	looseBases.add(juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile(".vst3"));
+#endif
+	looseBases.add(juce::File::getSpecialLocation(juce::File::currentExecutableFile).getParentDirectory());
+
+	// Whole-image sizes (Control, PCM) plus every individual MAME-style chip dump size this
+	// project already recognises elsewhere (getMameRomPath()'s own isChipSize, plus the
+	// character-generator ROM's 4096) - not just whatever identifyRomData() (mt32emu's own
+	// Control/PCM classifier) accepts, since booting the actual FIRMWARE also needs the
+	// character-generator and BOSS reverb chips, neither of which mt32emu itself knows about.
+	// A size match is enough here (not a full checksum) - anything that lands in `dest` this
+	// way still has to pass the real identification/reassembly checks in tryAutoLoadRoms()/
+	// tryAssembleRomsFromChipDumps() before it's actually used for anything.
+	auto isKnownRomSize = [](juce::int64 n) {
+		return n == 4096 || n == 32768 || n == 131072 || n == 163840 || n == 524288 || n == 1048576;
+	};
+
+	for (const auto &base : looseBases) {
+		if (!base.isDirectory()) continue;
+		bool copiedAnything = false;
+		for (const auto &entry : juce::RangedDirectoryIterator(base, false, "*", juce::File::findFiles)) {
+			const auto file = entry.getFile();
+			if (!isKnownRomSize(file.getSize())) continue;
+			dest.createDirectory();
+			if (file.copyFileTo(dest.getChildFile(file.getFileName()))) copiedAnything = true;
+		}
+		if (copiedAnything) return;
+	}
+}
+
 juce::File D110AudioProcessor::getAutoRomFolder() {
+	// Highest priority: an explicit user override (Utility tab, "ROM FOLDER") - see
+	// getCustomRomFolder()'s own comment. Trusted as-is, no populated-folder gate: if Alan
+	// points this here on purpose and it's empty/wrong, that should surface as the normal
+	// "ROMs not found" error rather than silently falling through to auto-discovery, which
+	// would be far more confusing to debug.
+	const auto custom = getCustomRomFolder();
+	if (custom.isNotEmpty()) return juce::File(custom);
+
 	// Colocated with the platform's standard shared VST3 folder (see VST3_COPY_DIR in
 	// plugin/CMakeLists.txt) - makes sense for the plugin, since every DAW scans there anyway,
 	// and is the default location for a fresh install (checked first, below).
@@ -445,11 +503,33 @@ juce::File D110AudioProcessor::getAutoRomFolder() {
 
 	if (folderIsPopulated(vst3Colocated)) return vst3Colocated;
 	if (folderIsPopulated(appData)) return appData;
+
+	// Neither dedicated folder has anything yet - one last look for ROMs sitting loose right
+	// next to the VST3 bundle or the Standalone binary itself, copied in if found.
+	materializeLooseRomsIfNeeded(vst3Colocated);
+	if (folderIsPopulated(vst3Colocated)) return vst3Colocated;
+
 	return vst3Colocated;
 }
 
+juce::String D110AudioProcessor::getCustomRomFolder() {
+	const auto file = getCustomRomPathFile();
+	if (!file.existsAsFile()) return {};
+	return file.loadFileAsString().trim();
+}
+
+void D110AudioProcessor::setCustomRomFolder(const juce::String &path) {
+	const auto file = getCustomRomPathFile();
+	if (path.trim().isEmpty()) {
+		file.deleteFile();
+		return;
+	}
+	file.getParentDirectory().createDirectory();
+	file.replaceWithText(path.trim());
+}
+
 bool D110AudioProcessor::identifyRomData(const juce::MemoryBlock &data,
-                                         MT32Emu::ROMInfo::Type &typeOut) const {
+                                         MT32Emu::ROMInfo::Type &typeOut) {
 	if (data.getSize() == 0) return false;
 	MT32Emu::ArrayFile probe(static_cast<const MT32Emu::Bit8u *>(data.getData()), data.getSize());
 	const MT32Emu::ROMImage *image = MT32Emu::ROMImage::makeROMImage(&probe);
@@ -847,15 +927,20 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 			if (sequencerRamScratch.size() != static_cast<size_t>(D110CoreType::kRamSize))
 				sequencerRamScratch.resize(static_cast<size_t>(D110CoreType::kRamSize));
 			if (core.getRam(sequencerRamScratch.data())) {
-				for (int t = 0; t < d110seq::D110SequencerEngine::kRhythmTrack; ++t) {
-					const size_t chAddr = static_cast<size_t>(D110CoreType::kRamSystem + 13 + t);
-					const int raw = chAddr < sequencerRamScratch.size()
-					                    ? static_cast<int>(sequencerRamScratch[chAddr])
-					                    : -1;
-					// 0..15 = channel 1..16; 16 = the part is OFF, and anything else means
-					// the read didn't land where expected - both fall back to the engine's
-					// own default (channelForTrack) by staying -1.
-					sequencerLiveChannels[static_cast<size_t>(t)] = (raw >= 0 && raw <= 15) ? raw + 1 : -1;
+				// Rhythm's own record (index kRhythmTrack) is included now too, for its LEVEL/PAN
+				// (2026-08-21, Alan's request: a fixed default Volume for the rhythm track) - its
+				// channel entry is still skipped below and stays fixed at 10, unrelated to this.
+				for (int t = 0; t < d110seq::D110SequencerEngine::kNumTracks; ++t) {
+					if (t != d110seq::D110SequencerEngine::kRhythmTrack) {
+						const size_t chAddr = static_cast<size_t>(D110CoreType::kRamSystem + 13 + t);
+						const int raw = chAddr < sequencerRamScratch.size()
+						                    ? static_cast<int>(sequencerRamScratch[chAddr])
+						                    : -1;
+						// 0..15 = channel 1..16; 16 = the part is OFF, and anything else means
+						// the read didn't land where expected - both fall back to the engine's
+						// own default (channelForTrack) by staying -1.
+						sequencerLiveChannels[static_cast<size_t>(t)] = (raw >= 0 && raw <= 15) ? raw + 1 : -1;
+					}
 
 					// TimbreTemp field 0 = TONE GROUP (0=preset A, 1=preset B, 2=internal tone
 					// memory, 3=rhythm - see D110EditorPane's own "TONE GROUP" column), field 1
@@ -967,17 +1052,23 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 		const bool nowSequencerPlaying = sequencerEngine.isPlaying();
 		const bool doProgramResync = sequencerResyncRequested.exchange(false);
 		if ((nowSequencerPlaying && !wasSequencerPlayingForProgramSend) || doProgramResync) {
-			for (int t = 0; t < d110seq::D110SequencerEngine::kRhythmTrack; ++t) {
-				const int program = sequencerTrackPrograms[static_cast<size_t>(t)];
-				if (program >= 0) {
-					const int channel = sequencerEngine.channelForTrack(t);
-					const int bank = sequencerTrackBanks[static_cast<size_t>(t)];
-					const int rawProgram = juce::jlimit(0, 127, (bank - 1) * 64 + program);
-					sequencerOut.addEvent(juce::MidiMessage::programChange(channel, rawProgram), 0);
+			// Rhythm (index kRhythmTrack) is included for Volume/Pan only, not Program/Bank -
+			// it has no Program Change equivalent (see supportsProgramChangeForTrack()), but its
+			// own TimbreTemp record's LEVEL/PAN is exactly as real as any melodic Part's (2026-08-21,
+			// Alan's request: a fixed default Volume for the rhythm track).
+			for (int t = 0; t <= d110seq::D110SequencerEngine::kRhythmTrack; ++t) {
+				if (t < d110seq::D110SequencerEngine::kRhythmTrack) {
+					const int program = sequencerEngine.getTrackProgram(t);
+					if (program >= 0) {
+						const int channel = sequencerEngine.channelForTrack(t);
+						const int bank = sequencerEngine.getTrackBank(t);
+						const int rawProgram = juce::jlimit(0, 127, (bank - 1) * 64 + program);
+						sequencerOut.addEvent(juce::MidiMessage::programChange(channel, rawProgram), 0);
+					}
 				}
-				const int volume = sequencerTrackVolumes[static_cast<size_t>(t)];
+				const int volume = sequencerEngine.getTrackVolume(t);
 				if (volume >= 0) sendTimbreTempParam(t, 8, static_cast<juce::uint8>(volume));
-				const int pan = sequencerTrackPans[static_cast<size_t>(t)];
+				const int pan = sequencerEngine.getTrackPan(t);
 				if (pan >= 0) sendTimbreTempParam(t, 9, static_cast<juce::uint8>(pan));
 			}
 		}
@@ -1880,13 +1971,52 @@ std::vector<std::vector<juce::uint8>> D110AudioProcessor::buildInternalToneSysEx
 	return out;
 }
 
-void D110AudioProcessor::applyLoadedSysExPreamble(int, std::vector<std::vector<juce::uint8>> sysEx) {
-	const double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
-	for (const auto &payload : sysEx) {
-		if (payload.empty()) continue;
-		auto message = juce::MidiMessage::createSysExMessage(payload.data(), int(payload.size()));
-		message.setTimeStamp(now);
-		osMidiCollector.addMessageToQueue(message);
+void D110AudioProcessor::applyLoadedTrackSetup(int track, std::vector<juce::MidiMessage> setup) {
+	// Program Change and the Internal-tone SysEx preamble are replayed as plain live MIDI,
+	// through osMidiCollector - confirmed reliable (Program Change and the Tone Memory dump
+	// both land correctly against real files, verified by direct RAM read).
+	//
+	// Volume (CC7) and Pan (CC10) are NOT replayed as live MIDI - a real regression shipped
+	// under that theory earlier the same day (2026-08-21) and was reverted once Alan confirmed
+	// against his own real DAW session that live CC7 has NO audible effect on this instrument
+	// AT ALL, full stop - not "attenuates via the sound engine on top of the Timbre's own
+	// LEVEL" as first assumed, just genuinely inert, on real hardware and in this emulation
+	// both. The D-110 simply never implements MIDI Channel Volume/Pan as their own concept -
+	// its only real "how loud/where panned is this Part" values are the Timbre's own LEVEL/PAN
+	// fields (TimbreTemp offsets 8/9, exactly what the PARTS tab edits), so restoring them on
+	// reimport has to write there directly - sendTimbreTempParam(), the same call the PARTS
+	// tab's own LEVEL/PAN columns use, address-based rather than channel-based (which also
+	// sidesteps a still-unexplained, separate bug where live CC10 replay works for some
+	// channels and not others - see project_reimport_volume_pan_channel_bug memory). Scaled
+	// back from the wire's 0-127 down to the D-110's own 0-100/0-14 ranges.
+	for (const auto &message : setup) {
+		if (message.isController() && message.getControllerNumber() == 7) {
+			const int level = juce::jlimit(0, 100, juce::roundToInt(message.getControllerValue() * 100.0f / 127.0f));
+			sendTimbreTempParam(track, 8, static_cast<juce::uint8>(level));
+			continue;
+		}
+		if (message.isController() && message.getControllerNumber() == 10) {
+			const int pan = juce::jlimit(0, 14, juce::roundToInt(message.getControllerValue() * 14.0f / 127.0f));
+			sendTimbreTempParam(track, 9, static_cast<juce::uint8>(pan));
+			continue;
+		}
+		if (message.isSysEx()) {
+			// Only a genuine Roland D-110 DT1 write (our own SysEx preamble) gets replayed -
+			// some DAWs (confirmed: Alan's own export) insert their own GM/GS
+			// initialisation SysEx (Universal Non-Realtime "GM System On", Roland GS Reset -
+			// different manufacturer/model header) at the start of a track, unrelated to this
+			// instrument and never meant to reach it. Forwarding those to the firmware anyway
+			// was a real bug found the same day (2026-08-21) - checked against the exact
+			// header buildDt1Message() itself writes (Roland/device ID/D-110 model/DT1).
+			const auto *data = message.getSysExData();
+			const int size = message.getSysExDataSize();
+			const bool isD110Dt1 = size >= 4 && data[0] == 0x41 && data[1] == 0x10 && data[2] == 0x16
+			                        && data[3] == 0x12;
+			if (!isD110Dt1) continue;
+		}
+		auto timed = message;
+		timed.setTimeStamp(juce::Time::getMillisecondCounterHiRes() * 0.001);
+		osMidiCollector.addMessageToQueue(timed);
 	}
 }
 
@@ -1938,42 +2068,42 @@ void D110AudioProcessor::selectTimbreForPart(int part, int timbre) {
 // work - there's no MIDI Bank Select on this instrument at all).
 int D110AudioProcessor::getTrackProgram(int track) const {
 	if (!supportsProgramChangeForTrack(track)) return -1;
-	return sequencerTrackPrograms[static_cast<size_t>(track)];
+	return sequencerEngine.getTrackProgram(track);
 }
 
 void D110AudioProcessor::setTrackProgram(int track, int program) {
 	if (!supportsProgramChangeForTrack(track)) return;
-	sequencerTrackPrograms[static_cast<size_t>(track)] = program < 0 ? -1 : juce::jlimit(0, 127, program);
+	sequencerEngine.setTrackProgram(track, program);
 }
 
 int D110AudioProcessor::getTrackBank(int track) const {
 	if (!supportsProgramChangeForTrack(track)) return 1;
-	return sequencerTrackBanks[static_cast<size_t>(track)];
+	return sequencerEngine.getTrackBank(track);
 }
 
 void D110AudioProcessor::setTrackBank(int track, int bank) {
 	if (!supportsProgramChangeForTrack(track)) return;
-	sequencerTrackBanks[static_cast<size_t>(track)] = juce::jlimit(1, 128, bank);
+	sequencerEngine.setTrackBank(track, bank);
 }
 
 int D110AudioProcessor::getTrackVolume(int track) const {
-	if (!supportsProgramChangeForTrack(track)) return -1;
-	return sequencerTrackVolumes[static_cast<size_t>(track)];
+	if (!supportsTrackVolumePanForTrack(track)) return -1;
+	return sequencerEngine.getTrackVolume(track);
 }
 
 void D110AudioProcessor::setTrackVolume(int track, int volume) {
-	if (!supportsProgramChangeForTrack(track)) return;
-	sequencerTrackVolumes[static_cast<size_t>(track)] = volume < 0 ? -1 : juce::jlimit(0, 100, volume);
+	if (!supportsTrackVolumePanForTrack(track)) return;
+	sequencerEngine.setTrackVolume(track, volume);
 }
 
 int D110AudioProcessor::getTrackPan(int track) const {
-	if (!supportsProgramChangeForTrack(track)) return -1;
-	return sequencerTrackPans[static_cast<size_t>(track)];
+	if (!supportsTrackVolumePanForTrack(track)) return -1;
+	return sequencerEngine.getTrackPan(track);
 }
 
 void D110AudioProcessor::setTrackPan(int track, int pan) {
-	if (!supportsProgramChangeForTrack(track)) return;
-	sequencerTrackPans[static_cast<size_t>(track)] = pan < 0 ? -1 : juce::jlimit(0, 14, pan);
+	if (!supportsTrackVolumePanForTrack(track)) return;
+	sequencerEngine.setTrackPan(track, pan);
 }
 
 // Pull direction - see D110SequencerHost.h's own comment on resyncProgramChanges() being the
@@ -1986,11 +2116,15 @@ void D110AudioProcessor::setTrackPan(int track, int pan) {
 // addresses the full range directly (the plain TIMBRES tab numbering), the simplest of the
 // several equally-correct (bank, program) pairs that would work.
 void D110AudioProcessor::captureLivePatchIntoTracks() {
-	for (int t = 0; t < d110seq::D110SequencerEngine::kRhythmTrack; ++t) {
-		const int program = sequencerLivePrograms[static_cast<size_t>(t)];
-		if (program >= 0) {
-			setTrackProgram(t, program);
-			setTrackBank(t, 1);
+	// Rhythm (index kRhythmTrack) included for Volume/Pan only, same reasoning as the
+	// PLAY-edge send in processBlock() - see that loop's own comment.
+	for (int t = 0; t <= d110seq::D110SequencerEngine::kRhythmTrack; ++t) {
+		if (t < d110seq::D110SequencerEngine::kRhythmTrack) {
+			const int program = sequencerLivePrograms[static_cast<size_t>(t)];
+			if (program >= 0) {
+				setTrackProgram(t, program);
+				setTrackBank(t, 1);
+			}
 		}
 		const int volume = sequencerLiveVolumes[static_cast<size_t>(t)];
 		if (volume >= 0) setTrackVolume(t, volume);
@@ -2007,6 +2141,16 @@ void D110AudioProcessor::captureLivePatchIntoTracks() {
 int D110AudioProcessor::getTrackProgramHint(int track) const {
 	if (!supportsProgramChangeForTrack(track)) return -1;
 	return sequencerLivePrograms[static_cast<size_t>(track)];
+}
+
+int D110AudioProcessor::getTrackVolumeHint(int track) const {
+	if (!supportsTrackVolumePanForTrack(track)) return -1;
+	return sequencerLiveVolumes[static_cast<size_t>(track)];
+}
+
+int D110AudioProcessor::getTrackPanHint(int track) const {
+	if (!supportsTrackVolumePanForTrack(track)) return -1;
+	return sequencerLivePans[static_cast<size_t>(track)];
 }
 
 bool D110AudioProcessor::hasSoundSnapshot(int slot) const {
@@ -2357,22 +2501,18 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	xml->setAttribute("seqMetronomeVolume", double(sequencerEngine.getMetronomeVolume()));
 	xml->setAttribute("seqPrecountBars", sequencerEngine.getPrecountBars());
 	xml->setAttribute("seqRecordMode", static_cast<int>(sequencerEngine.getRecordMode()));
+	xml->setAttribute("seqQuantizeMode", static_cast<int>(sequencerEngine.getQuantizeMode()));
 	xml->setAttribute("seqStepGrid", static_cast<int>(sequencerEngine.getStepDuration()));
 	xml->setAttribute("seqStepDotted", sequencerEngine.getStepDotted() ? 1 : 0);
 	xml->setAttribute("seqLoopMode", static_cast<int>(sequencerEngine.getLoopMode()));
 	xml->setAttribute("seqPunchIn", sequencerEngine.getPunchIn());
 	xml->setAttribute("seqPunchOut", sequencerEngine.getPunchOut());
 
-	// Per-Part Program Change/Bank override - see getTrackProgram()/getTrackBank(). Workspace
-	// preference, same reasoning as the metronome/precount settings just above, not song
-	// content - a sequencer song plays the same notes regardless of which patches happen to
-	// be armed to auto-load when it starts.
-	for (int t = 0; t < d110seq::D110SequencerEngine::kRhythmTrack; ++t) {
-		xml->setAttribute("pcTrack" + juce::String(t), sequencerTrackPrograms[static_cast<size_t>(t)]);
-		xml->setAttribute("bankTrack" + juce::String(t), sequencerTrackBanks[static_cast<size_t>(t)]);
-		xml->setAttribute("volTrack" + juce::String(t), sequencerTrackVolumes[static_cast<size_t>(t)]);
-		xml->setAttribute("panTrack" + juce::String(t), sequencerTrackPans[static_cast<size_t>(t)]);
-	}
+	// The per-track Program Change/Bank/Volume/Pan override used to be saved here as a
+	// workspace preference (pcTrack<n>/bankTrack<n>/volTrack<n>/panTrack<n>) - it's per-slot
+	// data now (2026-08-21), saved by writeSongsXml() below along with everything else that's
+	// part of a song. An OLD project's pcTrack0../bankTrack0.. etc. attributes are simply no
+	// longer read by setStateInformation() - see its own comment on why that's fine.
 
 	// Per-song sound snapshot - see hasSoundSnapshot()/storeSoundSnapshotForSlot(). Unlike
 	// the per-track override just above, this genuinely IS song content (that's the whole
@@ -2501,6 +2641,8 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 		sequencerEngine.setPrecountBars(xml->getIntAttribute("seqPrecount", 1) != 0 ? 1 : 0);
 	sequencerEngine.setRecordMode(static_cast<d110seq::RecordMode>(
 		xml->getIntAttribute("seqRecordMode", static_cast<int>(d110seq::RecordMode::replaceRange))));
+	sequencerEngine.setQuantizeMode(static_cast<d110seq::QuantizeMode>(
+		xml->getIntAttribute("seqQuantizeMode", static_cast<int>(d110seq::QuantizeMode::hard))));
 	sequencerEngine.setStepDuration(static_cast<d110seq::QuantizeGrid>(
 		xml->getIntAttribute("seqStepGrid", static_cast<int>(d110seq::QuantizeGrid::eighth))));
 	sequencerEngine.setStepDotted(xml->getIntAttribute("seqStepDotted", 0) != 0);
@@ -2509,13 +2651,12 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 	sequencerEngine.setLoopMode(static_cast<d110seq::LoopMode>(
 		xml->getIntAttribute("seqLoopMode", static_cast<int>(d110seq::LoopMode::off))));
 
-	for (int t = 0; t < d110seq::D110SequencerEngine::kRhythmTrack; ++t) {
-		setTrackProgram(t, xml->getIntAttribute("pcTrack" + juce::String(t), -1));
-		setTrackBank(t, xml->getIntAttribute("bankTrack" + juce::String(t), 1));
-		setTrackVolume(t, xml->getIntAttribute("volTrack" + juce::String(t), -1));
-		setTrackPan(t, xml->getIntAttribute("panTrack" + juce::String(t), -1));
-	}
-
+	// pcTrack<n>/bankTrack<n>/volTrack<n>/panTrack<n> (a workspace-wide override, one value
+	// shared by all 4 songs) are no longer read - see getStateInformation()'s own comment. A
+	// project saved before this changed (2026-08-21) simply loads with that override cleared;
+	// readSongsXml() below is what now restores it, per slot, from that project's own
+	// (already-per-slot) seqProgram<slot><track> etc. attributes if it was saved after the
+	// change, or leaves it at "off" (Track's own default) if the project predates it.
 	for (int s = 0; s < d110seq::D110SequencerEngine::kNumSongSlots; ++s) {
 		songSoundSnapshots[static_cast<size_t>(s)] = {};
 		if (xml->hasAttribute("soundSnapshotSlot" + juce::String(s))) {

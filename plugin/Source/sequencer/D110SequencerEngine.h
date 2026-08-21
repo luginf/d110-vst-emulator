@@ -38,6 +38,15 @@ enum class QuantizeGrid {
 	whole
 };
 
+// Whether quantizeTrack() actually rewrites the recorded events (hard, the original and
+// still-default behaviour) or leaves them exactly as played and instead snaps them to the
+// grid live, every time they're read for playback, without ever touching the track's own
+// stored data (soft) - Alan's question "est-ce que ça garde l'enregistrement de départ ?"
+// 2026-08-21. See renderInto()'s own comment for how soft mode is actually computed. A
+// workspace-wide setting, not per-track - it changes what quantizeTrack()/the existing
+// per-track grid picker DO, not a separate control of its own.
+enum class QuantizeMode { hard, soft };
+
 // How a take is folded into the armed track's existing content when it stops - see
 // stopRecording()'s own comment for exactly where each one erases from/to.
 enum class RecordMode {
@@ -143,16 +152,24 @@ public:
 	// bytes actually mean is entirely up to whatever sets this.
 	void setSysExPreambleSource(std::function<std::vector<std::vector<juce::uint8>>(int trackIndex)> sysExForTrack);
 
-	// The load-side mirror of setSysExPreambleSource(): loadMidiFile() hands back, per track,
-	// whatever SysEx messages it found sitting at time 0 in the source file (typically its own
-	// prior export's preamble - see above), payload bytes only, same convention (no F0/F7). Not
-	// applied to anything by the engine itself - D-110-agnostic like every Source/Sink here, it's
-	// purely a courier - the D-110 plugin uses this to replay an Internal-tone dump straight back
-	// into the firmware's memory on load, the one thing loadMidiFile()'s own note-only track
-	// model can't represent. Called once per track, only when that track's source events include
-	// at least one SysEx message; not called otherwise, and no callback set = the bytes are just
-	// dropped, same as loadMidiFile()'s pre-existing behaviour for every other non-note event.
-	void setSysExPreambleSink(std::function<void(int trackIndex, std::vector<std::vector<juce::uint8>> sysEx)> sysExSink);
+	// The load-side mirror of setSysExPreambleSource() - broadened 2026-08-21 to also cover
+	// Program Change/Volume/Pan, after Alan found reimporting a track changed how it sounded:
+	// loadMidiFile()'s track model is note-only (see captureEvent()'s own comment), so every
+	// non-note event it finds in the source file - the SysEx preamble above, but also whatever
+	// Program Change/CC7 (Volume)/CC10 (Pan) saveMidiFile() wrote out, see its own comment - was
+	// simply dropped on the floor, silently leaving the live instrument on whatever sound/level
+	// it already happened to be on rather than what the file actually says. Not applied to
+	// anything by the engine itself - D-110-agnostic like every Source/Sink here, it's purely a
+	// courier, already rechannelled onto channelForTrack(trackIndex) (the CURRENT live mapping,
+	// not whatever channel happened to be baked into the file - same convention renderInto()
+	// uses for notes). The D-110 plugin replays these straight back into the firmware exactly
+	// as if they'd just arrived over real MIDI - see D110AudioProcessor::applyLoadedTrackSetup().
+	// Bank Select (CC0/CC32) is deliberately NOT included: the D-110 firmware has no Bank Select
+	// concept at all (see setBankSource()'s own comment), so replaying it would be a pure no-op
+	// for this instrument - only Program Change/Volume/Pan actually change anything it does.
+	// Called once per track, only when at least one such event was found; not called otherwise,
+	// and no callback set = everything is just dropped, same as before this existed.
+	void setLoadedTrackSetupSink(std::function<void(int trackIndex, std::vector<juce::MidiMessage> setup)> setupSink);
 
 	// Transport
 	void setTempo(double bpm);
@@ -262,6 +279,13 @@ public:
 	void setRecordMode(RecordMode mode) { recordMode = mode; }
 	RecordMode getRecordMode() const { return recordMode; }
 
+	// See QuantizeMode's own comment. Switching this does not, by itself, change anything
+	// already on a track - hard mode already baked in stays baked in, and a track's
+	// getTrackQuantize() grid (if any) just changes what it now MEANS: ignored in hard mode
+	// (the events are already where they need to be), applied live in soft mode.
+	void setQuantizeMode(QuantizeMode mode) { quantizeMode = mode; }
+	QuantizeMode getQuantizeMode() const { return quantizeMode; }
+
 	// Starts the transport (if not already) and recording on the armed track, from the
 	// currently navigated bar. If precount is on, capture begins one bar later. Captured
 	// notes are held in a separate buffer, not written into the track, until stopRecording()
@@ -345,6 +369,25 @@ public:
 	// quantize above - a name is part of what makes a song's track what it is.
 	void setTrackName(int index, const juce::String &name);
 	juce::String getTrackName(int index) const;
+
+	// The fixed per-track Program Change/Bank/Bank LSB/Volume/Pan override (set by clicking a
+	// track's own CH/PC readout in the sequencer panel; sent once at the PLAY/REC edge by
+	// whichever host implements D110SequencerHost::supportsProgramChange()). Per-slot, like
+	// mute/solo/quantize/name above (2026-08-21, Alan's explicit correction - this used to be
+	// one workspace-wide value shared by all 4 songs, which he pointed out makes no sense: a
+	// song's own instrumentation is part of what makes it THAT song). -1 = no override (send
+	// nothing) for program/volume/pan, matching D110SequencerHost.h's own "no useful unset
+	// value" reasoning for bank/bankLsb (always a real 1-128 value there).
+	int getTrackProgram(int index) const;
+	void setTrackProgram(int index, int program);
+	int getTrackBank(int index) const;
+	void setTrackBank(int index, int bank);
+	int getTrackBankLsb(int index) const;
+	void setTrackBankLsb(int index, int bankLsb);
+	int getTrackVolume(int index) const;
+	void setTrackVolume(int index, int volume);
+	int getTrackPan(int index) const;
+	void setTrackPan(int index, int pan);
 
 	// Undo for the editing operations below (quantizeTrack, clearTrack, deleteBars, copyBars,
 	// transposeBars, newSong, copyCurrentSongTo) - none of them checkpoints on its own; the
@@ -483,6 +526,16 @@ public:
 	void setSlotTrackQuantize(int slot, int track, QuantizeGrid grid);
 	juce::String slotTrackName(int slot, int track) const;
 	void setSlotTrackName(int slot, int track, const juce::String &name);
+	int slotTrackProgram(int slot, int track) const;
+	void setSlotTrackProgram(int slot, int track, int program);
+	int slotTrackBank(int slot, int track) const;
+	void setSlotTrackBank(int slot, int track, int bank);
+	int slotTrackBankLsb(int slot, int track) const;
+	void setSlotTrackBankLsb(int slot, int track, int bankLsb);
+	int slotTrackVolume(int slot, int track) const;
+	void setSlotTrackVolume(int slot, int track, int volume);
+	int slotTrackPan(int slot, int track) const;
+	void setSlotTrackPan(int slot, int track, int pan);
 
 	struct MetronomeClick {
 		int samplePosition;
@@ -519,9 +572,22 @@ private:
 		bool soloed = false;
 		QuantizeGrid quantize = QuantizeGrid::off;
 		juce::String name;
+		// The fixed Program Change/Bank/BankLsb/Volume/Pan override - see getTrackProgram()'s
+		// own comment. Plain fields on Track, same as the others above, so every existing
+		// per-slot mechanism (selectSongSlot's swap, copyCurrentSongTo, undo snapshots) already
+		// handles them correctly with no extra code anywhere else.
+		int program = -1;
+		int bank = 1;
+		int bankLsb = 1;
+		int volume = -1;
+		int pan = -1;
 	};
 
 	double gridBeats(QuantizeGrid grid) const;
+	// The actual round-to-grid math, shared by snapTrackToGrid() (hard, writes it back) and
+	// renderInto() (soft, applied on the fly to a local copy of a timestamp, never written
+	// anywhere) - one definition of "what grid X does to a beat position" for both.
+	double snapBeat(double beat, QuantizeGrid grid) const;
 	bool anySoloed() const;
 	// gridBeats(stepGrid), x1.5 if stepDotted - the actual length of the step about to be
 	// committed, shared by commitStepInternal(), stepRest() and stepBack().
@@ -553,7 +619,7 @@ private:
 	std::function<int(int)> bankSource;
 	std::function<int(int)> bankLsbSource;
 	std::function<std::vector<std::vector<juce::uint8>>(int)> sysExPreambleSource;
-	std::function<void(int, std::vector<std::vector<juce::uint8>>)> sysExPreambleSink;
+	std::function<void(int, std::vector<juce::MidiMessage>)> loadedTrackSetupSink;
 	bool extraTracksEnabled = false;
 
 	// Storage for slots other than currentSlot - see selectSongSlot()'s own comment for why
@@ -605,6 +671,7 @@ private:
 	float metronomeVolume = 1.0f;
 	int armedTrack = -1;
 	RecordMode recordMode = RecordMode::replaceRange;
+	QuantizeMode quantizeMode = QuantizeMode::hard;
 
 	LoopMode loopMode = LoopMode::off;
 	int loopBar = 1;      // bar anchor for LoopMode::bar, kept in sync by gotoBar()

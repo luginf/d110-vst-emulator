@@ -215,17 +215,11 @@ private:
 	// kMaxTracks unconditionally (not just when extra tracks are enabled) so a channel chosen
 	// for an extra track before disabling them, or before this session, isn't lost.
 	std::array<int, d110seq::D110SequencerEngine::kMaxTracks> trackChannels;
-	// -1 = none, else a raw 0-127 MIDI program number - see setTrackProgram()/advance().
-	std::array<int, d110seq::D110SequencerEngine::kMaxTracks> trackPrograms;
-	// 1-128 musician-facing bank number (raw MIDI Bank Select MSB sent is bank-1) - see
-	// setTrackBank()/advance(). Always a real value, no "none" state - see D110SequencerHost.h.
-	std::array<int, d110seq::D110SequencerEngine::kMaxTracks> trackBanks;
-	// Same idea, Bank Select LSB (CC32) - see setTrackBankLsb()/advance().
-	std::array<int, d110seq::D110SequencerEngine::kMaxTracks> trackBankLsb;
-	// -1 = not set (send neither CC), else 0-100 LEVEL / 0-14 PAN (scaled to CC7/CC10's 0-127
-	// on the wire in advance()) - see setTrackVolume()/setTrackPan().
-	std::array<int, d110seq::D110SequencerEngine::kMaxTracks> trackVolumes;
-	std::array<int, d110seq::D110SequencerEngine::kMaxTracks> trackPans;
+	// The fixed Program Change/Bank/BankLsb/Volume/Pan override itself now lives directly on
+	// D110SequencerEngine, per song slot (2026-08-21, Alan's explicit correction - it used to
+	// be workspace-wide here too, shared by all 4 songs, which he pointed out makes no sense).
+	// getTrackProgram()/setTrackProgram()/etc. below just delegate to it; no storage of their
+	// own here any more.
 	bool wasPlayingForProgramSend = false;
 	// Set by resyncProgramChanges() (UI thread), cleared by advance() once acted on - see its
 	// own comment.
