@@ -4,6 +4,11 @@ See the [README](../README.md#get-started) for the short version. This is the de
 what each file is for, how to confirm you have the right dump, and how to reset the
 firmware back to factory settings if you ever need to.
 
+You can get the D-110 roms at this location: 
+- [https://mdk.cab/game/d110](https://mdk.cab/game/d110)
+- or directly there: [https://mdk.cab/download/standalone/d110.7z](https://mdk.cab/download/standalone/d110.7z)
+
+
 ## Where to put the files
 
 Checked in this order - whichever one actually has ROMs in it wins:

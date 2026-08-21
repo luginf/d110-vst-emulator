@@ -13,7 +13,7 @@ how the two halves fit together, what the extended editor drawer does, and known
 ## Get started
 
 You need your own **D-110 ROM dumps** - copyrighted Roland firmware, **not included** here.
-You can get them here: (https://mdk.cab/download/standalone/d110.7z)[https://mdk.cab/download/standalone/d110.7z]
+You can get them here: [https://mdk.cab/download/standalone/d110.7z](https://mdk.cab/download/standalone/d110.7z)
 
 Put the files loose (not zipped) into:
 
