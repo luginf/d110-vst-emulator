@@ -37,8 +37,25 @@ public:
 	// adds to its own layout for this drawer/strip.
 	static constexpr float kRefH = 130.0f;
 
+	// Two octaves is the long-standing default (desktop plugin, Nonet Sequencer - neither
+	// calls this, so both keep behaving exactly as before). One octave exists for the Android
+	// app's own Options menu (Alan's request, 2026-08-22): a phone-portrait keyboard drawn
+	// with two octaves' worth of keys crammed into that width leaves each key too narrow for a
+	// finger, and only one octave fits comfortably. Clamped to [1,2] - nothing in rebuildKeys()
+	// (the trailing-C guard, the tracker PC-keyboard mapping, which spans a fixed semitone
+	// range independent of how many are actually drawn) assumes a particular count, but nor
+	// does anything need more than these two.
+	void setNumOctaves(int n) {
+		n = juce::jlimit(1, 2, n);
+		if (n == numOctaves) return;
+		numOctaves = n;
+		rebuildKeys();
+		repaint();
+	}
+	int getNumOctaves() const { return numOctaves; }
+
 private:
-	static constexpr int kOctaves = 2;
+	int numOctaves = 2;
 	static constexpr int kLowestNote = 48; // C3
 
 	enum class PcLayout { qwerty, azerty };

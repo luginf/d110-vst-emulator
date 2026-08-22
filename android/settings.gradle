@@ -1,0 +1,31 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+// Fetches the same JUCE tag the desktop CMake build uses (see plugin/CMakeLists.txt's own
+// FetchContent_Declare), so both build systems stay on identical JUCE sources without
+// vendoring a second copy into the repo. Runs at settings-evaluation time - before app/
+// build.gradle's sourceSets is read - because that Java source set has to point at real,
+// already-on-disk files; a CMake-side FetchContent (which only runs later, inside the
+// native build task) would be too late for Gradle's own Java compilation.
+def juceDir = new File(rootDir, "juce-src")
+if (!juceDir.exists()) {
+    println "D-110 Android: fetching JUCE 8.0.15 into ${juceDir} (one-time, matches the desktop build's own JUCE version)..."
+    def clone = ["git", "clone", "--depth", "1", "--branch", "8.0.15",
+                 "https://github.com/juce-framework/JUCE.git", juceDir.absolutePath]
+    def process = clone.execute()
+    process.consumeProcessOutput(System.out, System.err)
+    process.waitFor()
+    if (process.exitValue() != 0) {
+        throw new GradleException("Failed to fetch JUCE - see output above. " +
+            "You can also clone it yourself: git clone --depth 1 --branch 8.0.15 " +
+            "https://github.com/juce-framework/JUCE.git ${juceDir.absolutePath}")
+    }
+}
+
+rootProject.name = 'D110Android'
+include ':app'

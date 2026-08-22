@@ -108,6 +108,16 @@ public:
 	void setPcmRomPath(const juce::String &path);
 
 	bool isSynthReady() const { return synth != nullptr; }
+
+	// Re-attempts automatic ROM discovery from wherever getAutoRomFolder() now points (after
+	// e.g. the ROM setup dialog or the Utility tab's "ROM FOLDER" just changed the custom
+	// override) and, if that finds both ROMs, powers the machine on right away - so pointing
+	// at a folder takes effect immediately instead of requiring a manual power cycle.
+	void reloadRomsAndPowerOn() {
+		tryAutoLoadRoms();
+		if (isSynthReady()) setPoweredOn(true);
+	}
+
 	juce::String getControlRomPath() const { return controlRomPath; }
 	juce::String getPcmRomPath() const { return pcmRomPath; }
 	juce::String getControlRomDescription() const { return controlRomDescription; }
@@ -166,6 +176,12 @@ public:
 	// by the identical route a real keyboard would - nothing here talks to the synth directly.
 	// Safe to call from the message thread; the collector is its own lock.
 	void injectTestNote(int channel, int note, float velocity, bool on) override;
+
+	// Same queue, same feed point, but for an arbitrary already-channelised MIDI message
+	// (program change, CC, pitch bend - not just notes) - what a MIDI file player needs that
+	// injectTestNote()'s note-only signature above doesn't cover. Used by the Android app's
+	// standalone MIDI file playback, which has no host/DAW to route file events through.
+	void injectMidiMessage(const juce::MidiMessage &message);
 
 	// D110Keyboard's own config (MIDI channel/omni, PC-keyboard tracker input, QWERTY/AZERTY
 	// layout) - stored here, not as plain members on the UI component itself, so it survives

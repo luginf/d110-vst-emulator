@@ -15,7 +15,10 @@ Checked in this order - whichever one actually has ROMs in it wins:
 
 1. **A custom folder you point it at yourself** - Utility tab, "ROM FOLDER" (click to pick one,
    right-click to go back to automatic detection). Added 2026-08-21 for whatever case none of
-   the automatic locations below happen to cover. Takes effect on the next power-on.
+   the automatic locations below happen to cover. Takes effect on the next power-on. If no ROMs
+   were found at all, the same folder picker also pops up on its own as soon as the editor
+   opens (no need to find the Utility tab first) and takes effect immediately, without a manual
+   power cycle.
 2. **Colocated with the shared VST3 folder** - the default, and what every existing install
    already uses:
    - Windows: `C:\Program Files\Common Files\VST3\D-110 Data\`

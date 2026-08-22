@@ -1,0 +1,92 @@
+apply plugin: 'com.android.application'
+
+def ndkVersionString = "27.0.12077973"
+
+android {
+    compileSdk 35
+    ndkVersion ndkVersionString
+    namespace "com.d110emulator.android"
+
+    externalNativeBuild {
+        cmake {
+            path "CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+
+    signingConfigs {
+        juceSigning {
+            storeFile file("${System.properties['user.home']}${File.separator}.android${File.separator}debug.keystore")
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+            storeType "jks"
+        }
+    }
+
+    defaultConfig {
+        applicationId "com.d110emulator.android"
+        minSdkVersion 26
+        targetSdkVersion 35
+        versionCode 1
+        versionName "0.1"
+        externalNativeBuild {
+            cmake {
+                // ANDROID_PLATFORM deliberately ahead of minSdkVersion above: JUCE's own
+                // Android font-matching code (juce_Fonts_android.cpp) calls APIs introduced
+                // in API 29 from behind its own runtime OS-version check, but Clang's
+                // static availability attributes still reject the call at compile time
+                // unless the compile target itself is >= 29. minSdkVersion (not this) is
+                // what actually gates which devices can install the APK.
+                //
+                // ANDROID_STL=c++_static (not c++_shared): avoids bundling the NDK's own
+                // prebuilt libc++_shared.so, which for this NDK (r27) predates 16 KB ELF
+                // alignment support and trips Android's page-size-compatibility warning at
+                // install/upload time - see the max-page-size linker flag below for our own
+                // library, which is the other half of the same fix.
+                //
+                // CMAKE_BUILD_TYPE=RelWithDebInfo: externalNativeBuild has no build-type
+                // default of its own, so assembleDebug (used for on-device testing all through
+                // this port) was compiling with no optimisation at all (-O0). D110CoreNative
+                // steps a real CPU emulation inline on the audio thread every block (see
+                // plugin/CLAUDE.md) - fine at desktop -O0 speeds, not on a phone CPU; the
+                // "distortion" Alan heard on real audio was this missing its real-time
+                // deadline, not a synthesis bug (confirmed by there being no equivalent report
+                // on any desktop build, debug or release).
+                arguments "-DANDROID_STL=c++_static", "-DANDROID_CPP_FEATURES=exceptions rtti",
+                          "-DANDROID_PLATFORM=android-29", "-DCMAKE_BUILD_TYPE=RelWithDebInfo"
+            }
+        }
+        ndk {
+            abiFilters "arm64-v8a", "x86_64"
+        }
+    }
+
+    buildTypes {
+        debug {
+            debuggable true
+            jniDebuggable true
+            signingConfig signingConfigs.juceSigning
+        }
+        release {
+            debuggable false
+            jniDebuggable false
+            signingConfig signingConfigs.juceSigning
+        }
+    }
+
+    // The generic com.rmsl.juce.* Activity/Application/JNI glue JUCE ships inside its own
+    // modules - not Projucer-generated, not app-specific. Every real app entry point (the
+    // JUCEApplication subclass, START_JUCE_APPLICATION) lives entirely on the C++ side; these
+    // Java classes only exist to give Android something to launch and to forward lifecycle/
+    // JNI calls into libjuce_jni.so.
+    sourceSets {
+        main {
+            java.srcDirs += [
+                "../juce-src/modules/juce_core/native/javacore/init",
+                "../juce-src/modules/juce_core/native/javacore/app",
+                "../juce-src/modules/juce_gui_basics/native/javaopt/app"
+            ]
+        }
+    }
+}

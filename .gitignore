@@ -33,3 +33,14 @@ build_logs/
 release-artifacts/
 *.deb
 *.exe
+
+# Android app (android/): same idea as build/ above - JUCE is fetched fresh (by
+# settings.gradle, matching the desktop CMake build's own FetchContent), never vendored.
+android/juce-src/
+android/local.properties
+android/.gradle/
+android/.idea/
+android/.cxx/
+android/app/build/
+android/app/.cxx/
+

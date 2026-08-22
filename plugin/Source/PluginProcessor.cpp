@@ -300,6 +300,25 @@ static bool folderIsPopulated(const juce::File &f) {
 	return f.isDirectory() && f.getNumberOfChildFiles(juce::File::findFilesAndDirectories) > 0;
 }
 
+// Like folderIsPopulated(), but blind to the app's own housekeeping subfolders (nvram,
+// romset) - getNvramRoot() creates "nvram" (and setPoweredOn() then "nvram/d110") inside
+// whatever getAutoRomFolder() currently resolves to on EVERY power-on attempt, including a
+// failed one with no ROMs present yet (prepareToPlay() always calls setPoweredOn(true), so
+// this happens on a plain ROM-less launch, not just a successful one). Without this
+// exclusion, that leftover folder alone makes folderIsPopulated() true forever after,
+// permanently short-circuiting getAutoRomFolder()'s populated-folder gate (and therefore
+// the loose-file/app-data fallbacks below it) even after real ROM files are dropped
+// somewhere else the auto-scan would otherwise have found them.
+static bool folderHasRoms(const juce::File &f) {
+	if (!f.isDirectory()) return false;
+	for (const auto &entry : juce::RangedDirectoryIterator(f, false, "*", juce::File::findFilesAndDirectories)) {
+		const auto name = entry.getFile().getFileName();
+		if (name.equalsIgnoreCase("nvram") || name.equalsIgnoreCase("romset")) continue;
+		return true;
+	}
+	return false;
+}
+
 static juce::File resolveNamedFolder(const juce::File &parent, const juce::String &spaceName) {
 	const auto spaced = parent.getChildFile(spaceName);
 	const auto underscored = parent.getChildFile(spaceName.replaceCharacter(' ', '_'));
@@ -430,7 +449,7 @@ juce::String D110AudioProcessor::getMameRomPath() {
 // completely unchanged - this is purely "make loose files show up where the rest of the app
 // already expects them to be", not a new place the app reads ROMs FROM at runtime.
 void D110AudioProcessor::materializeLooseRomsIfNeeded(const juce::File &dest) {
-	if (folderIsPopulated(dest)) return;
+	if (folderHasRoms(dest)) return;
 
 	juce::Array<juce::File> looseBases;
 #if JUCE_WINDOWS
@@ -501,13 +520,13 @@ juce::File D110AudioProcessor::getAutoRomFolder() {
 		juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("D-110 Emulator"),
 		"D-110 Data");
 
-	if (folderIsPopulated(vst3Colocated)) return vst3Colocated;
-	if (folderIsPopulated(appData)) return appData;
+	if (folderHasRoms(vst3Colocated)) return vst3Colocated;
+	if (folderHasRoms(appData)) return appData;
 
 	// Neither dedicated folder has anything yet - one last look for ROMs sitting loose right
 	// next to the VST3 bundle or the Standalone binary itself, copied in if found.
 	materializeLooseRomsIfNeeded(vst3Colocated);
-	if (folderIsPopulated(vst3Colocated)) return vst3Colocated;
+	if (folderHasRoms(vst3Colocated)) return vst3Colocated;
 
 	return vst3Colocated;
 }
@@ -1481,6 +1500,12 @@ void D110AudioProcessor::injectTestNote(int channel, int note, float velocity, b
 	// the real MidiInput callback above stamps its own messages before handing them here.
 	message.setTimeStamp(juce::Time::getMillisecondCounterHiRes() * 0.001);
 	osMidiCollector.addMessageToQueue(message);
+}
+
+void D110AudioProcessor::injectMidiMessage(const juce::MidiMessage &message) {
+	auto stamped = message;
+	stamped.setTimeStamp(juce::Time::getMillisecondCounterHiRes() * 0.001);
+	osMidiCollector.addMessageToQueue(stamped);
 }
 
 void D110AudioProcessor::forwardMidiToFirmware(const juce::MidiMessage &message) {

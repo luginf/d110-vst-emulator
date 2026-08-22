@@ -179,7 +179,7 @@ void D110Keyboard::rebuildKeys() {
 
 	if (keysBounds.getWidth() < 1.0f || keysBounds.getHeight() < 1.0f) return;
 
-	constexpr int kNumWhite = kOctaves * kWhiteKeysPerOctave + 1; // trailing C
+	const int kNumWhite = numOctaves * kWhiteKeysPerOctave + 1; // trailing C
 	const float whiteW = keysBounds.getWidth() / float(kNumWhite);
 	const float blackW = whiteW * 0.62f;
 	const float blackH = keysBounds.getHeight() * 0.6f;

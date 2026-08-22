@@ -599,6 +599,11 @@ public:
 	static constexpr float kMaxSequencerPaneRefH = 1400.0f;
 
 private:
+	// Shown once from the constructor when no ROMs were found, so a fresh install can point
+	// at a folder right away instead of having to first find the Utility tab inside the
+	// extended editor drawer - see its own .cpp comment.
+	void showRomSetupDialog();
+
 	float totalRefHeight() const;
 	void applySize();
 	juce::Rectangle<float> handleBand() const;

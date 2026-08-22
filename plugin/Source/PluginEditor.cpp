@@ -3140,6 +3140,47 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 		sequencerRetroPanel.repaint();
 		repaint();
 	};
+
+	// No ROMs found on this launch (or the auto-scan failed for some other reason) - offer
+	// the folder picker right here, up front, rather than making the user find the Utility
+	// tab first. Deferred with callAsync so the editor's own window exists (an AlertWindow
+	// needs a screen to appear on) before the dialog pops up.
+	if (!processor.isSynthReady())
+		juce::MessageManager::callAsync([this] { showRomSetupDialog(); });
+}
+
+void D110AudioProcessorEditor::showRomSetupDialog() {
+	if (processor.isSynthReady()) return;
+
+	auto *aw = new juce::AlertWindow("D-110 ROM files not found",
+	                                 processor.getLastError().isNotEmpty()
+	                                     ? processor.getLastError()
+	                                     : juce::String("The D-110 emulator needs the original Roland ROM files "
+	                                                    "to run. See the Utility tab, or docs/roms.md, for where "
+	                                                    "to get them and where to put them."),
+	                                 juce::AlertWindow::WarningIcon);
+	aw->addButton("Choose ROM Folder...", 1);
+	aw->addButton("Later", 0);
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this](int result) {
+		if (result != 1) return;
+		// Async dialog, so the chooser has to outlive this call - same trick as every other
+		// FileChooser in this file.
+		auto *chooser = new juce::FileChooser("Choose a folder to search for the D-110 ROM files",
+		                                      D110AudioProcessor::getAutoRomFolder());
+		chooser->launchAsync(
+			juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+			[this, chooser](const juce::FileChooser &fc) {
+				const auto dir = fc.getResult();
+				if (dir != juce::File()) {
+					D110AudioProcessor::setCustomRomFolder(dir.getFullPathName());
+					processor.reloadRomsAndPowerOn();
+					refreshFromInstrument();
+					repaint();
+					if (!processor.isSynthReady()) showRomSetupDialog();
+				}
+				delete chooser;
+			});
+	}), true);
 }
 
 void D110AudioProcessorEditor::parentHierarchyChanged()

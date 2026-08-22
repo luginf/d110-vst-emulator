@@ -1837,6 +1837,27 @@ target_link_libraries(d110_native_editor_tone_repro PRIVATE
     D110PanelData MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
 
+# Alan's report (2026-08-22): a MIDI file's track 7 writes a custom Tone + TimbreTemp
+# assignment for Part 6 via raw SysEx (no Program Change at all) - see the probe's own
+# header comment for the exact bytes and address reasoning.
+add_executable(d110_midi_import_bombastic midi_import_bombastic_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
+target_include_directories(d110_midi_import_bombastic PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_midi_import_bombastic PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+target_link_libraries(d110_midi_import_bombastic PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
 # The one path no earlier probe in this investigation tested: real MIDI input via
 # osMidiCollector (injectTestNote), driven at genuine real-time cadence (Thread::sleep, not
 # fast-forwarded rendering) - see the probe's own header comment for why this, not direct
