@@ -390,21 +390,36 @@ void D110SequencerPanel::cycleRecordMode() {
 
 void D110SequencerPanel::showRecordModeMenu() {
 	using d110seq::RecordMode;
+	using d110seq::QuantizeMode;
 	auto &eng = engine();
 	const auto current = eng.getRecordMode();
+	const auto qMode = eng.getQuantizeMode();
 
 	juce::PopupMenu m;
 	m.addItem(1, "Overdub - adds to what's already there", true, current == RecordMode::overdub);
 	m.addItem(2, "Replace - erases only the punched span", true, current == RecordMode::replaceRange);
 	m.addItem(3, "Replace to end - erases from the punch-in point onward", true,
 	          current == RecordMode::replaceToEnd);
+	// Same engine-wide setting as the outer app Options dialog's own "Quantize mode" row
+	// (NonetSeqMain.cpp/PluginEditor.cpp) - Alan's request, 2026-08-24: reachable from inside
+	// the sequencer itself too, without backing out to that separate dialog. Grouped onto
+	// this particular popup (rather than a new on-screen control of its own) since it's
+	// already the sequencer's one existing "how recording/quantizing behaves" menu.
+	m.addSeparator();
+	m.addItem(4, "Quantize mode: HARD - moves recorded notes onto the grid for good", true,
+	          qMode == QuantizeMode::hard);
+	m.addItem(5, "Quantize mode: SOFT - leaves the recording as played, snaps it live instead", true,
+	          qMode == QuantizeMode::soft);
 
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [this](int result) {
 		using d110seq::RecordMode;
+		using d110seq::QuantizeMode;
 		switch (result) {
 			case 1: engine().setRecordMode(RecordMode::overdub); break;
 			case 2: engine().setRecordMode(RecordMode::replaceRange); break;
 			case 3: engine().setRecordMode(RecordMode::replaceToEnd); break;
+			case 4: engine().setQuantizeMode(QuantizeMode::hard); break;
+			case 5: engine().setQuantizeMode(QuantizeMode::soft); break;
 			default: return;
 		}
 		repaint();
@@ -497,6 +512,66 @@ void D110SequencerPanel::showMetronomeModeMenu() {
 	});
 }
 
+void D110SequencerPanel::withLocalFileForLoad(const juce::URL &url, std::function<void(const juce::File &)> action) {
+	// isLocalFile()/getLocalFile() on Android reconstruct a raw filesystem path from a
+	// content:// SAF URI's document ID (e.g. "primary:Download/foo.mid" ->
+	// "/storage/emulated/0/Download/foo.mid") without ever checking it's actually readable -
+	// confirmed empirically, 2026-08-23 (Alan: sequencer LOAD silently did nothing): the
+	// reconstructed path passes File::getSize() (a stat()) but FileInputStream fails to open
+	// it under scoped storage, since this app never requested (and on modern Android mostly
+	// can't get) raw filesystem access outside its own sandbox. A stat()-only check like
+	// existsAsFile() doesn't catch this either, since stat() is exactly what still succeeds -
+	// only an actual open attempt reveals it. Falling through to the AndroidDocument path
+	// below (unconditionally correct, just slower) whenever that open fails costs nothing on
+	// desktop, where isLocalFile() only ever reports genuine file:// URLs and this always
+	// succeeds on the first try.
+	if (url.isLocalFile()) {
+		auto file = url.getLocalFile();
+		juce::FileInputStream testStream(file);
+		if (testStream.openedOk()) { action(file); return; }
+	}
+	auto document = juce::AndroidDocument::fromDocument(url);
+	auto stream = document.hasValue() ? document.createInputStream() : nullptr;
+	if (stream == nullptr) return;
+	auto tempFile = juce::File::createTempFile("mid");
+	{
+		juce::FileOutputStream out(tempFile);
+		if (out.openedOk()) {
+			out.writeFromInputStream(*stream, -1);
+			out.flush();
+		}
+	}
+	action(tempFile);
+	tempFile.deleteFile();
+}
+
+void D110SequencerPanel::withLocalFileForSave(const juce::URL &url, const juce::String &extension,
+                                              std::function<void(const juce::File &)> action) {
+	// Same reconstructed-path unreliability as withLocalFileForLoad's own comment - a save
+	// target can hit it too (CREATE_DOCUMENT already creates the empty destination file
+	// before returning its URI), so verify real write access the same way rather than
+	// trusting isLocalFile() alone.
+	if (url.isLocalFile()) {
+		auto file = url.getLocalFile();
+		if (!file.hasFileExtension(extension)) file = file.withFileExtension(extension);
+		juce::FileOutputStream testStream(file);
+		if (testStream.openedOk()) {
+			action(file);
+			return;
+		}
+	}
+	auto tempFile = juce::File::createTempFile(extension);
+	action(tempFile);
+	auto document = juce::AndroidDocument::fromDocument(url);
+	auto outStream = document.hasValue() ? document.createOutputStream() : nullptr;
+	if (outStream != nullptr) {
+		juce::FileInputStream in(tempFile);
+		if (in.openedOk()) outStream->writeFromInputStream(in, -1);
+		outStream->flush();
+	}
+	tempFile.deleteFile();
+}
+
 // Plain click loads/saves just the current song (.mid) - see mouseDown(). Right-click is the
 // shortcut for all 4 slots at once (.midiseq), so there's exactly one action per gesture
 // rather than a one-item menu restating what the plain click already does.
@@ -509,11 +584,12 @@ void D110SequencerPanel::showLoadMenu() {
 	chooser->launchAsync(
 		juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
 		[this, chooser](const juce::FileChooser &fc) {
-			const auto file = fc.getResult();
-			if (file != juce::File()) {
-				processor.setLastDialogDir(file.getParentDirectory());
-				processor.importSequencerSongs(file);
-			}
+			const auto url = fc.getURLResult();
+			if (url != juce::URL())
+				withLocalFileForLoad(url, [this](const juce::File &file) {
+					processor.setLastDialogDir(file.getParentDirectory());
+					processor.importSequencerSongs(file);
+				});
 			delete chooser;
 			repaint();
 		});
@@ -529,12 +605,12 @@ void D110SequencerPanel::showSaveMenu() {
 		juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
 			| juce::FileBrowserComponent::warnAboutOverwriting,
 		[this, chooser](const juce::FileChooser &fc) {
-			auto file = fc.getResult();
-			if (file != juce::File()) {
-				if (!file.hasFileExtension("midiseq")) file = file.withFileExtension("midiseq");
-				processor.setLastDialogDir(file.getParentDirectory());
-				processor.exportSequencerSongs(file);
-			}
+			const auto url = fc.getURLResult();
+			if (url != juce::URL())
+				withLocalFileForSave(url, "midiseq", [this](const juce::File &file) {
+					processor.setLastDialogDir(file.getParentDirectory());
+					processor.exportSequencerSongs(file);
+				});
 			delete chooser;
 		});
 }
@@ -827,6 +903,14 @@ void D110SequencerPanel::showBarMenu() {
 	m.addItem(6, "Copy bar(s) to... (all tracks)");
 	m.addItem(7, "Transpose bar(s) (all tracks)...");
 
+	// See onBarMenuButtonExtra's own comment - self-contained action callbacks (the
+	// std::function overload of addItem, not the numeric-ID one every item above uses), so
+	// they need no coordination with the switch below at all.
+	if (onBarMenuButtonExtra) {
+		m.addSeparator();
+		onBarMenuButtonExtra(m);
+	}
+
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [this](int result) {
 		auto &e = engine();
 		switch (result) {
@@ -845,16 +929,37 @@ void D110SequencerPanel::showBarMenu() {
 
 void D110SequencerPanel::promptForTempo() {
 	auto &eng = engine();
-	auto *aw = new juce::AlertWindow("Set tempo", "Enter a tempo in BPM (20-300).", juce::AlertWindow::NoIcon);
+	auto *aw = new juce::AlertWindow("Set tempo", "Enter a tempo in BPM (20-300), or tap the beat.",
+	                                  juce::AlertWindow::NoIcon);
 	aw->addTextEditor("bpm", juce::String(eng.getTempo(), 1), "BPM:");
+
+	// TAP used to be its own permanent panel button (Alan's request, 2026-08-22: freed that
+	// column for the bar-navigation menu button instead - see layout()'s own comment) - it
+	// lives here now. addCustomComponent(), not addButton(): every addButton() exits the
+	// AlertWindow's modal state on click, but tapping several times in a row to find a tempo
+	// needs the dialog to stay open and the BPM field to keep updating live.
+	auto *tapButton = new juce::TextButton("Tap");
+	tapButton->setSize(80, 24);
+	tapButton->onClick = [this, aw] {
+		// Not a captured reference to the eng local above - this outlives promptForTempo()
+		// returning, so it re-fetches the (long-lived) engine fresh, same as the modal
+		// callback below already has to.
+		auto &liveEngine = engine();
+		liveEngine.registerTapTempo();
+		if (auto *editor = aw->getTextEditor("bpm"))
+			editor->setText(juce::String(liveEngine.getTempo(), 1), juce::dontSendNotification);
+	};
+	aw->addCustomComponent(tapButton);
+
 	aw->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
 	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw](int result) {
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, tapButton](int result) {
 		if (result == 1) {
 			const double bpm = aw->getTextEditorContents("bpm").getDoubleValue();
 			if (bpm > 0.0) engine().setTempo(bpm);
 			repaint();
 		}
+		delete tapButton; // addCustomComponent() takes no ownership - see its own doc comment
 		delete aw;
 	}));
 }
@@ -1214,18 +1319,23 @@ void D110SequencerPanel::layout() {
 	stopBounds = colT(0.000f, 0.060f);
 	playBounds = colT(0.060f, 0.060f);
 	recBounds = colT(0.120f, 0.060f);
-	// TEMPO/TAP/TIME SIG share the same 0.185-0.400 span the first two used to have alone
-	// (0.120 + 0.090, minus the small inter-cell gap) - carved into three so TAP TEMPO gets
-	// its own click target without touching METRONOME onward at all.
+	// TEMPO/TIME SIG share the span that used to also carry a standalone TAP TEMPO button
+	// (Alan's request, 2026-08-22: TAP moved into the "Set tempo" dialog itself -
+	// promptForTempo() now has its own Tap button that updates the BPM field live without
+	// closing the dialog - freeing this column for barMenuBounds at the very end instead).
 	tempoBounds = colT(0.185f, 0.100f);
-	tapTempoBounds = colT(0.288f, 0.045f);
-	timeSigBounds = colT(0.336f, 0.064f);
-	metronomeBounds = colT(0.405f, 0.120f);
-	precountBounds = colT(0.530f, 0.130f);
-	loopBounds = colT(0.665f, 0.090f);
-	barPrevBounds = colT(0.760f, 0.045f);
-	barReadoutBounds = colT(0.808f, 0.148f);
-	barNextBounds = colT(0.960f, 0.040f);
+	timeSigBounds = colT(0.288f, 0.064f);
+	metronomeBounds = colT(0.360f, 0.120f);
+	precountBounds = colT(0.485f, 0.130f);
+	loopBounds = colT(0.620f, 0.090f);
+	barPrevBounds = colT(0.715f, 0.045f);
+	barReadoutBounds = colT(0.763f, 0.148f);
+	barNextBounds = colT(0.915f, 0.040f);
+	// The bar-navigation menu (showBarMenu()) used to only be reachable by right-click/long-
+	// press on barReadoutBounds - this is the same menu, one tap away, in the column TAP's
+	// removal freed up. See onBarMenuButtonExtra's own comment for why a host might also want
+	// this specific button.
+	barMenuBounds = colT(0.958f, 0.042f);
 
 	area.removeFromTop(juce::jmax(2.0f, area.getHeight() * 0.015f));
 
@@ -1329,7 +1439,6 @@ void D110SequencerPanel::paint(juce::Graphics &g) {
 	paintToggleButton(g, playBounds, "PLAY", eng.isPlaying() && !eng.isRecording());
 	paintToggleButton(g, recBounds, "REC", eng.isRecording());
 	paintToggleButton(g, tempoBounds, juce::String(eng.getTempo(), 1) + " BPM", false);
-	paintToggleButton(g, tapTempoBounds, "TAP", false);
 	paintToggleButton(
 		g, timeSigBounds,
 		juce::String(eng.getTimeSigNumerator()) + "/" + juce::String(eng.getTimeSigDenominator()), false);
@@ -1341,6 +1450,7 @@ void D110SequencerPanel::paint(juce::Graphics &g) {
 	paintToggleButton(g, loopBounds, loopModeLabel(eng.getLoopMode()), eng.getLoopMode() != d110seq::LoopMode::off);
 	paintToggleButton(g, barPrevBounds, "<", false);
 	paintToggleButton(g, barNextBounds, ">", false);
+	paintToggleButton(g, barMenuBounds, juce::String::fromUTF8("\xe2\x98\xb0"), false); // U+2630
 	paintToggleButton(g, barReadoutBounds,
 	                   "BAR " + juce::String(eng.getCurrentBar()) + "/" + juce::String(eng.getBarCount()),
 	                   eng.isPrecounting());
@@ -1479,38 +1589,59 @@ void D110SequencerPanel::paint(juce::Graphics &g) {
 	}
 }
 
+// The exact body a real right-click has always run - extracted verbatim so the long-press
+// path added below (mouseDown()'s own comment explains why) reaches identically the same
+// menus rather than a second, easily-drifting copy of this dispatch table.
+void D110SequencerPanel::handleContextAction(juce::Point<float> p) {
+	auto &eng = engine();
+	if (tempoBounds.contains(p)) { promptForTempo(); return; }
+	if (timeSigBounds.contains(p)) { showTimeSignatureMenu(); return; }
+	if (stepDurationBounds.contains(p)) { showStepDurationMenu(); return; }
+	if (recModeBounds.contains(p)) { showRecordModeMenu(); return; }
+	if (metronomeBounds.contains(p)) { showMetronomeModeMenu(); return; }
+	if (loadBounds.contains(p)) { showLoadMenu(); return; }
+	if (saveBounds.contains(p)) { showSaveMenu(); return; }
+	if (undoBounds.contains(p)) { showUndoRedoInfo(true); return; }
+	if (redoBounds.contains(p)) { showUndoRedoInfo(false); return; }
+	if (processor.supportsCaptureLivePatch() && resyncBounds.contains(p)) { showResyncInfo(); return; }
+	if (barReadoutBounds.contains(p)) { showBarMenu(); return; }
+	if (barPrevBounds.contains(p)) { eng.gotoBar(1); repaint(); return; }
+	if (barNextBounds.contains(p)) { eng.gotoBar(eng.getBarCount()); repaint(); return; }
+	if (stopBounds.contains(p)) { processor.midiPanic(); return; }
+	if (playBounds.contains(p)) { eng.gotoBar(1); eng.play(); repaint(); return; }
+	if (processor.supportsExtraTracks() && extraTracksZoneBounds.contains(p)) {
+		showExtraTracksMenu();
+		return;
+	}
+	for (int rowIdx = 0; rowIdx < rowsOnCurrentPage(); ++rowIdx) {
+		const int t = trackForRow(rowIdx);
+		if (rows[static_cast<size_t>(t)].rowBounds.contains(p)) { showQuantizeMenu(t); return; }
+	}
+	for (int s = 0; s < D110SequencerEngine::kNumSongSlots; ++s)
+		if (slotBounds[static_cast<size_t>(s)].contains(p)) { showCopySongMenu(s); return; }
+}
+
 void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 	auto &eng = engine();
 	const auto p = e.position;
 
-	if (e.mods.isPopupMenu()) {
-		if (tempoBounds.contains(p)) { promptForTempo(); return; }
-		if (timeSigBounds.contains(p)) { showTimeSignatureMenu(); return; }
-		if (stepDurationBounds.contains(p)) { showStepDurationMenu(); return; }
-		if (recModeBounds.contains(p)) { showRecordModeMenu(); return; }
-		if (metronomeBounds.contains(p)) { showMetronomeModeMenu(); return; }
-		if (loadBounds.contains(p)) { showLoadMenu(); return; }
-		if (saveBounds.contains(p)) { showSaveMenu(); return; }
-		if (undoBounds.contains(p)) { showUndoRedoInfo(true); return; }
-		if (redoBounds.contains(p)) { showUndoRedoInfo(false); return; }
-		if (processor.supportsCaptureLivePatch() && resyncBounds.contains(p)) { showResyncInfo(); return; }
-		if (barReadoutBounds.contains(p)) { showBarMenu(); return; }
-		if (barPrevBounds.contains(p)) { eng.gotoBar(1); repaint(); return; }
-		if (barNextBounds.contains(p)) { eng.gotoBar(eng.getBarCount()); repaint(); return; }
-		if (stopBounds.contains(p)) { processor.midiPanic(); return; }
-		if (playBounds.contains(p)) { eng.gotoBar(1); eng.play(); repaint(); return; }
-		if (processor.supportsExtraTracks() && extraTracksZoneBounds.contains(p)) {
-			showExtraTracksMenu();
-			return;
-		}
-		for (int rowIdx = 0; rowIdx < rowsOnCurrentPage(); ++rowIdx) {
-			const int t = trackForRow(rowIdx);
-			if (rows[static_cast<size_t>(t)].rowBounds.contains(p)) { showQuantizeMenu(t); return; }
-		}
-		for (int s = 0; s < D110SequencerEngine::kNumSongSlots; ++s)
-			if (slotBounds[static_cast<size_t>(s)].contains(p)) { showCopySongMenu(s); return; }
-		return;
-	}
+	if (e.mods.isPopupMenu()) { handleContextAction(p); return; }
+
+	// Touchscreens have no right mouse button - a long press (~500ms, roughly stationary)
+	// reaches the exact same menus handleContextAction() above already gives a real
+	// right-click. The ordinary tap action below still fires immediately either way (a quick
+	// tap is exactly as responsive as it always was); only a genuine HOLD additionally opens
+	// a menu on top of it. longPressToken invalidates this if the touch releases or moves
+	// (mouseUp/mouseDrag bump it) before the delay elapses, and SafePointer covers the
+	// component being destroyed outright in the meantime (e.g. Android's own tab switch).
+	longPressStartPos = p;
+	const int token = ++longPressToken;
+	juce::Component::SafePointer<D110SequencerPanel> safeThis(this);
+	juce::Timer::callAfterDelay(500, [safeThis, token, p] {
+		auto *self = safeThis.getComponent();
+		if (self == nullptr || token != self->longPressToken) return;
+		self->handleContextAction(p);
+	});
 
 	if (recModeBounds.contains(p)) { cycleRecordMode(); repaint(); return; }
 	if (newBounds.contains(p)) { confirmNewSong(); return; }
@@ -1559,32 +1690,43 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 		if (slotBounds[static_cast<size_t>(s)].contains(p)) { eng.selectSongSlot(s); repaint(); return; }
 
 	if (loadBounds.contains(p)) {
+		// Bump the token NOW, not just on the mouseUp() this tap would ordinarily get - on
+		// Android, launchAsync() below hands off to a real system Activity (the SAF picker),
+		// and this window never sees that finger lift. Left alone, the long-press timer
+		// scheduled above still fires 500ms later and calls handleContextAction() -> a SECOND,
+		// competing juce::FileChooser (showLoadMenu()'s .midiseq one) while this one is still
+		// awaiting its result - JUCE's Android FileChooser only supports one in flight at a
+		// time, so the second one breaks the first's own callback and the file you picked
+		// never actually loads. Alan hit exactly this, 2026-08-22.
+		++longPressToken;
 		auto *chooser = new juce::FileChooser("Load a MIDI file into the sequencer", processor.getLastDialogDir(), "*.mid");
 		chooser->launchAsync(
 			juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
 			[this, chooser](const juce::FileChooser &fc) {
-				const auto file = fc.getResult();
-				if (file != juce::File()) {
-					processor.setLastDialogDir(file.getParentDirectory());
-					engine().loadMidiFile(file);
-				}
+				const auto url = fc.getURLResult();
+				if (url != juce::URL())
+					withLocalFileForLoad(url, [this](const juce::File &file) {
+						processor.setLastDialogDir(file.getParentDirectory());
+						engine().loadMidiFile(file);
+					});
 				delete chooser;
 				repaint();
 			});
 		return;
 	}
 	if (saveBounds.contains(p)) {
+		++longPressToken; // see loadBounds' own comment just above
 		auto *chooser = new juce::FileChooser("Save the sequencer as a MIDI file", processor.getLastDialogDir(), "*.mid");
 		chooser->launchAsync(
 			juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
 				| juce::FileBrowserComponent::warnAboutOverwriting,
 			[this, chooser](const juce::FileChooser &fc) {
-				auto file = fc.getResult();
-				if (file != juce::File()) {
-					if (!file.hasFileExtension("mid")) file = file.withFileExtension("mid");
-					processor.setLastDialogDir(file.getParentDirectory());
-					engine().saveMidiFile(file);
-				}
+				const auto url = fc.getURLResult();
+				if (url != juce::URL())
+					withLocalFileForSave(url, "mid", [this](const juce::File &file) {
+						processor.setLastDialogDir(file.getParentDirectory());
+						engine().saveMidiFile(file);
+					});
 				delete chooser;
 			});
 		return;
@@ -1626,11 +1768,7 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 		tempoDragStartValue = eng.getTempo();
 		return;
 	}
-	if (tapTempoBounds.contains(p)) {
-		eng.registerTapTempo();
-		repaint();
-		return;
-	}
+	if (barMenuBounds.contains(p)) { showBarMenu(); return; }
 	if (processor.supportsExtraTracks() && eng.getExtraTracksEnabled()) {
 		// layout(), not just repaint(): rows[] only gets the OTHER page's bounds computed
 		// once layout() actually runs over it - a bare repaint() would paint page 1's rows
@@ -1650,6 +1788,10 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 }
 
 void D110SequencerPanel::mouseDrag(const juce::MouseEvent &e) {
+	// A real drag (dragging the tempo/bar value, or just an inaccurate tap) isn't a long
+	// press - see mouseDown()'s own comment on longPressToken.
+	if (e.position.getDistanceFrom(longPressStartPos) > 10.0f) ++longPressToken;
+
 	if (draggingTempo) {
 		// Dragging up raises the tempo, down lowers it - same sense as the panel's own VALUE
 		// fields (D110EditorPane's Cell drag), just not sharing their code since this drawer
@@ -1670,6 +1812,7 @@ void D110SequencerPanel::mouseDrag(const juce::MouseEvent &e) {
 }
 
 void D110SequencerPanel::mouseUp(const juce::MouseEvent &) {
+	++longPressToken; // released - see mouseDown()'s own comment on longPressToken
 	draggingTempo = false;
 	draggingBar = false;
 }

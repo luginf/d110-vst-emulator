@@ -103,6 +103,12 @@ behaviour. Don't duplicate that here; this file is about how to work in the repo
 - `docs/` - measured ground truth (panel pixel geometry, SysEx address map, factory
   defaults, memory card protocol). Code comments reference these; check here before
   guessing at firmware behaviour.
+- `android/` - Standalone-only Android port (CMake target `D110Android`, no VST3), reusing the
+  same panel/keyboard/sequencer sources unchanged. Paused as of 2026-08-23 (Alan's call, not
+  abandoned) - functional on one test device, never packaged/released. See
+  `docs/android.md` before touching it again, especially its file-I/O gotchas section
+  (`juce::URL::isLocalFile()` lies on Android for content:// results, and a long-press timer
+  can race a `juce::FileChooser` there in a way desktop never hits).
 - `.github/workflows/build-{windows,macos}.yml` - CI, native-core only. Deliberately
   **not** wired to `main`/`linux-port` push - triggered by `workflow_dispatch` or by
   pushing to the `ci/windows-macos-builds` branch specifically (fast-forward `main`

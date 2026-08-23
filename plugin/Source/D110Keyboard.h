@@ -54,6 +54,14 @@ public:
 	}
 	int getNumOctaves() const { return numOctaves; }
 
+	// Right-click on desktop; on Android there's no right mouse button and (see
+	// D110Keyboard.cpp's own mouseDown) a long-press on the keys themselves can't stand in for
+	// it either - holding a key down is an ordinary sustained note, not a gesture, so timing it
+	// out into "must mean a menu" would just break holding notes. The Android app instead
+	// reaches this same menu from its own hamburger menu ("Keyboard channel..."), calling this
+	// directly rather than reimplementing channel/omni/PC-layout selection a second time.
+	void showContextMenu();
+
 private:
 	int numOctaves = 2;
 	static constexpr int kLowestNote = 48; // C3
@@ -72,7 +80,6 @@ private:
 	void setHeldNote(int note); // -1 releases (mouse/touch - only one held note at a time)
 	void changeOctave(int delta);
 	void sendNote(int note, float velocity, bool on); // honours channel/omni
-	void showContextMenu();
 	void releaseAllPcNotes();
 	bool isPcKeyDownForNote(int note) const;
 	void timerCallback() override; // polls host.isNoteActive() for remote/incoming activity

@@ -1425,6 +1425,20 @@ void D110AudioProcessor::handleIncomingMidiMessage(const juce::MidiMessage &mess
 	// что прибор получил, до всякого разбора.
 	logIncomingMidi(message);
 
+	// Echoed to a real MIDI Out port too, if one's been opened (setMidiOutputDevice) - Alan's
+	// request, 2026-08-22 (Android): drive an external hardware synth off whatever the D-110
+	// itself is playing, from any of the sources this same function already merges (on-screen
+	// keyboard, a USB MIDI controller, file/sequencer playback, a DAW host). osMidiOut is null
+	// unless a host explicitly opens one, so this is a no-op everywhere it isn't wired up -
+	// same direct-from-the-audio-thread send the sequencer's own output and midiPanic() already
+	// use (a MIDI write is a handful of bytes; every backend here hands it off without
+	// blocking), just guarded by the same lock since a UI action can change osMidiOut
+	// concurrently with this running.
+	{
+		const juce::ScopedLock midiOutLock(osMidiLock);
+		if (osMidiOut != nullptr) osMidiOut->sendMessageNow(message);
+	}
+
 	if (!synth) return;
 
 	if (message.isSysEx()) {
@@ -2502,6 +2516,10 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	xml->setAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0);
 	// See getCompactPanelMode().
 	xml->setAttribute("compactPanelMode", compactPanelMode ? 1 : 0);
+	// See D110SequencerHost::getRetroKeyBindings().
+	xml->setAttribute("retroKeyBindings", retroKeyBindings);
+	// See D110SequencerHost::getRetroLcdCompactMode().
+	xml->setAttribute("retroLcdCompactMode", retroLcdCompactMode ? 1 : 0);
 	// See getLastDialogDir().
 	xml->setAttribute("lastDialogDir", lastDialogDir.getFullPathName());
 	// Editor drawer's own height, drag-resized via the keyboard handle band - see
@@ -2641,6 +2659,8 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 	setUiThemeLight(xml->getIntAttribute("uiThemeLight", uiThemeLight ? 1 : 0) != 0);
 	setSequencerRetroMode(xml->getIntAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0) != 0);
 	setCompactPanelMode(xml->getIntAttribute("compactPanelMode", compactPanelMode ? 1 : 0) != 0);
+	setRetroKeyBindings(xml->getStringAttribute("retroKeyBindings", retroKeyBindings));
+	setRetroLcdCompactMode(xml->getIntAttribute("retroLcdCompactMode", retroLcdCompactMode ? 1 : 0) != 0);
 	setLastDialogDir(juce::File(xml->getStringAttribute("lastDialogDir", lastDialogDir.getFullPathName())));
 	setEditorPaneRefH(float(xml->getDoubleAttribute("editorPaneRefH", double(editorPaneRefH))));
 	setKeyboardPaneRefH(float(xml->getDoubleAttribute("keyboardPaneRefH", double(keyboardPaneRefH))));

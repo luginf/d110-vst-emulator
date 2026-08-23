@@ -38,6 +38,16 @@ public:
 	// harmless no-op call site is on Nonet-Seq only anyway (the plugin has no Options dialog).
 	void toggleExtraTracks();
 
+	// The bar-navigation menu button (☰, next to the > arrow - Alan's request, 2026-08-22,
+	// occupying the column TAP used to have before it moved into promptForTempo()'s own
+	// dialog) already opens showBarMenu(). This lets a host that has nowhere else to put its
+	// own menu append extra items to that SAME popup instead of needing a second button -
+	// the Android app uses it for exactly that (2026-08-22: switching to the sequencer view
+	// there hides the app's own Play/Stop/hamburger row entirely to give the sequencer the
+	// full height, so this becomes the only way back to it). Empty by default - zero effect
+	// on the desktop plugin or Nonet Sequencer, neither of which sets it.
+	std::function<void(juce::PopupMenu &)> onBarMenuButtonExtra;
+
 private:
 	void timerCallback() override; // repaints the bar readout while the transport rolls
 
@@ -89,6 +99,18 @@ private:
 	int rowsOnCurrentPage() const;
 	void showBarMenu();
 	void promptForBar();
+	// Bridges a FileChooser URL result to plain juce::File-based load/save actions
+	// (D110SequencerEngine::loadMidiFile/saveMidiFile, D110SequencerHost::importSequencerSongs/
+	// exportSequencerSongs - all four take a juce::File, none a stream). On desktop the URL is
+	// always already a local file, so this is a same-cost passthrough there. On Android it may
+	// be a content:// SAF result with no real filesystem path at all (see juce::AndroidDocument's
+	// own class comment - the documented answer to exactly this), so the action instead runs
+	// against a temp file, copied from (load) or to (save) the real destination through an
+	// AndroidDocument stream. Alan's request, 2026-08-22, after the exact same bug already hit
+	// (and got fixed) the Android app's own MIDI-file player, one level up.
+	void withLocalFileForLoad(const juce::URL &url, std::function<void(const juce::File &)> action);
+	void withLocalFileForSave(const juce::URL &url, const juce::String &extension,
+	                           std::function<void(const juce::File &)> action);
 	// Right-click on the TEMPO readout - a text-entry alternative to the click-drag/wheel
 	// adjustments, for setting an exact BPM directly.
 	void promptForTempo();
@@ -117,8 +139,8 @@ private:
 	D110SequencerHost &processor;
 
 	juce::Rectangle<float> stopBounds, playBounds, recBounds;
-	juce::Rectangle<float> tempoBounds, tapTempoBounds, timeSigBounds, metronomeBounds, precountBounds, loopBounds;
-	juce::Rectangle<float> barPrevBounds, barNextBounds, barReadoutBounds;
+	juce::Rectangle<float> tempoBounds, timeSigBounds, metronomeBounds, precountBounds, loopBounds;
+	juce::Rectangle<float> barPrevBounds, barNextBounds, barReadoutBounds, barMenuBounds;
 	juce::Rectangle<float> loadBounds, saveBounds, recModeBounds, newBounds, undoBounds, redoBounds;
 	// Manual "resend Program Change/Bank/Volume/Pan now" - see D110SequencerHost.h's
 	// resyncProgramChanges().
@@ -171,6 +193,16 @@ private:
 	bool draggingBar = false;
 	float barDragStartY = 0.0f;
 	int barDragStartValue = 1;
+
+	// Touchscreens have no right mouse button - see mouseDown()'s own comment for how a long
+	// press stands in for it. handleContextAction() is the exact body a real right-click has
+	// always run (extracted, not duplicated, so both paths stay identical by construction).
+	// longPressToken is bumped on release or on moving past the threshold, which is what lets
+	// the deferred callAfterDelay() callback recognise a long press it should no longer act on
+	// (SafePointer covers the component being destroyed outright in the meantime).
+	void handleContextAction(juce::Point<float> p);
+	juce::Point<float> longPressStartPos;
+	int longPressToken = 0;
 
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D110SequencerPanel)
 };

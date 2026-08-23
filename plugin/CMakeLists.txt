@@ -89,11 +89,16 @@ set(libmt32emu_CPP_INTERFACE TRUE CACHE BOOL "" FORCE)
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../munt/mt32emu" "${CMAKE_CURRENT_BINARY_DIR}/mt32emu_build")
 
 # The front panel IS the reference photograph - see docs/panel_reference_notes.md.
+# app_icon.png (see its own docs/app_icon.svg comment) rides along in the same binary-data
+# target purely for convenience - it's the app's window/taskbar icon on platforms JUCE's own
+# ICON_BIG/ICON_SMALL CMake args don't cover (Linux - see Nonet-Seq's own setIcon() call,
+# NonetSeqMain.cpp), not anything panel-related.
 juce_add_binary_data(D110PanelData
     SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../docs/panel_reference.png"
             "${CMAKE_CURRENT_SOURCE_DIR}/../docs/panel_reference_compact.png"
             "${CMAKE_CURRENT_SOURCE_DIR}/../docs/memory_card_m256d.png"
-            "${CMAKE_CURRENT_SOURCE_DIR}/../docs/D20infos.png")
+            "${CMAKE_CURRENT_SOURCE_DIR}/../docs/D20infos.png"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../docs/app_icon.png")
 
 # On Windows, plugins conventionally live in the shared Program Files VST3 folder.
 # Elsewhere, JUCE's own default (~/Library/Audio/Plug-Ins/VST3 on macOS, ~/.vst3 on Linux)
@@ -135,6 +140,8 @@ juce_add_plugin(D110Emulator
     # not the default (2026-08-07).
     PRODUCT_NAME "D-110 Emulator MAME"
     PLUGIN_NAME "D-110 Emulator MAME"
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/../docs/app_icon.png"
+    ICON_SMALL "${CMAKE_CURRENT_SOURCE_DIR}/../docs/app_icon.png"
 )
 
 # On Apple, MAME_DRIVLIST is built as its own tiny static lib instead of going straight into
@@ -256,6 +263,13 @@ juce_add_plugin(D110EmulatorNative
     # /bin/sh unquoted and breaks the build. Spaces are escaped there; parens are not, on
     # Linux. Windows never hit this.
     PRODUCT_NAME "D-110 Emulator"
+    # The D-110 front panel's own "D-110" wordmark, vectorised - see docs/app_icon.svg's own
+    # comment. Used for the Standalone window/taskbar icon (and the VST3 bundle icon on
+    # platforms that show one); Android's separate launcher icon
+    # (android/app/src/main/res/drawable/icon.png) is rendered from the same SVG, not this
+    # CMake path - Android has no CMake-driven icon mechanism to hook into here.
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/../docs/app_icon.png"
+    ICON_SMALL "${CMAKE_CURRENT_SOURCE_DIR}/../docs/app_icon.png"
 )
 
 target_sources(D110EmulatorNative PRIVATE
@@ -1993,7 +2007,7 @@ add_executable(Nonet-Seq
 target_include_directories(Nonet-Seq PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(Nonet-Seq PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)
 target_link_libraries(Nonet-Seq PRIVATE juce::juce_gui_extra juce::juce_audio_devices juce::juce_audio_basics
-    juce::juce_audio_utils)
+    juce::juce_audio_utils D110PanelData)
 
 # D110KeyboardHost::isNoteActive() (the on-screen keyboard's "remote activity" LEDs) against
 # NonetSeqHost - no GUI, but still needs juce_events' message loop (see the probe's own

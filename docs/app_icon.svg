@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- App/window icon: the D-110 front panel's own "D-110" wordmark (see panel_reference.png,
+       the "Roland D-110" text next to the PHONES jack), vectorised by hand from that photo
+       rather than upscaling a screenshot crop of it - flat colour, no compression artefacts,
+       scales cleanly from a launcher icon down to a titlebar-sized one. Used for both the
+       Android launcher icon (android/app/src/main/res/drawable/icon.png) and the desktop
+       Standalone/VST3 window icon (ICON_BIG/ICON_SMALL in plugin/CMakeLists.txt) - same
+       source, re-rendered per target rather than kept in sync by hand. -->
+  <rect width="512" height="512" fill="#101012"/>
+  <g transform="translate(51,196) scale(0.621)">
+    <g fill="none" stroke="#3FA9E8" stroke-width="34">
+      <!-- D - the top-left corner is deliberately open, matching the real panel's own mark -->
+      <path d="M 20,64 L 20,168 A 26,26 0 0 0 46,194 L 144,194 A 26,26 0 0 0 170,168
+               L 170,64 A 22,22 0 0 0 148,42 L 54,42"
+            stroke-linecap="round"/>
+      <line x1="230" y1="116" x2="280" y2="116" stroke-linecap="butt"/>
+      <line x1="330" y1="42" x2="330" y2="190" stroke-linecap="butt"/>
+      <line x1="410" y1="42" x2="410" y2="190" stroke-linecap="butt"/>
+      <rect x="470" y="42" width="150" height="148" rx="26" ry="26"/>
+    </g>
+  </g>
+</svg>

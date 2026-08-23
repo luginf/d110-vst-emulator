@@ -175,4 +175,33 @@ public:
 	virtual bool hasSoundSnapshot(int /*slot*/) const { return false; }
 	virtual void storeSoundSnapshotForSlot(int /*slot*/) {}
 	virtual void loadSoundSnapshotForSlot(int /*slot*/) {}
+
+	// Persisted custom key bindings for the retro sequencer's D-pad (Alan's request,
+	// 2026-08-23 - until this, a rebind via D110SequencerRetroPanel's KEY BINDINGS menu was
+	// lost the moment the app closed). Encoded as a semicolon-joined list of
+	// juce::KeyPress::getTextDescription() strings, one per
+	// D110SequencerRetroPanel::BindingIndex slot in that enum's order; decoded with
+	// juce::KeyPress::createFromDescription(). Empty string (the default, and what an old
+	// saved project/settings file predating this feature will report) means "no override -
+	// use the built-in numpad defaults", same fallback D110SequencerRetroPanel already
+	// applies to a single malformed entry. Both concrete hosts just store/return the string
+	// as-is, persisting it the same way they persist everything else (state XML for the
+	// plugin, its own settings file for Nonet Sequencer) - the panel owns the encode/decode.
+	virtual juce::String getRetroKeyBindings() const { return {}; }
+	virtual void setRetroKeyBindings(const juce::String & /*encoded*/) {}
+
+	// Label for HOME's first row - the PLAY/STOP/REC/[MIDI]/OPTIONS quick-bar (Alan's
+	// request, 2026-08-23: moved to the top of HOME, and given an app-identity name since
+	// it's effectively that app's whole master control surface). The D-110 plugin keeps the
+	// generic default; Nonet Sequencer overrides it to its own app name.
+	virtual juce::String transportRowLabel() const { return "TRANSPORT"; }
+
+	// Persisted OPTIONS > LCD LINES toggle (Alan's request, 2026-08-23): false (default) is
+	// the normal 4-line display (1 title row + 3 body rows); true switches to a 2-line
+	// display (1 title row + 1 body row) with roughly double the character size, trading how
+	// much is visible at once for legibility - see D110SequencerRetroPanel::bodyRows(). Both
+	// concrete hosts just store/return the bool as-is, persisted the same way
+	// getRetroKeyBindings() is.
+	virtual bool getRetroLcdCompactMode() const { return false; }
+	virtual void setRetroLcdCompactMode(bool /*compact*/) {}
 };

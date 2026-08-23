@@ -3461,6 +3461,21 @@ void D110AudioProcessorEditor::mouseExit(const juce::MouseEvent &)
 	repaint();
 }
 
+// D110Keyboard::mouseDown() grabs keyboard focus on every click, deliberately, so playing a
+// note there is always ready to type right after (see its own comment) - but that means
+// clicking a piano key while using the retro sequencer's D-pad (EXIT/ENTER/arrows) leaves
+// those physical keys silently doing nothing afterwards, since JUCE delivers key events to
+// whichever component currently has focus, not to sequencerRetroPanel. Confirmed empirically,
+// 2026-08-23 (Alan: EXIT stopped working "depuis n'importe quel endroit"). Rather than fight
+// over who holds focus, catch it here: keyPressed() bubbles up the PARENT chain when the
+// focused component doesn't consume it (D110Keyboard has no keyPressed() override at all,
+// only keyStateChanged() - see its own header comment on why - so it always returns false and
+// lets this run), and this editor is the nearest shared ancestor of both.
+bool D110AudioProcessorEditor::keyPressed(const juce::KeyPress &key)
+{
+	return processor.getSequencerRetroMode() && sequencerRetroPanel.keyPressed(key);
+}
+
 void D110AudioProcessorEditor::resized()
 {
 	const float s = float(getWidth()) / float(D110Panel::currentRefW(processor.getCompactPanelMode()));

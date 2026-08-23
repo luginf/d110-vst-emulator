@@ -7,6 +7,8 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 
+#include <BinaryData.h>
+
 #include "../D110Keyboard.h"
 #include "../UiTheme.h"
 #include "D110SequencerPanel.h"
@@ -366,6 +368,20 @@ public:
 		retroPanel.setBounds(b);
 	}
 
+	// D110Keyboard::mouseDown() grabs keyboard focus on every click, deliberately, so playing
+	// a note there is always ready to type right after (see its own comment) - but that means
+	// clicking a piano key while using the retro D-pad's physical keys (EXIT/ENTER/arrows)
+	// leaves them silently doing nothing afterwards, since JUCE delivers key events to
+	// whichever component currently has focus, not to retroPanel. Confirmed empirically,
+	// 2026-08-23 (Alan: "exit" stopped working "depuis n'importe quel endroit"). Rather than
+	// fight over who holds focus, catch it here: keyPressed() bubbles up the PARENT chain when
+	// the focused component doesn't consume it (D110Keyboard has no keyPressed() override at
+	// all, only keyStateChanged() - see its own header comment on why - so it always returns
+	// false here and lets this run), and this is the nearest shared ancestor of both.
+	bool keyPressed(const juce::KeyPress &key) override {
+		return host.getSequencerRetroMode() && retroPanel.keyPressed(key);
+	}
+
 private:
 	// Declared first, deliberately - Toolbar/D110SequencerPanel/D110Keyboard only hold a
 	// reference to it, and member destruction runs in reverse declaration order, so this
@@ -391,6 +407,16 @@ public:
 		centreWithSize(getWidth(), getHeight());
 		setResizable(false, false);
 		setVisible(true);
+
+		// The D-110 front panel's own "D-110" wordmark (see docs/app_icon.svg), used as this
+		// app's window/taskbar icon - JUCE's CMake ICON_BIG/ICON_SMALL (used for the D-110
+		// plugin's own Standalone/VST3 targets, see plugin/CMakeLists.txt) only ever feed a
+		// Windows .ico or macOS .icns; on Linux JUCE has no automatic path for a window icon
+		// at all, so this app (fully our own Main.cpp, unlike the plugin's stock-generated
+		// Standalone one) sets it directly instead. Needs a peer to exist first, hence after
+		// setVisible(true) rather than in the member initialiser list.
+		if (auto *peer = getPeer())
+			peer->setIcon(juce::ImageFileFormat::loadFrom(BinaryData::app_icon_png, (size_t) BinaryData::app_icon_pngSize));
 	}
 
 	void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }

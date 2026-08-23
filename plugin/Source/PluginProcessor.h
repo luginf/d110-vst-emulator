@@ -219,6 +219,16 @@ public:
 	bool getSequencerRetroMode() const { return sequencerRetroMode; }
 	void setSequencerRetroMode(bool retro) { sequencerRetroMode = retro; }
 
+	// See D110SequencerHost::getRetroKeyBindings()'s own comment - just storage, the panel
+	// owns the encode/decode. Persisted the same way uiThemeLight is.
+	juce::String getRetroKeyBindings() const override { return retroKeyBindings; }
+	void setRetroKeyBindings(const juce::String &encoded) override { retroKeyBindings = encoded; }
+
+	// See D110SequencerHost::getRetroLcdCompactMode() - just storage. Persisted the same way
+	// uiThemeLight is.
+	bool getRetroLcdCompactMode() const override { return retroLcdCompactMode; }
+	void setRetroLcdCompactMode(bool compact) override { retroLcdCompactMode = compact; }
+
 	// Narrower front panel with the MEMORY CARD slot spliced out (Utility tab, "PANEL SIZE") -
 	// Alan's request, 2026-08-20: the card is a real, rarely-used feature (Roland cards don't
 	// exist for a plugin in practice), so hiding it buys back desktop space. See
@@ -725,6 +735,8 @@ private:
 	// See getSequencerRetroMode()/setSequencerRetroMode() above.
 	bool sequencerRetroMode = false;
 	bool compactPanelMode = false;
+	juce::String retroKeyBindings;
+	bool retroLcdCompactMode = false;
 	bool debugModeEnabled = false;
 	// See getLastDialogDir()/setLastDialogDir() above.
 	juce::File lastDialogDir;

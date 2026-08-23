@@ -420,6 +420,25 @@ public:
 	juce::String getUndoDescription() const { return undoStack.empty() ? juce::String() : undoStack.back().description; }
 	juce::String getRedoDescription() const { return redoStack.empty() ? juce::String() : redoStack.back().description; }
 
+	// Read-only peek into the rest of the stack, for a "pick how many steps to undo/redo"
+	// list (D110SequencerRetroPanel's OPTIONS > UNDO/REDO, Alan's request, 2026-08-23 - a
+	// single "UNDO (whatever getUndoDescription() says)" row used to visually collide label
+	// against value for anything longer than a few characters). stepsBack == 0 is the same
+	// entry getUndoDescription()/getRedoDescription() already report (what a single
+	// undo()/redo() call would do); higher stepsBack looks further back in the same stack -
+	// undo()/redo() itself is still called one step at a time in a loop to actually perform a
+	// multi-step jump, this is purely for listing what's there.
+	int getUndoStackSize() const { return (int) undoStack.size(); }
+	int getRedoStackSize() const { return (int) redoStack.size(); }
+	juce::String getUndoDescriptionAt(int stepsBack) const {
+		const int idx = (int) undoStack.size() - 1 - stepsBack;
+		return (idx >= 0 && idx < (int) undoStack.size()) ? undoStack[(size_t) idx].description : juce::String();
+	}
+	juce::String getRedoDescriptionAt(int stepsBack) const {
+		const int idx = (int) redoStack.size() - 1 - stepsBack;
+		return (idx >= 0 && idx < (int) redoStack.size()) ? redoStack[(size_t) idx].description : juce::String();
+	}
+
 	void quantizeTrack(int index, QuantizeGrid grid);
 	QuantizeGrid getTrackQuantize(int index) const;
 	// Erases every recorded event on one track only, leaving its mute/solo/quantize state and

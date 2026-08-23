@@ -129,6 +129,20 @@ public:
 	bool getSequencerRetroMode() const { return sequencerRetroMode; }
 	void setSequencerRetroMode(bool retro) { sequencerRetroMode = retro; }
 
+	// See D110SequencerHost::getRetroKeyBindings()'s own comment - just storage, the panel
+	// owns the encode/decode. Persisted the same way uiThemeLight is.
+	juce::String getRetroKeyBindings() const override { return retroKeyBindings; }
+	void setRetroKeyBindings(const juce::String &encoded) override { retroKeyBindings = encoded; }
+
+	// See D110SequencerHost::getRetroLcdCompactMode() - just storage. Persisted the same way
+	// uiThemeLight is.
+	bool getRetroLcdCompactMode() const override { return retroLcdCompactMode; }
+	void setRetroLcdCompactMode(bool compact) override { retroLcdCompactMode = compact; }
+
+	// See D110SequencerHost::transportRowLabel() - this app's own name, since it IS the
+	// whole app, not just one D-110 feature among many.
+	juce::String transportRowLabel() const override { return "NONET-SEQ"; }
+
 	// Direct MIDI ports - what the toolbar's "MIDI In"/"MIDI Out" menus list and pick
 	// from, the same idea as D110Panel::showOptionsMenu()'s own MIDI In/Out submenus.
 	static juce::Array<juce::MidiDeviceInfo> midiInputs() { return juce::MidiInput::getAvailableDevices(); }
@@ -240,4 +254,6 @@ private:
 
 	bool uiThemeLight = false;
 	bool sequencerRetroMode = false;
+	juce::String retroKeyBindings;
+	bool retroLcdCompactMode = false;
 };

@@ -56,6 +56,12 @@ int main() {
 		proc.setUiThemeLight(true);
 		proc.setEditorPaneRefH(920.0f);
 
+		// D110SequencerRetroPanel's own custom D-pad key bindings (Alan's request,
+		// 2026-08-23) - the panel itself only ever round-trips through
+		// D110SequencerHost::getRetroKeyBindings()/setRetroKeyBindings(), so exercising the
+		// host interface directly here (no UI component involved) is the real test.
+		proc.setRetroKeyBindings("f5;down;left;right;return;backspace");
+
 		proc.getStateInformation(savedState);
 	}
 	check(savedState.getSize() > 0, "getStateInformation produced data");
@@ -80,6 +86,7 @@ int main() {
 	check(proc2.getKeyboardPcLayout() == 1, "keyboard PC layout (AZERTY) restored");
 	check(proc2.getUiThemeLight(), "UI theme (light) restored");
 	check(std::abs(proc2.getEditorPaneRefH() - 920.0f) < 0.01f, "editor pane height restored");
+	check(proc2.getRetroKeyBindings() == "f5;down;left;right;return;backspace", "retro D-pad key bindings restored");
 
 	// All 4 song slots must round-trip, not just whichever one is current when the project
 	// is saved - see D110SequencerEngine's slot* accessors and their use in get/

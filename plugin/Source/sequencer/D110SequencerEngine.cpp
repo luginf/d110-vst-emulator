@@ -1145,8 +1145,18 @@ bool D110SequencerEngine::loadMidiFile(const juce::File &file) {
 
 	// Our own saveMidiFile() writes a leading meta-only track before the note tracks; detect
 	// and skip it so both our own files and a plain N-track import line up with tracks[0..].
+	// Used to also require mf.getNumTracks() >= activeTrackCount() + 1 before even checking -
+	// meant to tell "one of our own exports" apart from "a plain N-track import", but that
+	// gate was wrong for exactly the common case it needed to handle: a THIRD-PARTY DAW
+	// export with a conventional leading tempo/conductor track (no notes) but FEWER note
+	// tracks than we have parts (which is most songs). Such a file would fail the gate,
+	// startTrack would stay 0, and the empty track 0 would land on Part 1 while every real
+	// track silently shifted one part late - Alan hit exactly this, 2026-08-22, on both
+	// Android and desktop (confirmed with a hand-built 2-track file: notes landed on Part 2).
+	// A leading note-less track is always safe to skip regardless of the file's total track
+	// count - keeping it as "Part 1" would only ever mean an empty part, never lost data.
 	int startTrack = 0;
-	if (mf.getNumTracks() >= activeTrackCount() + 1) {
+	if (mf.getNumTracks() > 1) {
 		const auto *t0 = mf.getTrack(0);
 		bool track0HasNotes = false;
 		for (int i = 0; i < t0->getNumEvents(); ++i)

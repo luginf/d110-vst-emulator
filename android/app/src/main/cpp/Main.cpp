@@ -1,21 +1,31 @@
 // Second Android milestone: the real engine (D110AudioProcessor/D110CoreNative), the real
 // photographed front panel (D110Panel) with its original hit-tested buttons, the real
-// on-screen keyboard (D110Keyboard) - all reused unchanged from the desktop plugin, since
-// both are already touch-compatible as-is (see the Android port investigation this follows
-// up on). Deliberately NOT included: the sequencer UI, the extended editor drawer (Utility/
-// Tone/Patches/... tabs), the memory card - out of scope for "as simple as possible, just
-// play MIDI files" per the brief. D110AudioProcessor still owns a sequencer engine instance
-// internally (it always does, see plugin/CLAUDE.md) - it's just never surfaced here.
+// on-screen keyboard (D110Keyboard), and (2026-08-22) the real sequencer - both its normal
+// grid view (D110SequencerPanel, the default here, matching the desktop plugin's own default)
+// and its retro D-pad+LCD view (D110SequencerRetroPanel, one Options tap away) - all reused
+// unchanged from the desktop plugin, since all of them are already touch-compatible as-is
+// (see the Android port investigation this follows up on). The grid view's right-click menus
+// (quantize, tempo, load/save, ...) have no right mouse button to fire them on a touchscreen,
+// so D110SequencerPanel itself grew a long-press equivalent (see its own mouseDown() comment)
+// reaching the exact same menus - the retro view never needed this, having none at all (its
+// own D-pad/button cluster covers everything a real D-20 does, only in a smaller frame). A
+// long PRESS still doesn't belong on the piano keys themselves (see D110Keyboard.h's own note
+// on why holding a key can't double as one - it's an ordinary sustained note), which is why
+// that menu stays reachable from the hamburger instead. Deliberately NOT included: the
+// extended editor drawer (Utility/Tone/Patches/... tabs), the memory card - out of scope for
+// "as simple as possible" per the original brief, and nothing added since has needed them.
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include "Source/PluginProcessor.h"
 #include "Source/PluginEditor.h"
 #include "Source/D110Keyboard.h"
+#include "Source/sequencer/D110SequencerPanel.h"
+#include "Source/sequencer/D110SequencerRetroPanel.h"
 
-class MainComponent : public juce::Component, private juce::Timer {
+class MainComponent : public juce::Component, private juce::Timer, private juce::MidiInputCallback {
 public:
-	MainComponent() : panel(processor), keyboard(processor) {
+	MainComponent() : panel(processor), keyboard(processor), gridSeq(processor), retroSeq(processor) {
 		// Bring-up shortcut: ROMs were adb-pushed to the app's own external files dir
 		// (see docs/roms.md's automatic-locations list, none of which know about Android's
 		// storage model yet). A real Android release needs a proper SAF file-picker here,
@@ -26,6 +36,7 @@ public:
 		if (romDir.isDirectory())
 			D110AudioProcessor::setCustomRomFolder(romDir.getFullPathName());
 		processor.reloadRomsAndPowerOn();
+		loadPersistedState();
 
 		// Full panel (kRefW=2124) squeezes to illegibility on a phone-portrait width - the LCD
 		// and part indicators end up a few pixels tall. Compact mode (see D110Panel::kCompactRefW,
@@ -36,6 +47,15 @@ public:
 		processor.setCompactPanelMode(true);
 
 		addAndMakeVisible(panel);
+		// Both hidden until the hamburger menu's "Sequencer" is picked; which of the two then
+		// shows follows processor.getSequencerRetroMode() (default false - normal/grid),
+		// the exact same flag and default the desktop editor's own Options menu uses.
+		addChildComponent(gridSeq);
+		addChildComponent(retroSeq);
+		// See buildAppMenu()'s own comment: the grid sequencer hides the app's whole
+		// Play/Stop/hamburger row to get its full height, so its own bar-navigation menu
+		// button becomes the only way back to it.
+		gridSeq.onBarMenuButtonExtra = [this](juce::PopupMenu &m) { buildAppMenu(m); };
 		addAndMakeVisible(keyboard);
 
 		playButton.setButtonText("Play");
@@ -76,13 +96,65 @@ public:
 		// (ResizableWindow::resized() -> setBoundsInset()) keep this synced to the actual
 		// window bounds on every resize/rotation, so a hardcoded guess here would only ever
 		// be a one-frame placeholder immediately overwritten.
+		scanForMidiInputs(); // catches a keyboard already plugged in before launch immediately,
+		                     // rather than waiting for the first periodic scan
 		startTimerHz(30);
 	}
 
 	~MainComponent() override {
+		saveState();
 		deviceManager.removeAudioCallback(&player);
 		player.setProcessor(nullptr);
+		for (const auto &id : knownMidiInputs) {
+			deviceManager.removeMidiInputDeviceCallback(id, this);
+			deviceManager.setMidiInputDeviceEnabled(id, false);
+		}
 	}
+
+	// Unlike the desktop Standalone target (a real juce::StandaloneFilterApp, which
+	// autosaves/reloads processor.getStateInformation()/setStateInformation() through its own
+	// settings file), this Android app is a bare JUCEApplication with nothing wired up to
+	// either call at all - confirmed as the root cause of Alan's 2026-08-23 report that
+	// quitting the Android app loses every song ("comme si on avait réinitialisé la
+	// mémoire"). Fixed the same way NonetSeqHost persists its own settings: one flat file in
+	// the app's private data dir holding the exact same binary blob getStateInformation()/
+	// setStateInformation() already produce/consume everywhere else (sequencer songs/tracks,
+	// tempo, retro key bindings, LCD mode, keyboard config, theme - literally everything that
+	// blob covers). Loaded once here, right after reloadRomsAndPowerOn() has already booted
+	// the firmware fresh - restoring firmware NVRAM bytes into files on disk after boot only
+	// takes visible effect on the NEXT power-on, but the D-110 core already flushes its own
+	// NVRAM to disk continuously during normal operation independent of this (see
+	// project_standalone_nvram_persistence_fix in project memory), so the only thing this
+	// call actually needs to restore here is the higher-level state - which it does
+	// unconditionally, regardless of that NVRAM-timing nuance.
+	//
+	// Loading on construction isn't enough by itself: Android can (and does) kill this whole
+	// process without warning once it's backgrounded, well before any orderly C++ destructor
+	// chain would run - see D110AndroidApp::suspended(), the actual save point that matters,
+	// which calls this too. The destructor above only covers the rarer case of a clean
+	// in-app quit.
+	void saveState() {
+		juce::MemoryBlock data;
+		processor.getStateInformation(data);
+		stateFile().getParentDirectory().createDirectory();
+		stateFile().replaceWithData(data.getData(), data.getSize());
+	}
+
+private:
+	static juce::File stateFile() {
+		return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+			.getChildFile("d110-state.bin");
+	}
+
+	void loadPersistedState() {
+		auto f = stateFile();
+		if (!f.existsAsFile()) return;
+		juce::MemoryBlock data;
+		if (f.loadFileAsData(data) && data.getSize() > 0)
+			processor.setStateInformation(data.getData(), (int) data.getSize());
+	}
+
+public:
 
 	void paint(juce::Graphics &g) override { g.fillAll(juce::Colour(0xff1e1e22)); }
 
@@ -95,18 +167,80 @@ public:
 		// JUCE's own cross-platform answer to exactly this (also covers notches/status bar,
 		// though those don't collide with anything here) - insetting the whole layout by it
 		// keeps every control clear of system UI on any device/orientation, not just this one.
+		//
+		// getDisplayForRect()'s live safeAreaInsets turned out too unreliable to build this on
+		// (2026-08-22): occasionally null right after rotating or switching to/from the
+		// sequencer, and a caching fix on top of that (remember the last successful reading,
+		// reuse it whenever a fresh lookup failed) had its own gap - caching blindly across a
+		// ROTATION could carry over a WRONG-SHAPED inset (landscape's right inset, reapplied
+		// after rotating back to portrait, where the real nav bar has moved to the bottom) if
+		// the live lookup happened to succeed-but-stale mid-rotation, or kept failing across a
+		// full rotate-and-back cycle - worse than no inset, since it leaves controls sitting
+		// under the real bar while looking like it should be clear of it. That's what Alan hit
+		// ("apres un aller-retour ca deborde dans le taskbar, ca rend le sequenceur inutilisable").
+		//
+		// Replaced with something that has no state to go stale in the first place: a fixed
+		// guess, recomputed fresh from isLandscape on every single resize, no live lookup at
+		// all. Less precise than a real per-device measurement would be, but a comfortably
+		// oversized guess costs a few dp of unused margin on devices that don't need it, where
+		// a wrong live reading costs an unreachable button - the guess is the safer failure
+		// mode. Alan also found this can't be fully auto-detected anyway: some Android tablets
+		// keep the nav bar bottom-anchored even in landscape rather than moving it to a side
+		// the way phones do, and there's no generic signal that distinguishes that from a
+		// normal phone. navTop/Bottom/Left/Right below are the manual escape hatch - four
+		// independent checkboxes (not a single "which side" choice) because a real device can
+		// need two at once (status bar on top AND a bottom-anchored nav bar, even rotated).
 		auto area = getLocalBounds();
-		if (auto *display = juce::Desktop::getInstance().getDisplays().getDisplayForRect(
-		        getScreenBounds()))
-			area = display->safeAreaInsets.subtractedFrom(area);
+		const bool isLandscape = getWidth() > getHeight();
+		constexpr int kStatusBarInset = 32; // logical px - comfortably more than a status bar
+		constexpr int kNavBarInset = 64;    // logical px - comfortably more than a 3-button/gesture bar
+		juce::BorderSize<int> insets;
+		if (navTop || navBottom || navLeft || navRight) {
+			insets = { navTop ? kStatusBarInset : 0, navLeft ? kNavBarInset : 0,
+			           navBottom ? kNavBarInset : 0, navRight ? kNavBarInset : 0 };
+		} else {
+			// Auto: the ordinary phone layout - status bar on top always, nav bar on the
+			// "closing" edge for the current orientation (right in landscape, bottom in
+			// portrait).
+			insets = isLandscape ? juce::BorderSize<int>(kStatusBarInset, 0, 0, kNavBarInset)
+			                     : juce::BorderSize<int>(kStatusBarInset, 0, kNavBarInset, 0);
+		}
+		area = insets.subtractedFrom(area);
 
-		auto transport = area.removeFromTop(72);
-		menuButton.setBounds(transport.removeFromRight(72).reduced(6));
-		const int halfWidth = transport.getWidth() / 2;
-		playButton.setBounds(transport.removeFromLeft(halfWidth).reduced(6));
-		stopButton.setBounds(transport.reduced(6));
+		// Play/Stop/hamburger and the status line are hidden entirely while the GRID sequencer
+		// is showing (Alan's request, 2026-08-22): it has its own STOP/PLAY/REC transport
+		// already, so the app's copies were pure duplication, and landscape doesn't have height
+		// to spare for duplication - every pixel they used to take goes to the sequencer
+		// instead. The hamburger's own role (Load MIDI file/Panel switch/Keyboard channel/
+		// Options) doesn't disappear with it: onBarMenuButtonExtra below feeds those same items
+		// into the grid's own new bar-navigation menu button instead, so there's still exactly
+		// one way to reach them, just relocated.
+		//
+		// Retro keeps the hamburger (it has no equivalent menu button of its own to relocate
+		// Load MIDI file/Panel switch/etc onto - its whole design is a D-pad/button cluster
+		// with no free-text menus at all, so hiding the app's own hamburger there would leave
+		// no way back to Panel view). Play/Stop and the status line DO still hide in retro,
+		// though (Alan's request, 2026-08-24): those are for the app's OWN "Load MIDI file..."
+		// playback feature, not the sequencer transport - sitting right above retro's own
+		// STOP/PLAY/REC, they read as duplicates of it even though they do something
+		// completely unrelated, which is exactly the confusion Alan reported.
+		const bool inGridSequencer = showingSequencer && !processor.getSequencerRetroMode();
+		const bool inRetroSequencer = showingSequencer && processor.getSequencerRetroMode();
+		playButton.setVisible(!inGridSequencer && !inRetroSequencer);
+		stopButton.setVisible(!inGridSequencer && !inRetroSequencer);
+		menuButton.setVisible(!inGridSequencer);
+		statusLabel.setVisible(!inGridSequencer && !inRetroSequencer);
+		if (!inGridSequencer) {
+			auto transport = area.removeFromTop(72);
+			menuButton.setBounds(transport.removeFromRight(72).reduced(6));
+			if (!inRetroSequencer) {
+				const int halfWidth = transport.getWidth() / 2;
+				playButton.setBounds(transport.removeFromLeft(halfWidth).reduced(6));
+				stopButton.setBounds(transport.reduced(6));
 
-		statusLabel.setBounds(area.removeFromTop(40).reduced(10, 0));
+				statusLabel.setBounds(area.removeFromTop(40).reduced(10, 0));
+			}
+		}
 
 		// D110Panel paints and hit-tests entirely in its own fixed reference-pixel space
 		// (kCompactRefW x kRefH) and relies on the PARENT applying a Component::setTransform
@@ -123,51 +257,171 @@ public:
 		// the real pixel offset into the transform itself (scaled first, then translated) is
 		// what actually places it where setBounds' own y argument suggests it should be.
 		const float scale = float(area.getWidth()) / float(D110Panel::currentRefW(true));
-		const int panelY = area.getY();
-		panel.setBounds(0, 0, D110Panel::currentRefW(true), D110Panel::kRefH);
-		panel.setTransform(juce::AffineTransform::scale(scale).translated(0.0f, float(panelY)));
-		panel.setDisplayScale(scale);
-		area.removeFromTop(juce::roundToInt(D110Panel::kRefH * scale));
 
-		// D110Keyboard, unlike D110Panel, scales itself internally from whatever real pixel
-		// bounds it's given - same real-pixel setBounds() call the desktop editor uses. The
-		// desktop editor only gives it kRefH*scale (a thin strip, sized to match the panel's
-		// own key art) because it's squeezed between other foldable drawers there; this app has
-		// nothing below it, so it can afford taller keys - more finger room on a phone
-		// touchscreen - capped at the panel's own height rather than all remaining space: in
-		// portrait that remaining space is most of the screen, and keys that tall are no easier
-		// to play, just mostly empty finger travel between touch-down and the key itself.
-		keyboard.setBounds(area.removeFromTop(juce::jmin(area.getHeight(),
-		                                                  juce::roundToInt(D110Panel::kRefH * scale))));
+		// The hamburger menu's "Sequencer" entry swaps this whole band between the front panel
+		// and the sequencer (Alan's request, 2026-08-22) - only one at a time, since a phone
+		// doesn't have room for both plus the keyboard the way the desktop editor stacks its
+		// drawers. Grid (D110SequencerPanel) is the default, matching the desktop editor's own
+		// default - retro is one Options tap away (processor.getSequencerRetroMode(), the exact
+		// same flag). Both sequencer views self-scale from real pixel bounds exactly like
+		// D110Keyboard, unlike D110Panel's fixed-reference-space+transform below.
+		if (showingSequencer) {
+			panel.setVisible(false);
+			const bool retro = processor.getSequencerRetroMode();
+			gridSeq.setVisible(!retro);
+			retroSeq.setVisible(retro);
+
+			// Unlike Panel mode below, the sequencer here is NOT capped at its own reference
+			// height (kRefH) - both D110SequencerPanel and D110SequencerRetroPanel lay
+			// themselves out in PERCENTAGES of whatever real pixel bounds they're given
+			// (self-scaling, exactly like D110Keyboard below, not fixed-reference-space like
+			// D110Panel), so handing them extra height makes every row - the 9 track rows
+			// especially - proportionally taller rather than just leaving it centred in unused
+			// space. The keyboard also only gets ITS OWN small reference height here
+			// (D110Keyboard::kRefH = 130) rather than borrowing D110Panel::kRefH's much taller
+			// one (256, sized for sitting under the panel PHOTO) the way Panel mode's keyboard
+			// does below - that mismatch was exactly the two complaints Alan raised 2026-08-22:
+			// the keyboard sitting taller than it needed to, and the leftover gap under it that
+			// created neither made it to the sequencer.
+			//
+			// `scale` collapses in portrait for the exact same reason it does in Panel mode
+			// below (it's derived from width relative to the PANEL's reference width, which
+			// portrait squeezes to a fraction of its natural size) - Alan's "le clavier est
+			// toujours ridiculement petit" after the Panel-mode fix already went in, because
+			// that fix never touched this second copy of the same formula. Landscape keeps the
+			// scale-based height (already tuned and confirmed there); portrait gets the same
+			// width-based cap Panel mode uses, just a bit tighter (width/5 not /4) to leave more
+			// of the screen to the 9 track rows, which is the whole point of this view.
+			const int keyboardHeight =
+				isLandscape
+					? juce::jmin(area.getHeight(), juce::roundToInt(D110Keyboard::kRefH * scale))
+					: juce::jmin(area.getHeight(), juce::roundToInt(area.getWidth() / 5.0f));
+			auto seqBounds = area;
+			seqBounds.removeFromBottom(keyboardHeight);
+			gridSeq.setBounds(seqBounds);
+			retroSeq.setBounds(seqBounds);
+			keyboard.setBounds(area.removeFromBottom(keyboardHeight));
+		} else {
+			gridSeq.setVisible(false);
+			retroSeq.setVisible(false);
+			panel.setVisible(true);
+			const int panelY = area.getY();
+			panel.setBounds(0, 0, D110Panel::currentRefW(true), D110Panel::kRefH);
+			panel.setTransform(juce::AffineTransform::scale(scale).translated(0.0f, float(panelY)));
+			panel.setDisplayScale(scale);
+			area.removeFromTop(juce::roundToInt(D110Panel::kRefH * scale));
+
+			// D110Keyboard, unlike D110Panel, scales itself internally from whatever real pixel
+			// bounds it's given - same real-pixel setBounds() call the desktop editor uses. The
+			// old cap here (D110Panel::kRefH*scale) tied keyboard height to the PANEL's own
+			// reference height through `scale`, which is derived from width relative to the
+			// panel's reference width (1497) - fine in landscape, where that width fills most of
+			// the screen, but in portrait the panel is squeezed to a fraction of its natural
+			// width, dragging `scale` (and therefore the keyboard height riding on it) down to
+			// almost nothing: Alan's "trop petit" in portrait. Filling ALL remaining space
+			// unconditionally (tried first) swung the other way - on a tall portrait screen the
+			// keyboard has since sizes was the entire dead space, keys several times taller than
+			// wide. This splits the difference: capped at a quarter of the keyboard's own WIDTH,
+			// independent of the panel's `scale` entirely, so it can't inherit portrait's
+			// squeeze - generous enough to fix "too small", nowhere near unbounded's stretch,
+			// and if there's still leftover height below that (Alan's other complaint, the gap),
+			// it's now bounded by width rather than open-ended, so any remaining gap should be
+			// modest rather than "most of the screen" the way portrait's old cap made it.
+			const int keyboardHeight = juce::jmin(area.getHeight(),
+			                                       juce::roundToInt(area.getWidth() / 4.0f));
+			keyboard.setBounds(area.removeFromTop(keyboardHeight));
+		}
 	}
 
 private:
-	// The only setting this "as simple as possible" app exposes so far - Alan's request
-	// (2026-08-22): a phone-portrait screen only comfortably fits one octave's worth of keys
-	// at a finger-sized width, but the two-octave default (unchanged from the desktop
-	// keyboard) stays available for anyone who'd rather have the range. A touch UI has no
-	// right-click for D110Keyboard's own desktop options menu (channel/omni/PC-keyboard,
-	// none of which apply here anyway - no physical keyboard, and Omni doesn't matter with
-	// only ever one MIDI destination), so this is a dedicated button instead.
 	// Everything that isn't Play/Stop lives behind this one button (Alan's request,
 	// 2026-08-22, replacing a dedicated "Load MIDI file..." button and a dedicated "Options"
 	// button - one row of controls, not two, since landscape leaves the panel/keyboard little
-	// enough vertical room already).
-	void showMainMenu() {
-		juce::PopupMenu octaves;
-		octaves.addItem(1, "1 Octave", true, keyboard.getNumOctaves() == 1);
-		octaves.addItem(2, "2 Octaves", true, keyboard.getNumOctaves() == 2);
-
-		juce::PopupMenu m;
-		m.addItem(100, "Load MIDI file...");
+	// enough vertical room already). "Sequencer" and "Keyboard channel..." added the same day,
+	// once a USB MIDI keyboard became a real input source and not just the on-screen one -
+	// Omni/channel selection actually matters now, and so does having a sequencer view to
+	// record into.
+	// Shared between the app's own hamburger button and (2026-08-22) the grid sequencer's own
+	// bar-navigation menu button - see D110SequencerPanel::onBarMenuButtonExtra's own comment
+	// for why the sequencer needs this too (its own transport replaces the app's hamburger
+	// entirely while showing, so this is the only way back to Panel view or any of the rest).
+	// Every item is a self-contained action callback rather than a numeric result ID precisely
+	// so it can be dropped into either menu with no ID-space coordination between them.
+	void buildAppMenu(juce::PopupMenu &m) {
+		m.addItem("Load MIDI file...", [this] { chooseMidiFile(); });
+		m.addItem(showingSequencer ? "Front Panel" : "Sequencer", [this] { toggleSequencerView(); });
+		// D110Keyboard::showContextMenu() is the exact same channel/omni/PC-keyboard menu the
+		// desktop keyboard's right-click shows - reached here directly instead of reimplementing
+		// it, since there's no right mouse button (or safe long-press substitute - see
+		// D110Keyboard.h) on a touchscreen.
+		m.addItem("Keyboard channel...", [this] { keyboard.showContextMenu(); });
 		m.addSeparator();
-		m.addSubMenu("Options", octaves);
-		m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(menuButton),
-		                [this](int result) {
-			                if (result == 100) chooseMidiFile();
-			                else if (result == 1) keyboard.setNumOctaves(1);
-			                else if (result == 2) keyboard.setNumOctaves(2);
-		                });
+
+		// Drive an external hardware synth off whatever the D-110 itself is playing (Alan's
+		// request, 2026-08-22) - setMidiOutputDevice() is the exact mechanism the desktop
+		// Standalone build already uses for its own directly-opened MIDI Out port; every note
+		// this app injects (on-screen keyboard, USB MIDI keyboard input, file/sequencer
+		// playback) reaches handleIncomingMidiMessage() the same way regardless of source, and
+		// that now also echoes to osMidiOut when one is set (PluginProcessor.cpp), so nothing
+		// else has to change here beyond picking a device. Queried fresh every time this menu
+		// opens rather than cached, so a USB device plugged in since the last time shows up
+		// without needing its own periodic scan the way MIDI INPUT devices do (those need to be
+		// enabled before they can deliver anything at all; output devices just need opening at
+		// the moment of sending, which setMidiOutputDevice already does).
+		{
+			juce::PopupMenu midiOut;
+			midiOut.addItem("None", true, processor.getMidiOutputId().isEmpty(),
+			                 [this] { processor.setMidiOutputDevice({}); });
+			for (const auto &device : juce::MidiOutput::getAvailableDevices())
+				midiOut.addItem(device.name, true, processor.getMidiOutputId() == device.identifier,
+				                 [this, id = device.identifier] { processor.setMidiOutputDevice(id); });
+			m.addSubMenu("MIDI Output (external synth)", midiOut);
+		}
+		m.addSeparator();
+
+		juce::PopupMenu options;
+		options.addItem("1 Octave", true, keyboard.getNumOctaves() == 1, [this] { keyboard.setNumOctaves(1); });
+		options.addItem("2 Octaves", true, keyboard.getNumOctaves() == 2, [this] { keyboard.setNumOctaves(2); });
+		options.addSeparator();
+		// Grid is the default (matches the desktop editor's own default) - this is the one
+		// Alan asked to keep reachable first, 2026-08-22, with retro kept as a fallback rather
+		// than the primary view that same request had originally put it as.
+		options.addItem("Retro Sequencer (D-pad style)", true, processor.getSequencerRetroMode(),
+		                 [this] { toggleSequencerRetroMode(); });
+		options.addSeparator();
+		// Manual escape hatch for resized()'s own nav-bar-avoidance guess (see its comment) -
+		// Alan's request, 2026-08-22, after a tablet where the nav bar apparently stays
+		// bottom-anchored even in landscape (rather than moving to a side the way phones do)
+		// made the automatic side-guessing unreliable there. Four independent checkboxes, not
+		// a single "which side" choice - a real device can need two margins at once (e.g. a
+		// status bar on top AND a bottom-anchored nav bar). Flat items here rather than a
+		// further-nested submenu on purpose: a 3-level-deep popup (Options -> this submenu ->
+		// its items) was the one Alan reported rendering partly off-screen and needing a drag
+		// to keep open - one fewer nesting level side-steps that.
+		options.addSeparator();
+		options.addItem("Auto margins (Recommended)", true, !navTop && !navBottom && !navLeft && !navRight,
+		                 [this] { navTop = navBottom = navLeft = navRight = false; resized(); });
+		options.addItem("Margin: top", true, navTop, [this] { navTop = !navTop; resized(); });
+		options.addItem("Margin: bottom", true, navBottom, [this] { navBottom = !navBottom; resized(); });
+		options.addItem("Margin: left", true, navLeft, [this] { navLeft = !navLeft; resized(); });
+		options.addItem("Margin: right", true, navRight, [this] { navRight = !navRight; resized(); });
+		m.addSubMenu("Options", options);
+	}
+
+	void showMainMenu() {
+		juce::PopupMenu m;
+		buildAppMenu(m);
+		m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(menuButton));
+	}
+
+	void toggleSequencerRetroMode() {
+		processor.setSequencerRetroMode(!processor.getSequencerRetroMode());
+		if (showingSequencer) resized();
+	}
+
+	void toggleSequencerView() {
+		showingSequencer = !showingSequencer;
+		resized();
 	}
 
 	void chooseMidiFile() {
@@ -318,7 +572,37 @@ private:
 		processor.injectMidiMessage(message);
 	}
 
+	// A USB MIDI keyboard plugged in after launch needs to actually be noticed - Android's
+	// android.media.midi API (what JUCE's MidiInput::getAvailableDevices() wraps here) has no
+	// "device changed" callback exposed through JUCE, only a snapshot list, so this polls it.
+	// Gated to once every ~2 seconds (60 ticks at this 30Hz timer) rather than every tick:
+	// enumerating devices isn't free, and a keyboard being noticed a second late doesn't matter.
+	// Every discovered device is enabled and given a callback straight into the same
+	// injectMidiMessage() path the on-screen keyboard and MIDI-file playback already use -
+	// class-compliant USB MIDI needs no pairing/permission dialog the way Bluetooth would.
+	void scanForMidiInputs() {
+		for (const auto &device : juce::MidiInput::getAvailableDevices()) {
+			if (knownMidiInputs.contains(device.identifier)) continue;
+			knownMidiInputs.add(device.identifier);
+			deviceManager.setMidiInputDeviceEnabled(device.identifier, true);
+			deviceManager.addMidiInputDeviceCallback(device.identifier, this);
+		}
+	}
+
+	void handleIncomingMidiMessage(juce::MidiInput *, const juce::MidiMessage &message) override {
+		// Called on the MIDI thread, not the message thread - injectMidiMessage() only ever
+		// queues onto osMidiCollector (MidiMessageCollector, built for exactly this: safe to
+		// feed from any thread, drained later on the audio thread), so no locking of our own
+		// is needed here.
+		processor.injectMidiMessage(message);
+	}
+
 	void timerCallback() override {
+		if (++midiScanCountdown >= 60) {
+			midiScanCountdown = 0;
+			scanForMidiInputs();
+		}
+
 		if (!playing) return;
 		const double elapsed = juce::Time::getMillisecondCounterHiRes() * 0.001 - playStartSeconds;
 		while (eventIndex < sequence.getNumEvents()
@@ -335,12 +619,20 @@ private:
 	D110AudioProcessor processor;
 	D110Panel panel;
 	D110Keyboard keyboard;
+	D110SequencerPanel gridSeq;
+	D110SequencerRetroPanel retroSeq;
+	bool showingSequencer = false;
+	// Manual per-side margin overrides - see resized()'s own comment and the "Options" menu's
+	// four checkboxes above. All false = Auto.
+	bool navTop = false, navBottom = false, navLeft = false, navRight = false;
 	juce::TextButton playButton, stopButton, menuButton;
 	juce::Label statusLabel;
 	std::unique_ptr<juce::FileChooser> fileChooser;
 
 	juce::AudioDeviceManager deviceManager;
 	juce::AudioProcessorPlayer player;
+	juce::StringArray knownMidiInputs;
+	int midiScanCountdown = 0;
 
 	juce::MidiMessageSequence sequence;
 	juce::String loadedFileName;
@@ -355,7 +647,9 @@ public:
 	MainWindow(const juce::String &name)
 		: DocumentWindow(name, juce::Colours::black, juce::DocumentWindow::allButtons) {
 		setUsingNativeTitleBar(true);
-		setContentOwned(new MainComponent(), true);
+		auto *content = new MainComponent();
+		mainComponent = content;
+		setContentOwned(content, true);
 		setFullScreen(true);
 		setVisible(true);
 	}
@@ -363,6 +657,13 @@ public:
 	void closeButtonPressed() override {
 		juce::JUCEApplication::getInstance()->systemRequestedQuit();
 	}
+
+	// See MainComponent::saveState()'s own comment - D110AndroidApp::suspended() is the save
+	// point that actually matters on Android.
+	void saveState() { mainComponent->saveState(); }
+
+private:
+	MainComponent *mainComponent = nullptr;
 };
 
 class D110AndroidApp : public juce::JUCEApplication {
@@ -374,7 +675,19 @@ public:
 		mainWindow = std::make_unique<MainWindow>(getApplicationName());
 	}
 
-	void shutdown() override { mainWindow = nullptr; }
+	void shutdown() override {
+		if (mainWindow) mainWindow->saveState();
+		mainWindow = nullptr;
+	}
+
+	// The actual save point that matters on Android (see MainComponent::saveState()'s own
+	// comment): called when the OS backgrounds this app, and the process can be killed with
+	// no further warning at any point afterwards, well before shutdown() above would ever
+	// run - a plain in-app quit is the rare case, going to the home screen or switching apps
+	// is the common one, and only this callback reliably fires for that.
+	void suspended() override {
+		if (mainWindow) mainWindow->saveState();
+	}
 
 private:
 	std::unique_ptr<MainWindow> mainWindow;

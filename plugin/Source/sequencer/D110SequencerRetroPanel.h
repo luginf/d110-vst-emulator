@@ -78,8 +78,12 @@ private:
 	//    currently dialled. Used by HOME's TRACK/SONG/TRANSPORT rows - lets one row reach
 	//    several fast actions (REC/PLAY/MUTE/...) without a submenu hop.
 	//  - onAdjust: LEFT/RIGHT calls onAdjust(+-1) directly against live engine state, no
-	//    dialled index involved. Used by HOME's BAR row (live scrub), mirroring what
-	//    HomeField::bar used to do before HOME became a plain list.
+	//    dialled index involved - lets a row that opens a submenu still be scrubbed in place
+	//    without opening it. Used by HOME's BAR row (mirroring what HomeField::bar used to do
+	//    before HOME became a plain list) and, by the same logic, TEMPO/PRECOUNT/LOOP on their
+	//    own submenus (Alan's request, 2026-08-23) - ENTER still opens the full submenu in all
+	//    of these for anything the quick scrub doesn't cover (e.g. TEMPO's own faster UP/DOWN
+	//    step once inside buildTempoForm()).
 	struct ListItem {
 		juce::String label;
 		juce::String value;
@@ -96,11 +100,15 @@ private:
 	// [minValue, maxValue]; format renders the raw int for display (e.g. a bar number, a
 	// note name, a track label looked up by index, or a unit conversion - see
 	// buildTempoForm(), which stores half-BPM units so its own 1 BPM/5.5 BPM steps both
-	// land on whole numbers). leftRightStep is 0 by default, meaning LEFT/RIGHT moves the
-	// cursor to the next/previous field, same as always; a form field that sets it nonzero
-	// (again, only the TEMPO field does) has LEFT/RIGHT adjust *that* field's value by
-	// +-leftRightStep instead - only sensible for a single-field form, since it means
-	// LEFT/RIGHT no longer reaches any other field while that one has focus.
+	// land on whole numbers). leftRightStep is 0 by default: on a single-field form that
+	// means LEFT/RIGHT adjusts *value by +-upDownStep too, same as UP/DOWN (Alan's request,
+	// 2026-08-23 - moving a cursor among one field was always a no-op, so this just gives
+	// LEFT/RIGHT something to do); on a multi-field form it instead moves the cursor to the
+	// next/previous field, same as always, since something still has to reach the other
+	// fields. A field that sets leftRightStep nonzero (only TEMPO's own field does) has
+	// LEFT/RIGHT adjust *that* field's value by +-leftRightStep instead of either of the
+	// above - only sensible for a single-field form, since it means LEFT/RIGHT no longer
+	// reaches any other field while that one has focus.
 	struct FormField {
 		juce::String label;
 		std::shared_ptr<int> value;
@@ -146,6 +154,27 @@ private:
 	void pressEnter();
 	void pressExit();
 
+	// Customizable D-pad keys (Alan's request, 2026-08-23): the six directional/ENTER/EXIT
+	// actions each have one rebindable juce::KeyPress, defaulting to the numeric keypad in
+	// the same spatial arrangement as the on-screen cross (7/8/9 above 4/./6, matching
+	// EXIT-above-LEFT/ENTER-above-RIGHT) - see defaultRetroKeyBindings() in the .cpp. The
+	// plain arrow keys + Return/Backspace stay hard-wired in keyPressed() as a permanent
+	// fallback alongside these, exactly as before this feature existed, so rebinding never
+	// locks anyone out of the panel. capturingBinding indexes into the same
+	// {up,down,left,right,enter,exit} order kBindingCount below uses; -1 means not
+	// currently waiting for a key (see buildKeyBindingsMenu()/keyPressed()).
+	enum BindingIndex { bindUp, bindDown, bindLeft, bindRight, bindEnter, bindExit, kBindingCount };
+	std::array<juce::KeyPress, kBindingCount> keyBindings;
+	int capturingBinding = -1;
+	static std::array<juce::KeyPress, kBindingCount> defaultRetroKeyBindings();
+	// Round-trip through D110SequencerHost::getRetroKeyBindings()/setRetroKeyBindings() - see
+	// that method's own comment for the wire format. Called once at construction (decode) and
+	// after every rebind/reset (encode, pushed straight to the host so it's never lost even if
+	// the app closes without an explicit "save" step for this panel specifically).
+	static juce::String encodeKeyBindings(const std::array<juce::KeyPress, kBindingCount> &);
+	static std::array<juce::KeyPress, kBindingCount> decodeKeyBindings(const juce::String &);
+	void persistKeyBindings() { processor.setRetroKeyBindings(encodeKeyBindings(keyBindings)); }
+
 	// Arms and starts recording on `track` in one gesture (or stops, if it's the one
 	// currently recording) - the HOME TRACK row's REC quick action. Unlike the ARM toggle
 	// still available under MORE, this never leaves a track armed-but-not-recording.
@@ -160,6 +189,9 @@ private:
 	Screen buildPrecountLoopMenu();
 	Screen buildMidiChannelsMenu();
 	Screen buildOptionsMenu();
+	Screen buildKeyBindingsMenu();
+	Screen buildUndoListMenu();
+	Screen buildRedoListMenu();
 	Screen buildTrackMenu(int track);
 	Screen buildQuantizeMenu(int track);
 	Screen buildChannelForm(int track);
@@ -217,10 +249,14 @@ private:
 	void doLoadAllSongs();
 	void doSaveAllSongs();
 
-	// Rendering - fixed 20x4 character grid (see paintLcd()), no dedicated hint/legend
-	// row: title takes row 0, every screen kind lays its own content out across the
-	// remaining 3 rows passed to it as `textArea`, all sharing one `charPx` (one glyph's
-	// dot-matrix height) so the whole glass reads as a single consistent character grid.
+	// Rendering - a 20-column character grid, 4 rows by default (see paintLcd()), no
+	// dedicated hint/legend row: title takes row 0, every screen kind lays its own content
+	// out across the remaining body rows passed to it as `textArea`, all sharing one
+	// `charPx` (one glyph's dot-matrix height) so the whole glass reads as a single
+	// consistent character grid. OPTIONS > LCD LINES (lcdCompactMode, Alan's request,
+	// 2026-08-23) switches this to 2 rows total (title + 1 body row) for roughly double the
+	// character size - bodyRows() is the single source of truth every paint*Screen() below
+	// windows/scrolls its content against, so both modes share one code path.
 	void paintLcd(juce::Graphics &, juce::Rectangle<float> lcdArea);
 	void paintButtons(juce::Graphics &);
 	juce::String homeStatusText(); // title-row live status ("STOP"/"PLAY BAR 3/8"/...), HOME only
@@ -228,6 +264,16 @@ private:
 	void paintFormScreen(juce::Graphics &g, juce::Rectangle<float> textArea, float charPx);
 	void paintConfirmScreen(juce::Graphics &g, juce::Rectangle<float> textArea, float charPx);
 	void paintNameEditScreen(juce::Graphics &g, juce::Rectangle<float> textArea, float charPx);
+	int bodyRows() const { return lcdCompactMode ? 1 : 3; }
+	// Places STOP/PLAY/REC and the D-pad within `row` (transport on the left, D-pad anchored
+	// to the row's right edge), given a pre-computed cell size and transport-column width -
+	// shared by resized()'s landscape and portrait branches, which differ only in how much
+	// room they leave around this row for the LCD (see resized()'s own comment). Returns
+	// whatever's left in the middle of `row` between the two clusters - only meaningful to
+	// the landscape branch, which uses it as lcdBounds; the portrait branch ignores it, since
+	// its LCD already has its own separate full-width strip.
+	juce::Rectangle<float> layoutTransportAndDpad(juce::Rectangle<float> row, float cell, float transportColW);
+	bool lcdCompactMode = false;
 	static juce::String defaultTrackLabel(int t);
 
 	D110SequencerHost &processor;
@@ -239,10 +285,21 @@ private:
 	int nameEditCaret = 0;
 	int nameEditTrack = -1;
 
-	// STOP/PLAY/REC + 4 arrows + ENTER/EXIT - laid out once in resized(), painted/hit-
-	// tested from these bounds like every other button-grid component in this codebase.
-	// UP/DOWN/LEFT/RIGHT/ENTER form a cross-shaped D-pad (ENTER at its centre) on the
-	// right; EXIT is its own button on the left - see resized().
+	// STOP/PLAY/REC + 4 arrows + ENTER/BACK - laid out once in resized(), painted/hit-
+	// tested from these bounds like every other button-grid component in this codebase. The
+	// D-pad cluster is always a 3-column, 2-row grid (BACK/UP/ENTER across the top, LEFT/
+	// DOWN/RIGHT across the bottom - BACK over LEFT, ENTER over RIGHT, DOWN levelled with
+	// LEFT/RIGHT rather than dangling under a blank middle row), and every button (both
+	// clusters) is sized off one shared `cell` unit so they stay consistent regardless of
+	// aspect ratio - see layoutTransportAndDpad(). Where the LCD goes depends on whether
+	// resized() is wider than tall or the reverse (Alan's request, 2026-08-24, after Android
+	// surfaced both a landscape and a portrait layout problem the same day): landscape shares
+	// one horizontal band between transport (left), the D-pad (right, anchored to the row's
+	// right edge), and lcdBounds filling whatever's left in the middle; portrait instead gives
+	// lcdBounds its own full-width strip on top, with transport/D-pad sharing the row below
+	// it. exitBounds is the BACK button - kept its original member name since pressExit()/
+	// EXIT are the same action under the hood, only the on-screen label changed (Alan's
+	// request, 2026-08-23).
 	juce::Rectangle<float> lcdBounds;
 	juce::Rectangle<float> stopBounds, playBounds, recBounds;
 	juce::Rectangle<float> upBounds, downBounds, leftBounds, rightBounds, enterBounds, exitBounds;

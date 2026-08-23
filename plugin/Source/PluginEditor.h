@@ -549,6 +549,11 @@ public:
 	void mouseUp(const juce::MouseEvent &) override;
 	void mouseMove(const juce::MouseEvent &) override;
 	void mouseExit(const juce::MouseEvent &) override;
+	// Forwards to the retro sequencer's own D-pad navigation when it doesn't otherwise reach
+	// it - see the .cpp for why this is needed (D110Keyboard grabs keyboard focus on every
+	// click, so a physical EXIT/ENTER/arrow press after playing a note on it would otherwise
+	// silently do nothing).
+	bool keyPressed(const juce::KeyPress &) override;
 	// Standalone only: switches the plugin wrapper's window from JUCE's own custom-drawn
 	// title bar to the OS's native one, to match Nonet Sequencer's window (Alan's request) -
 	// see the .cpp for why this is done here rather than at window construction.
