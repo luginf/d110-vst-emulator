@@ -1,7 +1,7 @@
 # Android port (paused, unreleased)
 
 An Android build of the emulator, added 2026-08-21 and developed through 2026-08-23, then
-paused (Alan's call) to focus on other work. Briefly picked back up on 2026-08-24, not to
+paused (Alan's call) to focus on other work. Briefly picked back up on 2026-08-23, not to
 resume the port generally but to carry three fixes over from desktop work that day: the
 retro sequencer's UI improvements (see [`docs/sequencer.md`](sequencer.md)'s own "Retro mode"
 section - all of it is shared code, so it reached Android just by rebuilding), a real
@@ -33,18 +33,18 @@ own header comment for the fuller feature list this file is a summary of).
 - Manual screen-margin override (Options -> four independent Top/Bottom/Left/Right checkboxes)
   for devices where the automatic nav-bar/status-bar avoidance guesses wrong (e.g. a tablet
   that keeps its nav bar bottom-anchored even in landscape).
-- The real app icon (2026-08-24) - `android/app/src/main/res/drawable/icon.png`, replacing an
+- The real app icon (2026-08-23) - `android/app/src/main/res/drawable/icon.png`, replacing an
   earlier plain placeholder - is the front panel's own "D-110" wordmark, vectorised by hand
   from `docs/panel_reference.png` rather than upscaled from a screenshot; see
   `docs/app_icon.svg`'s own comment. The desktop Standalone/VST3 targets get the same mark via
   `ICON_BIG`/`ICON_SMALL` in `plugin/CMakeLists.txt`, though that only actually shows up on
   Windows/macOS - JUCE has no automatic window-icon path for it on Linux (confirmed by reading
   its own CMake logic: there's no Linux branch in `_juce_generate_icon`), so the Linux
-  Standalone's own taskbar icon is unchanged for now (deferred, Alan's call, 2026-08-24 - see
+  Standalone's own taskbar icon is unchanged for now (deferred, Alan's call, 2026-08-23 - see
   Nonet Sequencer, which sets its own icon directly at runtime instead, since that app is fully
   our own `Main.cpp` and Standalone's isn't).
 - When the retro sequencer is showing, the app's own Play/Stop buttons and status line hide
-  (Alan's request, 2026-08-24) - they're for the app's separate "Load MIDI file..." playback
+  (Alan's request, 2026-08-23) - they're for the app's separate "Load MIDI file..." playback
   feature, not the sequencer transport, and sitting right above retro's own STOP/PLAY/REC read
   as confusing duplicates. Only the hamburger stays (it has no equivalent menu button of its
   own to relocate Load MIDI file/Panel switch/etc onto, unlike the grid sequencer - see
@@ -95,7 +95,7 @@ they're there:
    measured fresh each time - reusing a previous screenshot's coordinates after any scroll,
    orientation change, or view-state change reliably misses.
 
-## State persistence (fixed 2026-08-24)
+## State persistence (fixed 2026-08-23)
 
 Alan reported that quitting the Android app lost every song - "comme si on avait réinitialisé
 la mémoire". Root cause, confirmed by reading `Main.cpp`: unlike the desktop Standalone target

@@ -772,7 +772,7 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildOptionsMenu() {
 			                 repaint();
 		                 } });
 		// Same engine-wide setting as the outer app Options dialog's own "Quantize mode" row
-		// (NonetSeqMain.cpp/PluginEditor.cpp) - Alan's request, 2026-08-24: reachable from
+		// (NonetSeqMain.cpp/PluginEditor.cpp) - Alan's request, 2026-08-23: reachable from
 		// inside the sequencer itself too, retro or not, without having to back out to that
 		// separate dialog. HARD moves a track's own recorded notes onto the grid for good;
 		// SOFT leaves them exactly as played and only snaps them live during playback.
@@ -1769,7 +1769,7 @@ void D110SequencerRetroPanel::resized() {
 		// Landscape-ish (wider than tall - most desktop/Nonet Sequencer windows, Android
 		// landscape): three columns sharing one horizontal band - transport (STOP on top,
 		// PLAY/REC side by side below it) on the left, the D-pad cluster on the right, LCD
-		// filling whatever's left in the middle - Alan's request, 2026-08-24. The LCD used to
+		// filling whatever's left in the middle - Alan's request, 2026-08-23. The LCD used to
 		// get only a short fixed-height strip across the top, with both button clusters
 		// squeezed into the remainder and a large dead gap between them (very visible on a
 		// wide/short window - Android landscape in particular, where the old transport column
@@ -1790,7 +1790,7 @@ void D110SequencerRetroPanel::resized() {
 		// instead, which let the D-pad eat 100% of what remained and left the LCD with
 		// nothing at all). transportColW is just cell * 2 - a SQUARE block (as wide as the
 		// two-row band is tall), not its own separate width-based fraction - Alan's request,
-		// 2026-08-24: the transport column doesn't need to be as wide as the D-pad cluster
+		// 2026-08-23: the transport column doesn't need to be as wide as the D-pad cluster
 		// just because it's a 3-button block rather than a 3x2 grid, and every pixel it isn't
 		// using goes to the LCD instead.
 		const float cell = juce::jmin(area.getWidth() * 0.30f / 3.0f, area.getHeight() / 2.0f);
@@ -1799,7 +1799,7 @@ void D110SequencerRetroPanel::resized() {
 		lcdBounds = layoutTransportAndDpad(controlRow, cell, transportColW).reduced(10.0f, 0.0f);
 	} else {
 		// Portrait-ish (taller than wide - Android portrait, or a desktop/Nonet Sequencer
-		// window resized narrow) - Alan's request, 2026-08-24: the shared-row layout above
+		// window resized narrow) - Alan's request, 2026-08-23: the shared-row layout above
 		// would squeeze the LCD's own share of the width down to almost nothing here, so
 		// instead the LCD gets its own full-width strip on top, with the transport/D-pad
 		// clusters sharing whatever height is left below it - same buttons, just stacked

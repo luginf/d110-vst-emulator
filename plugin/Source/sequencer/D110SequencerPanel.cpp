@@ -401,7 +401,7 @@ void D110SequencerPanel::showRecordModeMenu() {
 	m.addItem(3, "Replace to end - erases from the punch-in point onward", true,
 	          current == RecordMode::replaceToEnd);
 	// Same engine-wide setting as the outer app Options dialog's own "Quantize mode" row
-	// (NonetSeqMain.cpp/PluginEditor.cpp) - Alan's request, 2026-08-24: reachable from inside
+	// (NonetSeqMain.cpp/PluginEditor.cpp) - Alan's request, 2026-08-23: reachable from inside
 	// the sequencer itself too, without backing out to that separate dialog. Grouped onto
 	// this particular popup (rather than a new on-screen control of its own) since it's
 	// already the sequencer's one existing "how recording/quantizing behaves" menu.

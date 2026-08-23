@@ -149,7 +149,7 @@ they're entered - capture is a side channel, not a detour.
 Right-click any track row for **Quantize**: off, 1/4, 1/8, 1/16, 1/8 triplet, 1/16 triplet, or
 1/32. What picking a grid actually *does* depends on the workspace-wide **Quantize mode** -
 D-110 plugin: Utility tab, "QUANTIZE MODE"; Nonet Sequencer: OPTIONS, "Quantize mode". Also
-reachable without leaving the sequencer itself (Alan's request, 2026-08-24, so switching modes
+reachable without leaving the sequencer itself (Alan's request, 2026-08-23, so switching modes
 doesn't mean backing out to a separate app-level dialog): the mouse view's own REC MODE popup
 (the button showing e.g. "REC: REPLACE") grew two extra items below a separator for this; the
 retro view's own OPTIONS list grew a "QUANTIZE MODE" row. All three read/write the exact same
@@ -545,7 +545,7 @@ and BACK (mouse or keyboard) - no other keys needed.
 ### LCD
 
 A character grid, 20 columns wide, either 4 rows (default) or 2 (**OPTIONS > LCD LINES**,
-Alan's request, 2026-08-24) - each glyph drawn dot by dot from a small hand-built 5x7 font,
+Alan's request, 2026-08-23) - each glyph drawn dot by dot from a small hand-built 5x7 font,
 the same idea as the real LCD's own dot-matrix chargen (see `D110Panel::rebuildLcdImage()`),
 just with our own table since this screen shows arbitrary UI text rather than real firmware
 chip output. 2-line mode roughly doubles the character size at the cost of only ever showing
@@ -558,7 +558,7 @@ either, so the pre-existing `>` cursor marker is still the only selection indica
 
 Where the LCD sits, and how big the button clusters are, depends on the panel's own aspect
 ratio (`D110SequencerRetroPanel::resized()`, checked on every resize - Alan's request,
-2026-08-24, after Android surfaced both a landscape and a portrait layout problem the same
+2026-08-23, after Android surfaced both a landscape and a portrait layout problem the same
 day):
 
 - **Wider than tall** (most desktop/Nonet Sequencer windows, Android landscape): transport
@@ -576,7 +576,7 @@ container is unusually wide or short.
 
 ### Keys and layout
 
-The D-pad is 2 rows, not a plus-shaped cross (Alan's request, 2026-08-24): BACK/UP/ENTER
+The D-pad is 2 rows, not a plus-shaped cross (Alan's request, 2026-08-23): BACK/UP/ENTER
 across the top, LEFT/DOWN/RIGHT across the bottom - BACK sits directly above LEFT, ENTER
 directly above RIGHT, and DOWN is levelled with LEFT/RIGHT rather than dangling under a blank
 middle row the way a plain plus-cross would leave it. Default key bindings are the numeric
@@ -587,7 +587,7 @@ navigation keysyms (KP_2 would collide with the plain Down arrow; KP_5 has no na
 meaning to collide with either way). Plain arrow keys plus Return/Backspace are a permanent,
 uncustomizable fallback, so a rebind can never lock anyone out. All six bindings are
 customizable from **OPTIONS > KEY BINDINGS** (capture-then-press-any-key flow, with a RESET
-TO DEFAULT), and now actually persist across restarts (2026-08-24 - a first version only
+TO DEFAULT), and now actually persist across restarts (2026-08-23 - a first version only
 lived in the panel's own memory, so a rebind was lost every launch): encoded as
 `juce::KeyPress::getTextDescription()` strings and round-tripped through
 `D110SequencerHost::getRetroKeyBindings()`/`setRetroKeyBindings()`, stored in the plugin's own
@@ -647,7 +647,7 @@ rows, *unless* that field already has a bigger custom step wired (`FormField::le
 only TEMPO's own field sets this, keeping its 1 BPM/5.5 BPM split) or the form has more than one
 field, in which case LEFT/RIGHT still moves between fields instead, since something has to reach
 the others. UNDO/REDO (under OPTIONS) each open a numbered list of every pending step, most
-recent first (2026-08-24 - a single fixed-width row showing what undo/redo would do used to
+recent first (2026-08-23 - a single fixed-width row showing what undo/redo would do used to
 visually collide its own label against a long description); picking step N undoes/redoes N
 steps in one ENTER. Undo is a single global stack in the engine, not per-track.
 

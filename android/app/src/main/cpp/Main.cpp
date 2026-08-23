@@ -220,7 +220,7 @@ public:
 		// Load MIDI file/Panel switch/etc onto - its whole design is a D-pad/button cluster
 		// with no free-text menus at all, so hiding the app's own hamburger there would leave
 		// no way back to Panel view). Play/Stop and the status line DO still hide in retro,
-		// though (Alan's request, 2026-08-24): those are for the app's OWN "Load MIDI file..."
+		// though (Alan's request, 2026-08-23): those are for the app's OWN "Load MIDI file..."
 		// playback feature, not the sequencer transport - sitting right above retro's own
 		// STOP/PLAY/REC, they read as duplicates of it even though they do something
 		// completely unrelated, which is exactly the confusion Alan reported.

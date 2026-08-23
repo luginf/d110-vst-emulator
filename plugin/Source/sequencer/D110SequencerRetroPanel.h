@@ -292,7 +292,7 @@ private:
 	// LEFT/RIGHT rather than dangling under a blank middle row), and every button (both
 	// clusters) is sized off one shared `cell` unit so they stay consistent regardless of
 	// aspect ratio - see layoutTransportAndDpad(). Where the LCD goes depends on whether
-	// resized() is wider than tall or the reverse (Alan's request, 2026-08-24, after Android
+	// resized() is wider than tall or the reverse (Alan's request, 2026-08-23, after Android
 	// surfaced both a landscape and a portrait layout problem the same day): landscape shares
 	// one horizontal band between transport (left), the D-pad (right, anchored to the row's
 	// right edge), and lcdBounds filling whatever's left in the middle; portrait instead gives
