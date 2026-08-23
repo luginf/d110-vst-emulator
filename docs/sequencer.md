@@ -148,7 +148,13 @@ they're entered - capture is a side channel, not a detour.
 
 Right-click any track row for **Quantize**: off, 1/4, 1/8, 1/16, 1/8 triplet, 1/16 triplet, or
 1/32. What picking a grid actually *does* depends on the workspace-wide **Quantize mode** -
-D-110 plugin: Utility tab, "QUANTIZE MODE"; Nonet Sequencer: OPTIONS, "Quantize mode":
+D-110 plugin: Utility tab, "QUANTIZE MODE"; Nonet Sequencer: OPTIONS, "Quantize mode". Also
+reachable without leaving the sequencer itself (Alan's request, 2026-08-24, so switching modes
+doesn't mean backing out to a separate app-level dialog): the mouse view's own REC MODE popup
+(the button showing e.g. "REC: REPLACE") grew two extra items below a separator for this; the
+retro view's own OPTIONS list grew a "QUANTIZE MODE" row. All three read/write the exact same
+`D110SequencerEngine::getQuantizeMode()`/`setQuantizeMode()`, so changing it from any one of
+them is visible in the others immediately:
 
 - **HARD** (the default, and the original behaviour) - moves every note-on for real onto the
   nearest grid line and carries its note-off along by the same offset, so note length survives
@@ -522,45 +528,104 @@ build in particular).
 ## Retro mode (D-20 style LCD)
 
 `D110SequencerRetroPanel.h/.cpp` is a second, complete UI for everything above - a small
-text LCD plus 9 hardware-style buttons (STOP/PLAY/REC, 4 direction arrows in a cross-shaped
-D-pad with ENTER at its centre, EXIT) instead of the mouse-driven grid `D110SequencerPanel`
-normally shows. It replaces the sequencer drawer entirely when switched on, rather than
-sitting beside it - toggle it from **Options** (the panel's right-click Options menu in the
-D-110 plugin; the OPTIONS dialog in Nonet Sequencer). The setting is per-app and persists the
-same way the light/dark THEME choice does. The LCD itself is a fixed 20x4 character grid,
-each glyph drawn dot by dot from a small hand-built 5x7 font - the same idea as the real
-LCD's own dot-matrix chargen (see `D110Panel::rebuildLcdImage()`), just with our own table
-since this screen shows arbitrary UI text rather than real firmware chip output. The four
-arrows also work from a real keyboard (arrow keys), and so do ENTER (Enter/Return) and EXIT
-(Backspace), once the panel has focus (click anywhere on it, or open its drawer).
+text LCD plus 9 hardware-style buttons (STOP/PLAY/REC, 4 direction arrows in a D-pad, ENTER,
+BACK) instead of the mouse-driven grid `D110SequencerPanel` normally shows. It replaces the
+sequencer drawer entirely when switched on, rather than sitting beside it - toggle it from
+**Options** (the panel's right-click Options menu in the D-110 plugin; the OPTIONS dialog in
+Nonet Sequencer; the hamburger menu in the Android app). The setting is per-app and persists
+the same way the light/dark THEME choice does. The four arrows also work from a real
+keyboard, and so do ENTER and BACK, once the panel has focus (click anywhere on it, or open
+its drawer) - see "Keys and layout" below for exactly which keys and why.
 
 Everything reachable with the mouse in the normal view is also reachable here, through the
 same `D110SequencerEngine`/`D110SequencerHost` calls - nothing about the engine changes,
 this is purely an alternate view, and everything is reachable from just the 4 arrows, ENTER
-and EXIT (mouse or keyboard) - no other keys needed.
+and BACK (mouse or keyboard) - no other keys needed.
 
-**Navigation, revised 2026-08-18** for a flatter, more discoverable layout (the original v1
-nested a generic "MAIN MENU" behind ENTER, which took the same number of presses to reach
-regardless of where you started - Alan's own D-20-style sketch replaced it with this): HOME
-is one scrollable list, always the base of the navigation stack, holding every top-level
+### LCD
+
+A character grid, 20 columns wide, either 4 rows (default) or 2 (**OPTIONS > LCD LINES**,
+Alan's request, 2026-08-24) - each glyph drawn dot by dot from a small hand-built 5x7 font,
+the same idea as the real LCD's own dot-matrix chargen (see `D110Panel::rebuildLcdImage()`),
+just with our own table since this screen shows arbitrary UI text rather than real firmware
+chip output. 2-line mode roughly doubles the character size at the cost of only ever showing
+the title row plus the single item/field under the cursor (windowed exactly like 4-line mode's
+3-row scroll, just with a window of 1) - every list, form, confirm and rename screen adapts to
+whichever mode is active through one shared `bodyRows()` accessor, not a separate code path
+per screen kind. Colours are always the real front panel's own black-on-green, not the app's
+light/dark THEME - a real two-colour LCD has no room for a themeable "selected row" tint
+either, so the pre-existing `>` cursor marker is still the only selection indicator.
+
+Where the LCD sits, and how big the button clusters are, depends on the panel's own aspect
+ratio (`D110SequencerRetroPanel::resized()`, checked on every resize - Alan's request,
+2026-08-24, after Android surfaced both a landscape and a portrait layout problem the same
+day):
+
+- **Wider than tall** (most desktop/Nonet Sequencer windows, Android landscape): transport
+  (STOP on top, PLAY/REC side by side below it, sized as a square block - not stretched to
+  match the D-pad's own width) sits on the left, the D-pad on the right, and the LCD fills
+  whatever's left between them, sharing one horizontal band with both.
+- **Taller than wide** (Android portrait, or a desktop/Nonet Sequencer window resized narrow):
+  the shared-row layout above would squeeze the LCD's own share of the width down to almost
+  nothing, so instead the LCD gets its own full-width strip on top, with transport/D-pad
+  sharing the row below it.
+
+Every button in both clusters is sized off one shared `cell` unit (`layoutTransportAndDpad()`)
+so they stay visually consistent and never stretch into odd proportions just because the
+container is unusually wide or short.
+
+### Keys and layout
+
+The D-pad is 2 rows, not a plus-shaped cross (Alan's request, 2026-08-24): BACK/UP/ENTER
+across the top, LEFT/DOWN/RIGHT across the bottom - BACK sits directly above LEFT, ENTER
+directly above RIGHT, and DOWN is levelled with LEFT/RIGHT rather than dangling under a blank
+middle row the way a plain plus-cross would leave it. Default key bindings are the numeric
+keypad, spatially matching the on-screen layout: 8/4/6 for UP/LEFT/RIGHT, 7/9 for BACK/ENTER
+above LEFT/RIGHT, and **5** (not 2) for DOWN - deliberately, since `KeyPress::numberPadN`
+only ever fires as such with NumLock on, and with it off the physical numpad instead sends
+navigation keysyms (KP_2 would collide with the plain Down arrow; KP_5 has no navigation
+meaning to collide with either way). Plain arrow keys plus Return/Backspace are a permanent,
+uncustomizable fallback, so a rebind can never lock anyone out. All six bindings are
+customizable from **OPTIONS > KEY BINDINGS** (capture-then-press-any-key flow, with a RESET
+TO DEFAULT), and now actually persist across restarts (2026-08-24 - a first version only
+lived in the panel's own memory, so a rebind was lost every launch): encoded as
+`juce::KeyPress::getTextDescription()` strings and round-tripped through
+`D110SequencerHost::getRetroKeyBindings()`/`setRetroKeyBindings()`, stored in the plugin's own
+project state / Nonet Sequencer's settings file / the Android app's own state file, same as
+everything else in this section.
+
+BACK's behaviour depends on what's actually happening, checked in this order: if the
+transport is playing or recording, BACK is a full STOP (not just `stopRecording()`) regardless
+of how deep in the menu tree you are; otherwise it pops one level, same as always; and if
+there's nothing left to pop (already on HOME), it jumps the cursor straight back to the top
+row instead of doing nothing - so BACK is always a reliable way back to a known place. HOME's
+own first row (see below) also resets to its default PLAY action whenever you land back on
+HOME this way, rather than staying on whatever it was last dialled to (OPTIONS, REC...).
+
+### Navigation
+
+HOME is one scrollable list, always the base of the navigation stack, holding every top-level
 rubric in one screen instead of hiding most of them behind a menu hop:
 
+- **The first row** - `D110SequencerHost::transportRowLabel()` (`TRANSPORT` in the D-110
+  plugin, `NONET-SEQ` in Nonet Sequencer, since there it's effectively the whole app's master
+  control surface) - a quick-bar: PLAY/STOP fire immediately, REC opens record-mode/step-record
+  settings, MIDI (only where `supportsTrackChannelEdit()`) lists every track's channel, and
+  OPTIONS holds FILE (LOAD/SAVE), KEY BINDINGS, LCD LINES, UNDO/REDO, QUANTIZE MODE, and, in
+  Nonet Sequencer, the EXTRA TRACKS toggle.
 - **TEMPO/SIG/METRO** and **PRECOUNT/LOOP** - plain rows, ENTER opens a short list of their
   own (TEMPO/**TAP TEMPO**/TIME SIG/METRONOME; PRECOUNT/LOOP). TAP TEMPO's value column
   doubles as a live BPM readout - each ENTER press is one tap, same
-  `D110SequencerEngine::registerTapTempo()` the mouse view's TAP button calls. TEMPO's own
-  form has asymmetric steps, Alan's own numbers (2026-08-18): LEFT/RIGHT is 1 BPM,
-  UP/DOWN is 5.5 BPM - the only field anywhere in retro mode where LEFT/RIGHT adjusts the
-  value directly instead of moving between fields (`FormField::leftRightStep`, 0 everywhere
-  else), since a single-field form has nothing else for LEFT/RIGHT to navigate to.
+  `D110SequencerEngine::registerTapTempo()` the mouse view's TAP button calls. TEMPO,
+  PRECOUNT and LOOP also each carry an `onAdjust` (LEFT/RIGHT scrubs the value directly from
+  HOME's own list, same idea as BAR below) so a simple change never needs the submenu hop at
+  all - only entering the submenu is needed for TEMPO's own faster UP/DOWN step (Alan's own
+  numbers, 2026-08-18: LEFT/RIGHT 1 BPM, UP/DOWN 5.5 BPM).
 - **SONG** - a horizontal quick-bar: LEFT/RIGHT cycles SLOT 1-4 (direct select) then
   NEW/COPY/SNAPSHOT (Nonet Sequencer's sound-snapshot slots), ENTER fires whichever is shown.
 - **BAR** - LEFT/RIGHT scrubs the current bar directly, no ENTER needed; ENTER still opens
   a bar menu (exact GO TO BAR, PUNCH IN/OUT HERE, PUNCH RANGE, DELETE/COPY/TRANSPOSE across
   every track).
-- **TRANSPORT** - a quick-bar: PLAY/STOP fire immediately, REC opens record-mode/step-record
-  settings, MIDI (only where `supportsTrackChannelEdit()`) lists every track's channel, and
-  OPTIONS holds LOAD/SAVE (.mid/.midiseq) plus, in Nonet Sequencer, the EXTRA TRACKS toggle.
 - **One row per track** (PART 1-8/16 + RHYTHM, however many `activeTrackCount()` reports) -
   a quick-bar: REC/PLAY/SOLO/MUTE/COPY/CLEAR/UNDO/QUANTIZE, then MORE, which opens the same
   full per-track menu v1 had (RENAME, CHANNEL, PROGRAM CHANGE, ARM, DELETE/COPY/TRANSPOSE
@@ -572,19 +637,25 @@ rubric in one screen instead of hiding most of them behind a menu hop:
 A quick-bar row always shows whichever action is currently dialled (`<LIKE THIS>` when it's
 the selected row) in the value column, same layout mouse-driven rows always used. HOME's
 title row doubles as a live transport/bar status readout (`STOP BAR 3/8`) instead of a
-static title, since HOME itself never needs one. EXIT always backs out one level; at HOME it
-does nothing, since HOME is the permanent base of the stack, not something pushed onto it.
-Renaming a track has no physical keyboard to type on, so it's a character-wheel instead:
-LEFT/RIGHT moves the caret, UP/DOWN cycles the character at that position.
+static title, since HOME itself never needs one. Renaming a track has no physical keyboard to
+type on, so it's a character-wheel instead: LEFT/RIGHT moves the caret, UP/DOWN cycles the
+character at that position.
+
+Inside a form (a single value, or a few - CHANNEL, GO TO BAR, DELETE/COPY BARS...), LEFT/RIGHT
+adjusts the current field's value by the same step UP/DOWN uses, same as HOME's own quick-scrub
+rows, *unless* that field already has a bigger custom step wired (`FormField::leftRightStep` -
+only TEMPO's own field sets this, keeping its 1 BPM/5.5 BPM split) or the form has more than one
+field, in which case LEFT/RIGHT still moves between fields instead, since something has to reach
+the others. UNDO/REDO (under OPTIONS) each open a numbered list of every pending step, most
+recent first (2026-08-24 - a single fixed-width row showing what undo/redo would do used to
+visually collide its own label against a long description); picking step N undoes/redoes N
+steps in one ENTER. Undo is a single global stack in the engine, not per-track.
 
 Two deliberate simplifications versus the mouse view: EDIT EVENTS (under MORE) operates on
 whatever bar HOME was navigated to when it was opened, without the mouse dialog's own
-in-place "< Bar N >" strip (EXIT back out, change HOME's BAR row, re-enter for a different
+in-place "< Bar N >" strip (BACK out, change HOME's BAR row, re-enter for a different
 bar); and LOAD/SAVE still open the ordinary native file picker rather than a text-driven
-file browser, since reinventing one in a 4-line LCD would cost more than it's worth. UNDO
-is a single global stack in the engine, not per-track - the TRACK row's UNDO quick action
-calls the same `D110SequencerEngine::undo()` regardless of which track's row it's pressed
-from, exposed there purely for reach, not because undo is scoped to that track.
+file browser, since reinventing one in a 4-line LCD would cost more than it's worth.
 
 ## Verification
 

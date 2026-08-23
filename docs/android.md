@@ -1,9 +1,14 @@
 # Android port (paused, unreleased)
 
 An Android build of the emulator, added 2026-08-21 and developed through 2026-08-23, then
-paused (Alan's call) to focus on other work. It runs, is feature-complete for a first release,
-but has not been packaged or shipped - treat everything below as "works on one test device",
-not "shipped and supported".
+paused (Alan's call) to focus on other work. Briefly picked back up on 2026-08-24, not to
+resume the port generally but to carry three fixes over from desktop work that day: the
+retro sequencer's UI improvements (see [`docs/sequencer.md`](sequencer.md)'s own "Retro mode"
+section - all of it is shared code, so it reached Android just by rebuilding), a real
+data-loss bug (see "State persistence" below), and the app's launcher icon. Still paused as
+an overall effort otherwise - it runs, is feature-complete for a first release, but has not
+been packaged or shipped - treat everything below as "works on one test device", not "shipped
+and supported".
 
 **Standalone only, no VST3** - Android has no meaningful VST3 host ecosystem, so this is the
 same shape as the desktop Standalone / Nonet Sequencer: one app, no plugin wrapper. CMake
@@ -28,6 +33,22 @@ own header comment for the fuller feature list this file is a summary of).
 - Manual screen-margin override (Options -> four independent Top/Bottom/Left/Right checkboxes)
   for devices where the automatic nav-bar/status-bar avoidance guesses wrong (e.g. a tablet
   that keeps its nav bar bottom-anchored even in landscape).
+- The real app icon (2026-08-24) - `android/app/src/main/res/drawable/icon.png`, replacing an
+  earlier plain placeholder - is the front panel's own "D-110" wordmark, vectorised by hand
+  from `docs/panel_reference.png` rather than upscaled from a screenshot; see
+  `docs/app_icon.svg`'s own comment. The desktop Standalone/VST3 targets get the same mark via
+  `ICON_BIG`/`ICON_SMALL` in `plugin/CMakeLists.txt`, though that only actually shows up on
+  Windows/macOS - JUCE has no automatic window-icon path for it on Linux (confirmed by reading
+  its own CMake logic: there's no Linux branch in `_juce_generate_icon`), so the Linux
+  Standalone's own taskbar icon is unchanged for now (deferred, Alan's call, 2026-08-24 - see
+  Nonet Sequencer, which sets its own icon directly at runtime instead, since that app is fully
+  our own `Main.cpp` and Standalone's isn't).
+- When the retro sequencer is showing, the app's own Play/Stop buttons and status line hide
+  (Alan's request, 2026-08-24) - they're for the app's separate "Load MIDI file..." playback
+  feature, not the sequencer transport, and sitting right above retro's own STOP/PLAY/REC read
+  as confusing duplicates. Only the hamburger stays (it has no equivalent menu button of its
+  own to relocate Load MIDI file/Panel switch/etc onto, unlike the grid sequencer - see
+  `Main.cpp`'s own comment on both).
 
 ## Build
 
@@ -74,12 +95,44 @@ they're there:
    measured fresh each time - reusing a previous screenshot's coordinates after any scroll,
    orientation change, or view-state change reliably misses.
 
+## State persistence (fixed 2026-08-24)
+
+Alan reported that quitting the Android app lost every song - "comme si on avait réinitialisé
+la mémoire". Root cause, confirmed by reading `Main.cpp`: unlike the desktop Standalone target
+(a real `juce::StandaloneFilterApp`, which autosaves/reloads
+`getStateInformation()`/`setStateInformation()` through its own settings file) or Nonet
+Sequencer (its own settings file via `NonetSeqHost::saveSettings()`/`loadSettings()`), the
+Android app is a bare `JUCEApplication` with a raw `D110AudioProcessor processor;` member and
+*nothing* wired up to either call - state was simply never saved anywhere, ever.
+
+Fixed the same way NonetSeqHost persists its own settings: one flat file
+(`d110-state.bin`, in the app's private files dir) holding the exact binary blob
+`getStateInformation()`/`setStateInformation()` already produce/consume everywhere else -
+every song slot/track, tempo, retro key bindings, LCD mode, keyboard config, theme. Loaded
+once in `MainComponent`'s constructor, right after `reloadRomsAndPowerOn()` has already
+booted the firmware fresh (restoring firmware NVRAM bytes into files on disk after boot only
+takes visible effect on the *next* power-on, but the D-110 core already flushes its own NVRAM
+to disk continuously during normal operation independent of this - see
+`project_standalone_nvram_persistence_fix` in project memory - so the only thing this needed
+to restore here is the higher-level state, which it does unconditionally).
+
+Saving happens in two places, not just one, because Android can (and does) kill the whole
+process without warning once it's backgrounded, well before an orderly C++ destructor chain
+would ever run:
+
+- `MainComponent::~MainComponent()` - covers a clean in-app quit (the rare case).
+- `D110AndroidApp::suspended()` - called when the OS backgrounds the app; this is the save
+  point that actually matters, since the process can die at any point afterwards with no
+  further callback. `shutdown()` also saves, belt-and-suspenders, though it may never be
+  reached on Android at all.
+
+Verified on a real device: set a distinctive tempo and retro mode, backgrounded the app,
+force-killed the process (`adb shell am kill`, confirmed gone via `pidof`), relaunched -
+tempo and retro mode both came back correctly.
+
 ## Not done / not verified
 
 - No release build, no signing config beyond the debug default, no store listing prep.
-- The Retro sequencer view's D-pad has known layout issues (non-square hit targets, ENTER
-  crammed in the middle) - see [`docs/sequencer.md`](sequencer.md) for the intended cross-only
-  layout, being reworked independent of Android specifically.
 - Not tested on a range of devices/Android versions - only one physical phone (a PocoF3) this
   whole port was developed and tested against.
 
