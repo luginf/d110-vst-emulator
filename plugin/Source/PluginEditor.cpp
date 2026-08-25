@@ -1190,6 +1190,53 @@ void D110EditorPane::layoutParts(juce::Rectangle<float> area) {
 	}
 }
 
+// Подписи - СОБСТВЕННЫЕ ИМЕНА ПРИБОРА, слово в слово с ламинированной карточки «Tone
+// Parameters» (столбец Display): WG Pitch Cors, P-ENV T1, TVF Freq, TVA-ENV Sus L и так далее.
+// Раньше здесь стояли термины MT-32 - «cutoff» вместо «frequency» и прочее, - и ящик говорил с
+// человеком не теми словами, что панель прибора. Порядок смещений та же карточка подтверждает
+// один в один. Static class data (used to be layoutTone()-local) rather than four separate
+// copies: randomizeTone() below also walks the full 58-byte partial record, and a second,
+// hand-kept copy of every offset/range would drift the moment one of these four changed.
+const D110EditorPane::ToneParam D110EditorPane::kWg[] = {
+	{ "WG PITCH CORS",   0,  96 }, { "WG PITCH FINE",  1, 100 },
+	{ "WG PITCH KF",     2,  16 }, { "WG BENDER SW",   3,   1 },
+	{ "WG WAVEFORM",     4,   3 }, { "PCM",            5, 127 },
+	{ "WG PULS WIDTH",   6, 100 }, { "WG PW VELO",     7,  14 },
+	{ "P-ENV DEPTH",     8,  10 }, { "P-ENV VELO",     9, 100 },
+	{ "P-ENV TIME KF",  10,   4 }, { "P-ENV T1",      11, 100 },
+	{ "P-ENV T2",       12, 100 }, { "P-ENV T3",      13, 100 },
+	{ "P-ENV T4",       14, 100 },
+};
+const D110EditorPane::ToneParam D110EditorPane::kPitchEnv[] = {
+	{ "P-ENV L0",       15, 100 }, { "P-ENV L1",      16, 100 },
+	{ "P-ENV L2",       17, 100 }, { "P-ENV SUS L",   18, 100 },
+	{ "P-ENV END L",    19, 100 }, { "P-LFO RATE",    20, 100 },
+	{ "P-LFO DEPTH",    21, 100 }, { "P-LFO MOD",     22, 100 },
+	{ "TVF FREQ",       23, 100 }, { "TVF RESO",      24,  30 },
+	{ "TVF FREQ KF",    25,  14 }, { "TVF BIAS P",    26, 127 },
+	{ "TVF BIAS LVL",   27,  14 }, { "TVF-ENV DEPT",  28, 100 },
+	{ "TVF-ENV VELO",   29, 100 },
+};
+const D110EditorPane::ToneParam D110EditorPane::kTvf[] = {
+	{ "TVF-ENV DKF",    30,   4 }, { "TVF-ENV TKF",   31,   4 },
+	{ "TVF-ENV T1",     32, 100 }, { "TVF-ENV T2",    33, 100 },
+	{ "TVF-ENV T3",     34, 100 }, { "TVF-ENV T4",    35, 100 },
+	{ "TVF-ENV T5",     36, 100 }, { "TVF-ENV L1",    37, 100 },
+	{ "TVF-ENV L2",     38, 100 }, { "TVF-ENV L3",    39, 100 },
+	{ "TVF-ENV SUS L",  40, 100 }, { "TVA LEVEL",     41, 100 },
+	{ "TVA VELOCITY",   42, 100 }, { "TVA BIAS P1",   43, 127 },
+	{ "TVA BIAS L1",    44,  12 },
+};
+const D110EditorPane::ToneParam D110EditorPane::kTva[] = {
+	{ "TVA BIAS P2",    45, 127 }, { "TVA BIAS L2",   46,  12 },
+	{ "TVA-ENV TKF",    47,   4 }, { "TVA-ENV T1VF",  48,   4 },
+	{ "TVA-ENV T1",     49, 100 }, { "TVA-ENV T2",    50, 100 },
+	{ "TVA-ENV T3",     51, 100 }, { "TVA-ENV T4",    52, 100 },
+	{ "TVA-ENV T5",     53, 100 }, { "TVA-ENV L1",    54, 100 },
+	{ "TVA-ENV L2",     55, 100 }, { "TVA-ENV L3",    56, 100 },
+	{ "TVA-ENV SUS L",  57, 100 },
+};
+
 // Тон партии: та самая 246-байтная запись, которую прибор редактирует своими страницами
 // Edit. У D-110 тон - это до ЧЕТЫРЁХ партиалов, и «структура» задаёт, как они соединены
 // попарно: сумма или кольцевая модуляция.
@@ -1208,6 +1255,29 @@ void D110EditorPane::layoutTone(juce::Rectangle<float> area) {
 		toneNameBounds = row.removeFromLeft(160.0f).reduced(10.0f, 0.0f);
 		labels.push_back({ row.reduced(12.0f, 0.0f),
 		                   "click the name to rename the tone this part is playing", false });
+		area.removeFromTop(8.0f);
+	}
+
+	// LOCK PARTIALS + DEGRADE/RANDOM - a request to add the same "Lock Partials" feature
+	// ~/src/D110/edisyn's own D-110 tone editor has (RolandD110Tone), plus two generators of
+	// its own: DEGRADE nudges the CURRENT tone a little (a minority of fields, small steps),
+	// RANDOM replaces it outright. See setValue()'s own comment for the lock, and
+	// randomizeTone() for the two generators.
+	{
+		// Kept to the LEFT half rather than spanning the row: the memory card widget floats
+		// over the drawer's top-right corner (see D110MemoryCard) regardless of tab, so a
+		// right-aligned button up here would sit underneath it at some window widths.
+		auto row = area.removeFromTop(22.0f);
+		buttons.push_back({ row.removeFromLeft(130.0f),
+		                     juce::String("LOCK PARTIALS: ") + (lockPartials ? "ON" : "OFF"),
+		                     22 });
+		row.removeFromLeft(8.0f);
+		buttons.push_back({ row.removeFromLeft(90.0f), "DEGRADE", 23 });
+		row.removeFromLeft(8.0f);
+		buttons.push_back({ row.removeFromLeft(90.0f), "RANDOM", 24 });
+		row.removeFromLeft(8.0f);
+		labels.push_back({ row.removeFromLeft(juce::jmin(row.getWidth(), w * 0.35f)).reduced(6.0f, 0.0f),
+		                    "editing Partial 1 also sets Partials 2-4 to match", false });
 		area.removeFromTop(8.0f);
 	}
 
@@ -1279,51 +1349,6 @@ void D110EditorPane::layoutTone(juce::Rectangle<float> area) {
 	                       + " IN FULL - click another partial's name above to switch",
 	                   true });
 	const int base = 14 + tonePartial * 58;
-
-	// Подписи - СОБСТВЕННЫЕ ИМЕНА ПРИБОРА, слово в слово с ламинированной карточки «Tone
-	// Parameters» (столбец Display): WG Pitch Cors, P-ENV T1, TVF Freq, TVA-ENV Sus L и так
-	// далее. Раньше здесь стояли термины MT-32 - «cutoff» вместо «frequency» и прочее, - и
-	// ящик говорил с человеком не теми словами, что панель прибора. Порядок смещений та же
-	// карточка подтверждает один в один.
-	static const ToneParam kWg[] = {
-		{ "WG PITCH CORS",   0,  96 }, { "WG PITCH FINE",  1, 100 },
-		{ "WG PITCH KF",     2,  16 }, { "WG BENDER SW",   3,   1 },
-		{ "WG WAVEFORM",     4,   3 }, { "PCM",            5, 127 },
-		{ "WG PULS WIDTH",   6, 100 }, { "WG PW VELO",     7,  14 },
-		{ "P-ENV DEPTH",     8,  10 }, { "P-ENV VELO",     9, 100 },
-		{ "P-ENV TIME KF",  10,   4 }, { "P-ENV T1",      11, 100 },
-		{ "P-ENV T2",       12, 100 }, { "P-ENV T3",      13, 100 },
-		{ "P-ENV T4",       14, 100 },
-	};
-	static const ToneParam kPitchEnv[] = {
-		{ "P-ENV L0",       15, 100 }, { "P-ENV L1",      16, 100 },
-		{ "P-ENV L2",       17, 100 }, { "P-ENV SUS L",   18, 100 },
-		{ "P-ENV END L",    19, 100 }, { "P-LFO RATE",    20, 100 },
-		{ "P-LFO DEPTH",    21, 100 }, { "P-LFO MOD",     22, 100 },
-		{ "TVF FREQ",       23, 100 }, { "TVF RESO",      24,  30 },
-		{ "TVF FREQ KF",    25,  14 }, { "TVF BIAS P",    26, 127 },
-		{ "TVF BIAS LVL",   27,  14 }, { "TVF-ENV DEPT",  28, 100 },
-		{ "TVF-ENV VELO",   29, 100 },
-	};
-	static const ToneParam kTvf[] = {
-		{ "TVF-ENV DKF",    30,   4 }, { "TVF-ENV TKF",   31,   4 },
-		{ "TVF-ENV T1",     32, 100 }, { "TVF-ENV T2",    33, 100 },
-		{ "TVF-ENV T3",     34, 100 }, { "TVF-ENV T4",    35, 100 },
-		{ "TVF-ENV T5",     36, 100 }, { "TVF-ENV L1",    37, 100 },
-		{ "TVF-ENV L2",     38, 100 }, { "TVF-ENV L3",    39, 100 },
-		{ "TVF-ENV SUS L",  40, 100 }, { "TVA LEVEL",     41, 100 },
-		{ "TVA VELOCITY",   42, 100 }, { "TVA BIAS P1",   43, 127 },
-		{ "TVA BIAS L1",    44,  12 },
-	};
-	static const ToneParam kTva[] = {
-		{ "TVA BIAS P2",    45, 127 }, { "TVA BIAS L2",   46,  12 },
-		{ "TVA-ENV TKF",    47,   4 }, { "TVA-ENV T1VF",  48,   4 },
-		{ "TVA-ENV T1",     49, 100 }, { "TVA-ENV T2",    50, 100 },
-		{ "TVA-ENV T3",     51, 100 }, { "TVA-ENV T4",    52, 100 },
-		{ "TVA-ENV T5",     53, 100 }, { "TVA-ENV L1",    54, 100 },
-		{ "TVA-ENV L2",     55, 100 }, { "TVA-ENV L3",    56, 100 },
-		{ "TVA-ENV SUS L",  57, 100 },
-	};
 
 	const float colW = w / 4.0f;
 	auto column = [&](int i) {
@@ -2010,6 +2035,81 @@ void D110EditorPane::setValue(const Cell &c, int value) {
 		if (p.address == at) { p.value = uint8_t(v); p.sentMs = now; replaced = true; break; }
 	if (!replaced) pendingEdits.push_back({at, uint8_t(v), now});
 
+	// LOCK PARTIALS (Tone tab): a manual edit to a Partial 1 field also sets the same field, to
+	// the same value, on Partials 2-4 - same feature/wording as ~/src/D110/edisyn's own "Lock
+	// Partials" checkbox for this instrument (RolandD110Tone.registerPartialLock). Partial 1 is
+	// field 14..71 (14 + 58-byte record, partial index 0); guarded by suppressPartialLock so
+	// randomizeTone() below can still randomize all four partials independently even while this
+	// is on, matching Edisyn's own choice there - its lock only ever propagates a value the
+	// user dialled in by hand, never one its Randomize/Mutate set in bulk.
+	if (lockPartials && !suppressPartialLock && c.area == Area::ToneTemp
+	    && c.field >= 14 && c.field < 14 + 58) {
+		const int relOffset = c.field - 14;
+		for (int p = 1; p <= 3; ++p)
+			setValue({ {}, Area::ToneTemp, c.index, 14 + 58 * p + relOffset, c.lo, c.hi }, v);
+	}
+
+	repaint();
+}
+
+// Tone tab's DEGRADE/RANDOM buttons. RANDOM (fullyRandom=true) picks every field completely
+// fresh, uniformly within its own range - the whole tone, common fields (structures, partial
+// mute, env mode) and all four partials' 58 bytes each. DEGRADE (false) is a light dusting of
+// variation instead: each field independently has a fixed chance of being touched at all
+// (kDegradeTouchProb), and when it is, only nudges by a small delta around its CURRENT value
+// (kDegradeSpanFrac of its own range) rather than jumping anywhere in it - meant to feel like
+// "still recognisably this tone", not a fresh one. Both ignore lockPartials (see
+// suppressPartialLock and setValue()'s own comment) so all four partials come out independent
+// either way, exactly like ~/src/D110/edisyn's own Randomize/Mutate does for this instrument.
+void D110EditorPane::randomizeTone(bool fullyRandom) {
+	juce::Random &rng = juce::Random::getSystemRandom();
+	constexpr float kDegradeTouchProb = 0.35f;
+	constexpr float kDegradeSpanFrac = 0.12f;
+
+	suppressPartialLock = true;
+
+	auto touchField = [&](int field, int hi) {
+		if (hi <= 0) return;   // nothing to vary
+		// WG PITCH (kWg[0], offset 0 of every partial - the coarse note it plays) is left
+		// alone by both generators: randomising it re-pitches or detunes the partial outright,
+		// which reads as broken rather than as a variation of the tone (Alan's report,
+		// 2026-08-25) - unlike every other field here, it isn't "the same tone, tweaked".
+		if (field >= 14 && (field - 14) % 58 == 0) return;
+		if (fullyRandom) {
+			int v = rng.nextInt(hi + 1);
+			// Field 12 is the PARTIAL MUTE mask (bit i = partial i+1 sounds) - 0 mutes all
+			// four, which would make a freshly "random" tone silent rather than just
+			// different. Re-roll away from that one specific value instead of excluding it
+			// from randomisation entirely.
+			if (field == 12 && v == 0) v = 1 + rng.nextInt(hi);
+			setValue({ {}, Area::ToneTemp, part, field, 0, hi }, v);
+			return;
+		}
+		if (rng.nextFloat() >= kDegradeTouchProb) return;
+		const int cur = valueOf({ {}, Area::ToneTemp, part, field, 0, hi });
+		if (cur < 0) return;
+		const int span = juce::jmax(1, juce::roundToInt(float(hi) * kDegradeSpanFrac));
+		const int delta = rng.nextInt(span * 2 + 1) - span;
+		if (delta != 0) setValue({ {}, Area::ToneTemp, part, field, 0, hi }, cur + delta);
+	};
+
+	// Common: STRUCTURE 1-2, STRUCTURE 3-4, PARTIAL MUTE, ENV MODE (see layoutTone()'s own
+	// kOffsets/kHi for this same set - not worth a shared table for four entries).
+	static const int kCommonOffsets[] = { 10, 11, 12, 13 };
+	static const int kCommonHi[]      = { 12, 12, 15,  1 };
+	for (int i = 0; i < 4; ++i) touchField(kCommonOffsets[i], kCommonHi[i]);
+
+	// All four partials, all 58 bytes each - kWg/kPitchEnv/kTvf/kTva together cover the whole
+	// record (see their own definition, just above layoutTone()).
+	for (int p = 0; p < 4; ++p) {
+		const int base = 14 + p * 58;
+		for (auto &e : kWg)       touchField(base + e.offset, e.hi);
+		for (auto &e : kPitchEnv) touchField(base + e.offset, e.hi);
+		for (auto &e : kTvf)      touchField(base + e.offset, e.hi);
+		for (auto &e : kTva)      touchField(base + e.offset, e.hi);
+	}
+
+	suppressPartialLock = false;
 	repaint();
 }
 
@@ -2346,6 +2446,16 @@ void D110EditorPane::paint(juce::Graphics &g) {
 			g.drawText(juce::String(slot + 1).paddedLeft(' ', 2) + "  "
 			               + (name.isEmpty() ? juce::String("- - -") : name),
 			           b.bounds.reduced(6.0f, 0.0f), juce::Justification::centredLeft);
+			continue;
+		}
+		if (b.id == 22) {   // LOCK PARTIALS - a real lit/unlit toggle, not just its own label text
+			g.setColour(lockPartials ? kEdBox().brighter(0.3f) : kEdBox());
+			g.fillRoundedRectangle(b.bounds, 3.0f);
+			g.setColour(lockPartials ? kEdValue() : kEdBorder());
+			g.drawRoundedRectangle(b.bounds.reduced(0.5f), 3.0f, 1.0f);
+			g.setColour(lockPartials ? kEdValue() : kEdDim());
+			g.setFont(labelFont);
+			g.drawText(b.text, b.bounds, juce::Justification::centred);
 			continue;
 		}
 		if (b.id >= 400 && b.id < 500) {                    // имя патча
@@ -2746,6 +2856,9 @@ void D110EditorPane::buttonPressed(int id) {
 	if (id == 9) { processor.midiPanic(); return; }
 	if (id == 20) { processor.storeToneFromPart(part, toneSlot); return; }
 	if (id == 21) { processor.auditionTone(part, toneSlot); return; }
+	if (id == 22) { lockPartials = !lockPartials; layout(); repaint(); return; }
+	if (id == 23) { randomizeTone(false); return; }   // DEGRADE
+	if (id == 24) { randomizeTone(true); return; }    // RANDOM
 	if (id >= 100 && id < 200) {
 		// Щелчок по ячейке не просто выделяет её, а СТАВИТ тон в выбранную партию - иначе
 		// перебирать шестьдесят четыре тона на слух пришлось бы через кнопку, по два

@@ -397,6 +397,13 @@ private:
 		int offset;
 		int hi;
 	};
+	// The four Tone Edit detail columns (WG/pitch-env, TVF, TVA) - together the whole 58-byte
+	// partial record. Defined in the .cpp, right above layoutTone(); randomizeTone() below
+	// also walks them.
+	static const ToneParam kWg[];
+	static const ToneParam kPitchEnv[];
+	static const ToneParam kTvf[];
+	static const ToneParam kTva[];
 
 	struct Button {
 		juce::Rectangle<float> bounds;
@@ -428,6 +435,10 @@ private:
 	void layoutParamColumn(juce::Rectangle<float> column, int partialBase,
 	                       const ToneParam *params, int count);
 	void paintMonitor(juce::Graphics &, juce::Rectangle<float> area);
+	// Tone tab's DEGRADE/RANDOM buttons - see the .cpp for the actual weighting. fullyRandom
+	// picks each field completely fresh (RANDOM); otherwise it nudges a minority of fields by
+	// a small amount each, leaving the rest untouched (DEGRADE).
+	void randomizeTone(bool fullyRandom);
 	// This drawer's own label/value font size, relative to how it looked at the app's default
 	// window size - see the .cpp for why this isn't simply getWidth()/1500.
 	float fontScale() const;
@@ -477,6 +488,17 @@ private:
 	juce::Rectangle<float> romFolderBounds;
 	int tonePartial = 0;
 	std::array<juce::Rectangle<float>, 4> tonePartialBounds{};
+	// Tone tab's LOCK PARTIALS toggle - while on, editing a Partial 1 field also sets the same
+	// field, to the same value, on Partials 2-4 (same feature/wording as ~/src/D110/edisyn's
+	// RolandD110Tone "Lock Partials" checkbox). Editor-local UI state, not sent to the
+	// instrument or saved - matches tonePartial/part above. See setValue()'s own comment for
+	// the propagation itself.
+	bool lockPartials = false;
+	// Set around randomizeTone()'s own loop so its setValue() calls skip the lockPartials
+	// propagation above - each of the 4 partials gets its own independent DEGRADE/RANDOM
+	// result even while locked, matching Edisyn's own choice (its Randomize/Mutate never goes
+	// through the lock hook either, only a value the user dials in by hand does).
+	bool suppressPartialLock = false;
 
 	// Длинные списки листаются колесом мимо полей.
 	int rhythmScroll = 0;
