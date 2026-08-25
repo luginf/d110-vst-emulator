@@ -428,6 +428,9 @@ private:
 	void layoutParamColumn(juce::Rectangle<float> column, int partialBase,
 	                       const ToneParam *params, int count);
 	void paintMonitor(juce::Graphics &, juce::Rectangle<float> area);
+	// This drawer's own label/value font size, relative to how it looked at the app's default
+	// window size - see the .cpp for why this isn't simply getWidth()/1500.
+	float fontScale() const;
 	// PARTIAL MUTE (Tone tab, field 12) - four per-partial ON/OFF toggles instead of the raw
 	// 0-15 bitmask a generic Cell would show. Github issue #1: cycling a 16-value drag/wheel
 	// field to find one bit was impractical. Still a genuine Cell/byte underneath (see
@@ -436,9 +439,10 @@ private:
 	bool isPartialMuteCell(const Cell &) const;
 	juce::Rectangle<float> partialMuteSegment(const Cell &, int partial) const;
 	void buttonPressed(int id);
-	// Utility tab's "LA REFERENCE" link - shows docs/D20infos.png (embedded via
-	// D110PanelData/BinaryData) in its own pop-up window.
-	void showLaReferencePopup();
+	// showLaReferencePopup() - shows docs/D20infos.png (embedded via D110PanelData/BinaryData)
+	// in its own pop-up window - is now a free function in PluginEditor.cpp's own anonymous
+	// namespace, not a member: D110Panel::showOptionsMenu() needed to call it too (Github
+	// issue #3), and neither component owns the other.
 
 	int cellAt(juce::Point<float>) const;
 	size_t addressOf(const Cell &) const;

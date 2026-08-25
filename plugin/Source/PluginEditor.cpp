@@ -17,6 +17,11 @@
 
 namespace {
 
+// Defined near ImagePopupWindow, further down this file - forward-declared here so both
+// D110Panel::showOptionsMenu() (above that point in the file) and D110EditorPane's own
+// UTILITY tab button can call it.
+void showLaReferencePopup(int windowWidth);
+
 #if JucePlugin_Build_Standalone
 // Shared by D110Panel's right-click menu and D110EditorPane's OPTIONS button (see
 // D110Panel::showOptionsMenu and D110EditorPane::showOptionsButtonMenu) - action is one of
@@ -661,6 +666,26 @@ void D110Panel::showOptionsMenu()
 	// карты; см. docs/memory_card.md.
 	m.addItem(4, "Memory card write protect", true, processor.getCore().cardWriteProtect());
 	m.addItem(5, "Retro Sequencer (D-20 style LCD+buttons)", true, processor.getSequencerRetroMode());
+	// Github issue #3: the LA Reference (structures/envelopes chart, UTILITY tab) was only
+	// reachable by opening the editor drawer and navigating there. Repeated here so it's one
+	// right-click away, the same shortcut the channel/omni entries below get.
+	m.addItem(6, "LA Reference (algorithms & envelopes)...");
+	// Same setting D110Keyboard's own right-click already exposes (see its showContextMenu) -
+	// repeated here so it's reachable without opening/finding the on-screen keyboard drawer.
+	// Github issue #4: with Omni off, this channel is also what ALL incoming MIDI (host- or
+	// port-fed, not just the on-screen keyboard) gets forced onto - see processBlock()'s
+	// rechannelizing block and handleIncomingMidiMessage(). Omni is the default since
+	// 2026-08-25 for exactly that reason: it's the only setting where external MIDI reaches
+	// each Part on the channel it was actually sent on, unmodified.
+	{
+		const int curCh = processor.getKeyboardMidiChannel();
+		const bool omniOn = processor.getKeyboardOmni();
+		juce::PopupMenu channelMenu;
+		for (int ch = 1; ch <= 16; ++ch)
+			channelMenu.addItem(700 + ch, "Channel " + juce::String(ch), true, !omniOn && curCh == ch);
+		m.addSubMenu("MIDI Channel (on-screen keyboard / incoming MIDI remap)", channelMenu, !omniOn);
+		m.addItem(717, "Omni (incoming MIDI keeps its own channel, no remap)", true, omniOn);
+	}
 	// Пункта «пусть ноты озвучивает прошивка» здесь нет намеренно. Это не настройка, а
 	// единственное поведение: ноты идут в прошивку, она применяет свои диапазоны клавиш,
 	// раскладку по партиям и распределение голосов, зажигает индикаторы в верхней строке
@@ -737,6 +762,10 @@ void D110Panel::showOptionsMenu()
 			// always means the device the user actually saw and picked.
 			if (result == 300) { processor.setMidiInputDevice({}); return; }
 			if (result == 301) { processor.setMidiOutputDevice({}); return; }
+			if (result > 700 && result <= 716) {
+				processor.setKeyboardMidiChannel(result - 700);
+				return;
+			}
 			if (result >= 500 && result - 500 < outs.size()) {
 				processor.setMidiOutputDevice(outs[result - 500].identifier);
 				return;
@@ -782,6 +811,17 @@ void D110Panel::showOptionsMenu()
 			case 5:
 				processor.setSequencerRetroMode(!processor.getSequencerRetroMode());
 				if (onSequencerModeChanged) onSequencerModeChanged();
+				break;
+			case 6:
+				// NOT getWidth(): this panel is drawn at native reference resolution and
+				// scaled visually via a Component transform (see D110AudioProcessorEditor::
+				// resized()'s panel.setTransform), so getWidth() here would return the
+				// UNSCALED reference width (2124/1497) rather than the window's actual pixel
+				// width. getTopLevelComponent() is the real, untransformed editor window.
+				showLaReferencePopup(getTopLevelComponent()->getWidth());
+				break;
+			case 717:
+				processor.setKeyboardOmni(!processor.getKeyboardOmni());
 				break;
 			case 900:
 			case 901:
@@ -1861,14 +1901,22 @@ public:
 	}
 	void closeButtonPressed() override { delete this; }
 };
-} // namespace
 
 // Shows docs/D20infos.png (embedded as BinaryData, see plugin/CMakeLists.txt's
-// juce_add_binary_data(D110PanelData ...)) full-size in its own resizable pop-up window,
-// scaled down only if it wouldn't otherwise fit the screen. Not modal - see ImagePopupWindow.
-void D110EditorPane::showLaReferencePopup() {
+// juce_add_binary_data(D110PanelData ...)) in its own resizable pop-up window, sized to half
+// the emulator's own current window width (Alan's request, 2026-08-25) rather than a fixed
+// fraction of the screen - windowWidth is whichever caller's own getWidth(), which is the
+// app's current window width either way (D110Panel and D110EditorPane are both full window
+// width). Height follows the image's own aspect ratio, so nothing letterboxes; the screen-size
+// clamp is just a safety net for an extreme window size, not the normal case. Not modal - see
+// ImagePopupWindow. A free function (declared up top, see showLaReferencePopup's forward
+// declaration) rather than a D110EditorPane member: Github issue #3 asked for a way to reach
+// it without opening the drawer/UTILITY tab at all, so D110Panel::showOptionsMenu() (its own
+// right-click menu) needed to call this too - and the two components are siblings, neither
+// owning the other.
+void showLaReferencePopup(int windowWidth) {
 	auto image = juce::ImageCache::getFromMemory(BinaryData::D20infos_png, BinaryData::D20infos_pngSize);
-	if (image.isNull()) return;
+	if (image.isNull() || image.getWidth() <= 0 || image.getHeight() <= 0) return;
 
 	auto *imageComponent = new juce::ImageComponent();
 	imageComponent->setImage(image);
@@ -1878,12 +1926,20 @@ void D110EditorPane::showLaReferencePopup() {
 	const auto *display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay();
 	const auto screenArea =
 		display != nullptr ? display->userBounds.toNearestInt() : juce::Rectangle<int>(0, 0, 1600, 900);
-	const int w = juce::jmin(image.getWidth(), int(screenArea.getWidth() * 0.85f));
-	const int h = juce::jmin(image.getHeight(), int(screenArea.getHeight() * 0.85f));
-	imageComponent->setSize(w, h);
+
+	// Both clamps below can fire together on a short, wide screen - scaling w and h down by the
+	// same factor each time (rather than clamping them independently) keeps the image's own
+	// aspect ratio intact either way.
+	double w = juce::jmax(200, windowWidth / 2);
+	double h = w * image.getHeight() / image.getWidth();
+	const double maxW = screenArea.getWidth() * 0.9, maxH = screenArea.getHeight() * 0.9;
+	if (w > maxW) { h *= maxW / w; w = maxW; }
+	if (h > maxH) { w *= maxH / h; h = maxH; }
+	imageComponent->setSize(juce::roundToInt(w), juce::roundToInt(h));
 
 	new ImagePopupWindow("LA reference", imageComponent);
 }
+} // namespace
 
 // --- значения ---------------------------------------------------------------
 
@@ -2164,11 +2220,26 @@ void D110EditorPane::paintPartialMuteCell(juce::Graphics &g, const Cell &c, bool
 	}
 }
 
+// getWidth() alone shrinks in Utility tab's PANEL SIZE = COMPACT mode even though the panel's
+// own on-screen zoom doesn't (D110AudioProcessorEditor's own resize math keeps window px per
+// reference-space px, "s", identical across the toggle - see D110Panel::kCompactRefW's own
+// comment - compact mode just has fewer reference units to draw, so only the total window
+// narrows). This drawer's font size used to be a flat getWidth()/1500, so toggling compact
+// shrank its text along with the window even though nothing about this drawer's own content
+// got smaller - down to the 0.75 floor at the app's default size (Alan's report, 2026-08-25).
+// Normalising against currentRefW() instead keeps it at the size it had before compact mode
+// existed, matching how the panel's own buttons/knobs already behave under the same toggle.
+float D110EditorPane::fontScale() const {
+	const float s = float(getWidth())
+	              / float(D110Panel::currentRefW(processor.getCompactPanelMode()));
+	return juce::jlimit(0.75f, 1.4f, s / (1500.0f / float(D110Panel::kRefW)));
+}
+
 void D110EditorPane::paint(juce::Graphics &g) {
 	g.fillAll(kEdBack());
 	if (cells.empty() && buttons.empty() && tab != Tab::Monitor) layout();
 
-	const float scale = juce::jlimit(0.75f, 1.4f, float(getWidth()) / 1500.0f);
+	const float scale = fontScale();
 	const juce::Font labelFont(juce::FontOptions(11.0f * scale, juce::Font::bold));
 	const juce::Font valueFont(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(),
 	                                             12.0f * scale, juce::Font::plain));
@@ -2375,7 +2446,7 @@ void D110EditorPane::paint(juce::Graphics &g) {
 // Всё это читается из памяти самой прошивки, а не из звукового движка, - то есть отвечает
 // на вопрос «что об этом думает прибор», а не «что услышал эмулятор».
 void D110EditorPane::paintMonitor(juce::Graphics &g, juce::Rectangle<float> area) {
-	const float scale = juce::jlimit(0.75f, 1.4f, float(getWidth()) / 1500.0f);
+	const float scale = fontScale();
 	const juce::Font labelFont(juce::FontOptions(11.0f * scale, juce::Font::bold));
 	const juce::Font valueFont(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(),
 	                                             12.0f * scale, juce::Font::plain));
@@ -2667,7 +2738,11 @@ void D110EditorPane::buttonPressed(int id) {
 		                     });
 		return;
 	}
-	if (id == 8) { showLaReferencePopup(); return; }
+	// getWidth() would also work here (this drawer, unlike D110Panel, is bounded at real pixel
+	// width, not transform-scaled - see D110AudioProcessorEditor::resized()), but going through
+	// getTopLevelComponent() keeps both call sites reading the same thing rather than one
+	// relying on that distinction staying true.
+	if (id == 8) { showLaReferencePopup(getTopLevelComponent()->getWidth()); return; }
 	if (id == 9) { processor.midiPanic(); return; }
 	if (id == 20) { processor.storeToneFromPart(part, toneSlot); return; }
 	if (id == 21) { processor.auditionTone(part, toneSlot); return; }

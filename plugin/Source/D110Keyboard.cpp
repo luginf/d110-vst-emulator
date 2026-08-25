@@ -147,7 +147,15 @@ bool D110Keyboard::isPcKeyDownForNote(int note) const {
 	return false;
 }
 
-void D110Keyboard::timerCallback() { repaint(); }
+void D110Keyboard::timerCallback() {
+	// Channel/omni can now also change from outside this component - D110Panel's own
+	// right-click menu offers the same setting (Github issue #4) so it's reachable without
+	// finding/opening this drawer. Re-read every tick, the same cadence isNoteActive() polling
+	// already runs at, rather than only once at construction.
+	midiChannel = host.getKeyboardMidiChannel();
+	omni = host.getKeyboardOmni();
+	repaint();
+}
 
 void D110Keyboard::focusLost(juce::Component::FocusChangeType) { releaseAllPcNotes(); }
 

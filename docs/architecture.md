@@ -86,6 +86,14 @@ firmware therefore sees what you play: the top LCD row replaces a part's digit w
 block while that part is sounding, exactly as the hardware does, and the display follows
 program changes sent by the DAW.
 
+**Every incoming channel reaches the firmware unchanged, by default** - a DAW sending Part 1
+on channel 2 and Part 3 on channel 4 lands on those parts exactly as sent. Right-click the
+panel (or the on-screen test keyboard) for **MIDI Channel / Omni**: turning Omni off remaps
+*all* incoming channel-voice messages - host-routed or from a directly-opened port, not just
+notes played on the on-screen keyboard - onto one chosen channel instead. That only makes
+sense if your own MIDI controller can only ever transmit on a single channel and you want the
+on-screen keyboard's channel picker to stand in for a real one; leave Omni on otherwise.
+
 ## Firmware memory and plugin settings
 
 The firmware's memory is **one file beside the ROMs**, as the instrument has one battery RAM.

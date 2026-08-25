@@ -720,7 +720,15 @@ private:
 	// D110Keyboard's own config - see the accessors above for why this lives here rather than
 	// on the UI component itself.
 	int keyboardMidiChannel = 1;
-	bool keyboardOmni = false;
+	// Default ON since 2026-08-25 (Github issue #4): with this off, processBlock() and
+	// handleIncomingMidiMessage() force EVERY incoming channel-voice message - host-routed or
+	// from a directly-opened port, not just the on-screen keyboard's own notes - onto
+	// keyboardMidiChannel above. That's the right behaviour for a controller hardwired to one
+	// channel (the reason this remapping exists at all), but the wrong default for anyone
+	// sending real per-Part multichannel MIDI from a DAW, which is the common case. Still
+	// fully persisted/toggleable exactly as before - see getStateInformation's "kbOmni" and
+	// D110Panel::showOptionsMenu()'s own Omni entry.
+	bool keyboardOmni = true;
 	bool keyboardPcInput = false;
 	int keyboardPcLayout = 0;
 
