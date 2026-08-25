@@ -196,6 +196,15 @@ public:
 	// see startRecording()'s use of this.
 	void setPrecountBars(int bars) { precountBars = juce::jlimit(0, 2, bars); }
 	int getPrecountBars() const { return precountBars; }
+
+	// Where "rewind to the top" (double-tap STOP, or BACK once already parked on the
+	// transport row - see D110SequencerRetroPanel::pressStop()/pressExit()) lands, instead
+	// of always hardcoding bar 1 - useful when working further into a song, so rewinding
+	// doesn't fling the transport all the way back past everything already recorded ahead of
+	// where you're actually working (Alan's request, 2026-08-24). Workspace-wide like
+	// precount/loop/punch above, not per-song - see newSong()'s own comment on that split.
+	void setStartBar(int bar) { startBar = juce::jmax(1, bar); }
+	int getStartBar() const { return startBar; }
 	void setMetronomeEnabled(bool enabled) { metronomeEnabled = enabled; }
 	bool getMetronomeEnabled() const { return metronomeEnabled; }
 
@@ -600,6 +609,11 @@ private:
 		int bankLsb = 1;
 		int volume = -1;
 		int pan = -1;
+		// Runtime-only playback state, not serialized (trackToBytes() only round-trips `events`):
+		// notes this track has itself turned on in renderInto() and not yet turned back off,
+		// consulted the moment mute/solo cuts this track's own playback so a still-sounding note
+		// doesn't hang - see renderInto()'s own comment.
+		std::vector<int> soundingNotes;
 	};
 
 	double gridBeats(QuantizeGrid grid) const;
@@ -683,6 +697,7 @@ private:
 	bool playing = false;
 	bool recording = false;
 	int precountBars = 1;
+	int startBar = 1;
 	bool metronomeEnabled = true;
 	MetronomeMode metronomeMode = MetronomeMode::both;
 	bool metronomeRecordOnly = false;

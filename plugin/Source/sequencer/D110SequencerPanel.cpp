@@ -1522,7 +1522,7 @@ void D110SequencerPanel::paint(juce::Graphics &g) {
 	paintToggleButton(g, loadBounds, "LOAD", false);
 	paintToggleButton(g, saveBounds, "SAVE", false);
 
-	paintToggleButton(g, stepBounds, "STEP", eng.isStepRecording());
+	paintToggleButton(g, stepBounds, "STEP", eng.isStepRecording(), eng.isStepRecording() || eng.getArmedTrack() >= 0);
 	paintToggleButton(g, stepDurationBounds, stepDurationLabel(eng.getStepDuration()), false);
 	paintToggleButton(g, stepDotBounds, "DOT", eng.getStepDotted());
 	paintToggleButton(g, restBounds, "REST", false, eng.isStepRecording());

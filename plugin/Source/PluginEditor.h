@@ -376,6 +376,9 @@ private:
 	// Правый клик по DRUM SOUND на вкладке Rhythm - список всех тембров ударных и памяти,
 	// тем же чтением их имён, что и showToneListMenu.
 	void showRhythmSoundMenu(int slot);
+	// Правый клик по полю PCM партиала (Tone tab) - список всех 128 образцов ПЗУ по имени,
+	// вместо перебора номера колесом. Github issue #2.
+	void showPcmWaveMenu(const Cell &pcmCell);
 
 	enum class Tab { Parts, Tone, Rhythm, Patches, Timbres, Tones, System, Monitor, Utility };
 	static constexpr int kNumTabs = 9;
@@ -425,6 +428,13 @@ private:
 	void layoutParamColumn(juce::Rectangle<float> column, int partialBase,
 	                       const ToneParam *params, int count);
 	void paintMonitor(juce::Graphics &, juce::Rectangle<float> area);
+	// PARTIAL MUTE (Tone tab, field 12) - four per-partial ON/OFF toggles instead of the raw
+	// 0-15 bitmask a generic Cell would show. Github issue #1: cycling a 16-value drag/wheel
+	// field to find one bit was impractical. Still a genuine Cell/byte underneath (see
+	// setValue's ToneTemp case) - only the paint/hit-test are special-cased.
+	void paintPartialMuteCell(juce::Graphics &, const Cell &, bool hover) const;
+	bool isPartialMuteCell(const Cell &) const;
+	juce::Rectangle<float> partialMuteSegment(const Cell &, int partial) const;
 	void buttonPressed(int id);
 	// Utility tab's "LA REFERENCE" link - shows docs/D20infos.png (embedded via
 	// D110PanelData/BinaryData) in its own pop-up window.

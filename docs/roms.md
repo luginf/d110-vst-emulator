@@ -14,11 +14,9 @@ You can get the D-110 roms at this location:
 Checked in this order - whichever one actually has ROMs in it wins:
 
 1. **A custom folder you point it at yourself** - Utility tab, "ROM FOLDER" (click to pick one,
-   right-click to go back to automatic detection). Added 2026-08-21 for whatever case none of
-   the automatic locations below happen to cover. Takes effect on the next power-on. If no ROMs
+   right-click to go back to automatic detection). Takes effect on the next power-on. If no ROMs
    were found at all, the same folder picker also pops up on its own as soon as the editor
-   opens (no need to find the Utility tab first) and takes effect immediately, without a manual
-   power cycle.
+   opens and takes effect immediately, without a manual power cycle.
 2. **Colocated with the shared VST3 folder** - the default, and what every existing install
    already uses:
    - Windows: `C:\Program Files\Common Files\VST3\D-110 Data\`
@@ -32,10 +30,10 @@ Checked in this order - whichever one actually has ROMs in it wins:
    - Linux: `~/.config/D-110 Emulator/D-110 Data/`
 4. **Loose, directly beside the VST3 bundle itself** (the shared VST3 folder from #2, but with
    no `D-110 Data` subfolder at all - e.g. straight in `~/.vst3/` on Linux) **or directly beside
-   the Standalone binary** - added 2026-08-21 for anyone who'd rather not create a subfolder at
-   all. Only the files themselves are picked up from there (copied into the `D-110 Data`
-   location from #2 the first time they're found) - nothing else in that shared folder is ever
-   touched or scanned recursively.
+   the Standalone binary** - for anyone who'd rather not create a subfolder at all. Only the
+   files themselves are picked up from there (copied into the `D-110 Data` location from #2 the
+   first time they're found) - nothing else in that shared folder is ever touched or scanned
+   recursively.
 
 Either of #2/#3 works for either build (VST3 or Standalone) - the second location is just there
 so Standalone users aren't asked to dig into a VST3-specific folder for no reason. `D-110_Data`

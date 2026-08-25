@@ -190,11 +190,12 @@ public:
 	virtual juce::String getRetroKeyBindings() const { return {}; }
 	virtual void setRetroKeyBindings(const juce::String & /*encoded*/) {}
 
-	// Label for HOME's first row - the PLAY/STOP/REC/[MIDI]/OPTIONS quick-bar (Alan's
-	// request, 2026-08-23: moved to the top of HOME, and given an app-identity name since
-	// it's effectively that app's whole master control surface). The D-110 plugin keeps the
-	// generic default; Nonet Sequencer overrides it to its own app name.
-	virtual juce::String transportRowLabel() const { return "TRANSPORT"; }
+	// Label for HOME's PLAY/STOP/REC/[MIDI]/OPTIONS quick-bar row (Alan's request,
+	// 2026-08-23: given an app-identity name since it's effectively that app's whole master
+	// control surface, rather than the generic engineering term "TRANSPORT" - further
+	// renamed the same day, Alan didn't like that generic term either). The D-110 plugin
+	// keeps this default; Nonet Sequencer overrides it to its own app name.
+	virtual juce::String transportRowLabel() const { return "D110-SEQ"; }
 
 	// Persisted OPTIONS > LCD LINES toggle (Alan's request, 2026-08-23): false (default) is
 	// the normal 4-line display (1 title row + 3 body rows); true switches to a 2-line

@@ -26,6 +26,28 @@ juce::String loopModeShortLabel(d110seq::LoopMode m) {
 	return {};
 }
 
+// Shared by buildStepDurationMenu() (a full pick-list) and the STEP RECORDING overlay's
+// own DUR row (UP/DOWN steps through the same presets in place, no submenu needed).
+const std::array<d110seq::QuantizeGrid, 8> &stepDurationPresets() {
+	using d110seq::QuantizeGrid;
+	static const std::array<QuantizeGrid, 8> presets { { QuantizeGrid::whole, QuantizeGrid::half, QuantizeGrid::quarter,
+	                                                       QuantizeGrid::eighth, QuantizeGrid::sixteenth,
+	                                                       QuantizeGrid::eighthTriplet, QuantizeGrid::sixteenthTriplet,
+	                                                       QuantizeGrid::thirtySecond } };
+	return presets;
+}
+
+// Steps `current` forward/back by one entry in stepDurationPresets(), wrapping at either
+// end - the STEP RECORDING overlay's DUR row UP/DOWN.
+d110seq::QuantizeGrid cycleStepDuration(d110seq::QuantizeGrid current, int delta) {
+	const auto &presets = stepDurationPresets();
+	int idx = 0;
+	for (int i = 0; i < (int) presets.size(); ++i)
+		if (presets[(size_t) i] == current) { idx = i; break; }
+	idx = (idx + delta + (int) presets.size()) % (int) presets.size();
+	return presets[(size_t) idx];
+}
+
 juce::String stepDurationShortLabel(d110seq::QuantizeGrid g) {
 	using d110seq::QuantizeGrid;
 	switch (g) {
@@ -199,6 +221,18 @@ void drawDotText(juce::Graphics &g, const juce::String &text, juce::Rectangle<fl
 	float x = area.getX();
 	if (just.testFlags(juce::Justification::horizontallyCentred)) x = area.getCentreX() - w * 0.5f;
 	else if (just.testFlags(juce::Justification::right)) x = area.getRight() - w;
+	// Clip to the caller's own column - two adjacent columns (a row's label and its
+	// value/quick-action text, say) never share screen space, so without this an
+	// overlong string just draws straight through the neighbouring column's dots
+	// instead of stopping at the boundary, and the two glyph grids merge into
+	// unreadable noise (Alan's report, 2026-08-23: "BANK I" clashing with a long
+	// patch name into "BOMBABI[0R"). Clipping to `area` naturally keeps the *tail*
+	// of a right-justified string (x runs off to the left, past area.getX(), so the
+	// front gets clipped and the end - closest to the anchor edge - survives) and the
+	// *head* of a left-justified one - exactly the "keep at least the end of the
+	// line, like REC/PLAY already do, and visually cut the rest" Alan asked for.
+	juce::Graphics::ScopedSaveState clipState(g);
+	g.reduceClipRegion(area.getSmallestIntegerContainer());
 	drawDotGlyphs(g, text, x, area.getCentreY() - charPx * 0.5f, charPx);
 }
 
@@ -274,13 +308,24 @@ void D110SequencerRetroPanel::pushScreen(Screen s) {
 
 void D110SequencerRetroPanel::popScreen() {
 	if (!stack.empty()) stack.pop_back();
-	// HOME's own transportRowLabel() quick-bar row (index 0, PLAY/STOP/REC/[MIDI]/OPTIONS) -
-	// whatever it was last dialled to (OPTIONS, REC...) resets back to PLAY once we're
-	// actually at HOME, rather than staying wherever it was left - Alan's request,
-	// 2026-08-23: landing on a fixed, predictable action every time beats remembering
-	// whatever the row happened to be showing before.
-	if (stack.empty() && !homeScreen.quickIndex.empty()) homeScreen.quickIndex[0] = 0;
+	// HOME's own transportRowLabel() quick-bar row (PLAY/STOP/REC/[MIDI]/OPTIONS) - whatever
+	// it was last dialled to (OPTIONS, REC...) resets back to PLAY once we're actually at
+	// HOME, rather than staying wherever it was left - Alan's request, 2026-08-23: landing
+	// on a fixed, predictable action every time beats remembering whatever the row happened
+	// to be showing before.
+	if (stack.empty()) {
+		const int idx = homeTransportRowIndex();
+		if (idx < (int) homeScreen.quickIndex.size()) homeScreen.quickIndex[(size_t) idx] = 0;
+	}
 	repaint();
+}
+
+int D110SequencerRetroPanel::homeTransportRowIndex() {
+	auto items = homeScreen.buildItems();
+	const juce::String label = processor.transportRowLabel();
+	for (int i = 0; i < (int) items.size(); ++i)
+		if (items[(size_t) i].label == label) return i;
+	return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -291,8 +336,18 @@ void D110SequencerRetroPanel::pressStop() {
 	// Same as D110SequencerPanel's plain-click STOP: halts the transport AND sends a MIDI
 	// panic, so a note-off scheduled past the stop point never gets left stuck sounding -
 	// see D110SequencerPanel::mouseDown()'s own comment on why.
-	engine().stop();
+	//
+	// A STOP that lands while the transport is ALREADY stopped (isRecording/isPlaying/
+	// isStepRecording all false going in - engine().stop() only ever flips playing false and
+	// snaps to the CURRENT bar's start, it doesn't touch that) rewinds all the way to
+	// getStartBar() on top of that - Alan's request, 2026-08-24, "deux fois sur stop": no
+	// extra press-timing state needed, "stop pressed while already stopped" already means
+	// this is at least the second press in a row.
+	auto &eng = engine();
+	const bool alreadyStopped = !eng.isRecording() && !eng.isPlaying() && !eng.isStepRecording();
+	eng.stop();
 	processor.midiPanic();
+	if (alreadyStopped) eng.gotoBar(eng.getStartBar());
 	repaint();
 }
 
@@ -308,10 +363,16 @@ void D110SequencerRetroPanel::pressRec() {
 	repaint();
 }
 
-// The STEP RECORDING overlay steals UP/DOWN for REST/BACK - only meaningful on HOME,
-// since that's the only screen that ever shows it (see homeStatusText()/paintLcd()).
+// The STEP RECORDING overlay (only ever shown on HOME, see paintLcd()) has its own 2-row
+// BAR/DUR cursor (stepOverlayCursor) instead of a real Screen - UP/DOWN moves the cursor
+// between the two rows (they're stacked vertically), LEFT/RIGHT (see pressLeft()/
+// pressRight() below) acts on whichever row is focused (BAR: advance/rewind the step
+// itself; DUR: cycle the duration preset). Alan's request, 2026-08-23: arrow keys used to
+// always mean REST/undo-step with no way to reach DUR at all without leaving the overlay;
+// initially wired UP/DOWN=act, LEFT/RIGHT=navigate, then flipped the same day once Alan
+// pointed out UP/DOWN should move between the vertically-stacked rows, not act on them.
 void D110SequencerRetroPanel::pressUp() {
-	if (stack.empty() && engine().isStepRecording()) { engine().stepRest(); repaint(); return; }
+	if (stack.empty() && engine().isStepRecording()) { stepOverlayCursor = 0; repaint(); return; }
 	auto &s = top();
 	if (s.kind == ScreenKind::list) {
 		auto items = s.buildItems();
@@ -328,7 +389,7 @@ void D110SequencerRetroPanel::pressUp() {
 }
 
 void D110SequencerRetroPanel::pressDown() {
-	if (stack.empty() && engine().isStepRecording()) { engine().stepBack(); repaint(); return; }
+	if (stack.empty() && engine().isStepRecording()) { stepOverlayCursor = 1; repaint(); return; }
 	auto &s = top();
 	if (s.kind == ScreenKind::list) {
 		auto items = s.buildItems();
@@ -348,7 +409,13 @@ void D110SequencerRetroPanel::pressDown() {
 // cursor defines (see ListItem's own comment) - a plain row (neither set, the vast
 // majority of nested menus) does nothing here, same as before this mechanism existed.
 void D110SequencerRetroPanel::pressLeft() {
-	if (stack.empty() && engine().isStepRecording()) return;
+	if (stack.empty() && engine().isStepRecording()) {
+		auto &eng = engine();
+		if (stepOverlayCursor == 0) eng.stepBack();
+		else eng.setStepDuration(cycleStepDuration(eng.getStepDuration(), -1));
+		repaint();
+		return;
+	}
 	auto &s = top();
 	if (s.kind == ScreenKind::list) {
 		auto items = s.buildItems();
@@ -380,7 +447,13 @@ void D110SequencerRetroPanel::pressLeft() {
 }
 
 void D110SequencerRetroPanel::pressRight() {
-	if (stack.empty() && engine().isStepRecording()) return;
+	if (stack.empty() && engine().isStepRecording()) {
+		auto &eng = engine();
+		if (stepOverlayCursor == 0) eng.stepRest();
+		else eng.setStepDuration(cycleStepDuration(eng.getStepDuration(), +1));
+		repaint();
+		return;
+	}
 	auto &s = top();
 	if (s.kind == ScreenKind::list) {
 		auto items = s.buildItems();
@@ -416,7 +489,13 @@ void D110SequencerRetroPanel::pressRight() {
 // onConfirm may only touch engine()/processor state, since popScreen() right after is what
 // actually closes the screen.
 void D110SequencerRetroPanel::pressEnter() {
-	if (stack.empty() && engine().isStepRecording()) return;
+	// While the STEP RECORDING overlay owns the whole glass (stack empty), ENTER used to be
+	// a dead no-op - the only way to reach DURATION/DOT while recording was to stop first,
+	// which broke the whole point of changing them mid-take. Open the same STEP REC screen
+	// REC -> STEP REC reaches, live-reflecting engine state, so recording carries on
+	// underneath while it's open (Alan's request, 2026-08-23: needs to be reachable with
+	// just the 6 D-pad buttons, no dead ends).
+	if (stack.empty() && engine().isStepRecording()) { pushScreen(buildStepMenu()); return; }
 	auto &s = top();
 	const ScreenKind kind = s.kind;
 	if (kind == ScreenKind::list) {
@@ -457,8 +536,11 @@ void D110SequencerRetroPanel::pressEnter() {
 void D110SequencerRetroPanel::pressExit() {
 	// A running transport takes priority over navigation - one BACK press is a full STOP
 	// (same as the STOP button, not just stopRecording()), wherever in the menu tree you
-	// happen to be, rather than just popping a screen (Alan's request, 2026-08-23).
-	if (engine().isRecording() || engine().isPlaying()) {
+	// happen to be, rather than just popping a screen (Alan's request, 2026-08-23). Step
+	// recording rides along the same rule (Alan's request, 2026-08-23: "on quitte le mode
+	// step avec STOP ou back") - pressStop() -> engine().stop() folds it in the same way it
+	// already folds an in-progress real-time take.
+	if (engine().isRecording() || engine().isPlaying() || engine().isStepRecording()) {
 		pressStop();
 		return;
 	}
@@ -466,17 +548,26 @@ void D110SequencerRetroPanel::pressExit() {
 		popScreen();
 		return;
 	}
-	// Already on HOME (stack empty, nothing left to pop) - BACK jumps the cursor to the top
-	// row instead of doing nothing, so it's always a way back to a known place regardless of
-	// how far down the list you scrolled (Alan's request, 2026-08-23) - and resets the
-	// transportRowLabel() row's own dialled action to PLAY, same as popScreen() does when
-	// landing on HOME from a submenu (see its own comment).
-	const bool quickIndexNeedsReset = !homeScreen.quickIndex.empty() && homeScreen.quickIndex[0] != 0;
-	if (homeScreen.cursor != 0 || quickIndexNeedsReset) {
-		homeScreen.cursor = 0;
-		if (quickIndexNeedsReset) homeScreen.quickIndex[0] = 0;
-		repaint();
+	// Already on HOME (stack empty, nothing left to pop) - BACK jumps the cursor to the
+	// transportRowLabel() row instead of doing nothing, so it's always a way back to a known
+	// place regardless of how far down the list you scrolled (Alan's request, 2026-08-23;
+	// re-targeted the same day from a hardcoded row 0 to this row specifically once it moved
+	// off the top of HOME - see buildHomeMenu()'s own header comment) - and resets that row's
+	// own dialled action to PLAY, same as popScreen() does when landing on HOME from a
+	// submenu (see its own comment).
+	const int idx = homeTransportRowIndex();
+	const bool quickIndexNeedsReset = idx < (int) homeScreen.quickIndex.size() && homeScreen.quickIndex[(size_t) idx] != 0;
+	if (homeScreen.cursor != idx || quickIndexNeedsReset) {
+		homeScreen.cursor = idx;
+		if (quickIndexNeedsReset) homeScreen.quickIndex[(size_t) idx] = 0;
+	} else {
+		// Cursor's already sitting right there with nothing left to reset - a further BACK
+		// rewinds the bar to getStartBar(), same destination double-tapping STOP reaches
+		// (Alan's request, 2026-08-24) - the entry point BACK keeps landing you on is exactly
+		// where STOP itself lives, so a repeat press there reads the same way either input.
+		engine().gotoBar(engine().getStartBar());
 	}
+	repaint();
 }
 
 void D110SequencerRetroPanel::pressTrackRec(int track) {
@@ -490,26 +581,45 @@ void D110SequencerRetroPanel::pressTrackRec(int track) {
 	repaint();
 }
 
+// Same one-press toggle as pressTrackRec(), for step recording instead of real-time -
+// arms the track and starts step recording if it isn't already this track, stops it if it
+// is (Alan's request, 2026-08-23: a STEP quick action per track, same as REC already has).
+void D110SequencerRetroPanel::pressTrackStep(int track) {
+	auto &eng = engine();
+	if (eng.isStepRecording() && eng.getArmedTrack() == track) {
+		eng.stopStepRecording();
+	} else {
+		eng.armTrack(track);
+		eng.startStepRecording();
+		stepOverlayCursor = 0; // always land on BAR, not wherever it was left last time
+	}
+	repaint();
+}
+
 void D110SequencerRetroPanel::visibilityChanged() {
 	if (isVisible()) grabKeyboardFocus();
 }
 
-// Numeric-keypad D-pad: 8/4/6 for UP/LEFT/RIGHT, 7/9 for EXIT/ENTER directly above LEFT/
-// RIGHT, and 5 (not 2) for DOWN - Alan's request, 2026-08-23, picked so every default
-// binding is a genuine NumLock-ON digit (juce::KeyPress::numberPadN only ever fires as such
-// with NumLock on; with it off, the physical numpad instead sends navigation keysyms - KP_2
-// would collide with the plain Down arrow, already a hardcoded fallback below, but KP_5 has
-// no navigation meaning to collide with either way, so it's the safer default regardless of
-// NumLock state).
+// Numeric D-pad, using the TOP-ROW digit keys (plain juce::KeyPress('8') etc.), not the
+// physical numeric keypad: 8/2/4/6 for UP/DOWN/LEFT/RIGHT, 7/9 for EXIT/ENTER directly
+// above LEFT/RIGHT - same digit layout as a numpad, just triggered off the row every
+// keyboard has, keypad or not. This replaces an earlier version keyed to
+// juce::KeyPress::numberPadN, which only ever fires with NumLock ON (Alan's report,
+// 2026-08-23: it showed as "numpad 8" and needed NumLock unlocked to use); that version
+// also had to swap DOWN from 2 to 5 to dodge numberPad2 colliding with the hardcoded Down
+// arrow fallback below when NumLock is OFF (a physical numpad with NumLock off sends
+// navigation keysyms instead of digits) - top-row '2' has no such collision (NumLock never
+// touches the top row), so DOWN reverts to the natural 2, matching the pre-existing binding
+// still saved from before that same-day change.
 std::array<juce::KeyPress, D110SequencerRetroPanel::kBindingCount>
 D110SequencerRetroPanel::defaultRetroKeyBindings() {
 	std::array<juce::KeyPress, kBindingCount> b;
-	b[bindUp] = juce::KeyPress(juce::KeyPress::numberPad8);
-	b[bindDown] = juce::KeyPress(juce::KeyPress::numberPad5);
-	b[bindLeft] = juce::KeyPress(juce::KeyPress::numberPad4);
-	b[bindRight] = juce::KeyPress(juce::KeyPress::numberPad6);
-	b[bindEnter] = juce::KeyPress(juce::KeyPress::numberPad9);
-	b[bindExit] = juce::KeyPress(juce::KeyPress::numberPad7);
+	b[bindUp] = juce::KeyPress((int) '8');
+	b[bindDown] = juce::KeyPress((int) '2');
+	b[bindLeft] = juce::KeyPress((int) '4');
+	b[bindRight] = juce::KeyPress((int) '6');
+	b[bindEnter] = juce::KeyPress((int) '9');
+	b[bindExit] = juce::KeyPress((int) '7');
 	return b;
 }
 
@@ -584,13 +694,17 @@ void D110SequencerRetroPanel::mouseDown(const juce::MouseEvent &e) {
 // Screen builders
 // ---------------------------------------------------------------------------
 
-// HOME: the permanent base of the navigation stack (see top()). One row per rubric,
-// in the order Alan sketched - the transportRowLabel() row (PLAY/STOP/REC/[MIDI]/OPTIONS)
-// leads, above even TEMPO/SIG/METRO (2026-08-23: it's the app's whole master control
-// surface). TEMPO/SIG/METRO and PRECOUNT/LOOP are plain rows (ENTER opens a thin list),
-// SONG/transportRowLabel()/each TRACK are quick-bar rows (LEFT/RIGHT cycles a fast action,
-// ENTER fires it), BAR is a live scrub (LEFT/RIGHT moves the transport directly, ENTER
-// still opens the full bar menu for exact jumps/punch/bar-range ops).
+// HOME: the permanent base of the navigation stack (see top()). One row per rubric, in the
+// order Alan settled on 2026-08-23: TEMPO/SIG/METRO and PRECOUNT/LOOP (plain rows, ENTER
+// opens a thin list), SONG (a quick-bar row, LEFT/RIGHT cycles a fast action, ENTER fires
+// it), BAR (a live scrub - LEFT/RIGHT moves the transport directly, ENTER still opens the
+// full bar menu for exact jumps/punch/bar-range ops), then the transportRowLabel() row
+// (PLAY/STOP/REC/[MIDI]/OPTIONS, also quick-bar) sitting right above the tracks it
+// controls, then each TRACK (also quick-bar). It used to lead HOME, above even
+// TEMPO/SIG/METRO; moved down here the same day so the rubrics that configure a song sit
+// together above it, right before the transport that plays that song and the tracks that
+// make it up - see homeTransportRowIndex(), which the BACK-to-known-place logic below
+// depends on to still find this row wherever it ends up in this ordering.
 D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildHomeMenu() {
 	Screen s;
 	s.kind = ScreenKind::list;
@@ -598,22 +712,6 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildHomeMenu() {
 	s.buildItems = [this]() {
 		std::vector<ListItem> items;
 		auto &eng = engine();
-
-		// First row, above even TEMPO/SIG/METRO (Alan's request, 2026-08-23: this is the app's
-		// whole master control surface - PLAY/STOP/REC/[MIDI]/OPTIONS - so it belongs at the
-		// very top of HOME, labelled with the app's own identity rather than the generic
-		// engineering term "TRANSPORT" - see D110SequencerHost::transportRowLabel()).
-		{
-			std::vector<QuickAction> qa;
-			qa.push_back({ "PLAY", [this] { pressPlay(); }, true });
-			qa.push_back({ "STOP", [this] { pressStop(); }, true });
-			qa.push_back({ "REC", [this] { pushScreen(buildRecordMenu()); }, true });
-			if (processor.supportsTrackChannelEdit())
-				qa.push_back({ "MIDI", [this] { pushScreen(buildMidiChannelsMenu()); }, true });
-			qa.push_back({ "OPTIONS", [this] { pushScreen(buildOptionsMenu()); }, true });
-			const juce::String status = eng.isRecording() ? "REC" : eng.isPlaying() ? "PLAY" : "STOP";
-			items.push_back({ processor.transportRowLabel(), status, true, nullptr, qa });
-		}
 
 		items.push_back({ "TEMPO/SIG/METRO", "", true, [this] { pushScreen(buildTempoSigMetroMenu()); } });
 		items.push_back({ "PRECOUNT/LOOP", "", true, [this] { pushScreen(buildPrecountLoopMenu()); } });
@@ -639,6 +737,20 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildHomeMenu() {
 			                   repaint();
 		                   } });
 
+		// Just below BAR, just above PART 1 (Alan's request, 2026-08-23) - see this
+		// function's own header comment for the reasoning.
+		{
+			std::vector<QuickAction> qa;
+			qa.push_back({ "PLAY", [this] { pressPlay(); }, true });
+			qa.push_back({ "STOP", [this] { pressStop(); }, true });
+			qa.push_back({ "REC", [this] { pushScreen(buildRecordMenu()); }, true });
+			if (processor.supportsTrackChannelEdit())
+				qa.push_back({ "MIDI", [this] { pushScreen(buildMidiChannelsMenu()); }, true });
+			qa.push_back({ "OPTIONS", [this] { pushScreen(buildOptionsMenu()); }, true });
+			const juce::String status = eng.isRecording() ? "REC" : eng.isPlaying() ? "PLAY" : "STOP";
+			items.push_back({ processor.transportRowLabel(), status, true, nullptr, qa });
+		}
+
 		for (int t = 0; t < eng.activeTrackCount(); ++t) {
 			juce::String name = eng.getTrackName(t);
 			if (name.isEmpty()) name = defaultTrackLabel(t);
@@ -650,6 +762,7 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildHomeMenu() {
 
 			std::vector<QuickAction> qa;
 			qa.push_back({ "REC", [this, t] { pressTrackRec(t); }, true });
+			qa.push_back({ "STEP", [this, t] { pressTrackStep(t); }, true });
 			qa.push_back({ "PLAY", [this] { pressPlay(); }, true });
 			qa.push_back({ "SOLO", [this, t] {
 				               auto &e = engine();
@@ -665,7 +778,6 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildHomeMenu() {
 			qa.push_back({ "CLEAR", [this, t] { pushScreen(buildClearConfirm(t)); }, eng.trackHasEvents(t) });
 			qa.push_back({ "UNDO", [this] { engine().undo(); repaint(); }, eng.canUndo() });
 			qa.push_back({ "REDO", [this] { engine().redo(); repaint(); }, eng.canRedo() });
-			qa.push_back({ "QUANTIZE", [this, t] { pushScreen(buildQuantizeMenu(t)); }, true });
 			qa.push_back({ "MORE", [this, t] { pushScreen(buildTrackMenu(t)); }, true });
 			items.push_back({ name, "", true, nullptr, qa });
 		}
@@ -731,6 +843,13 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildPrecountLoopMenu()
 				                   if (order[i] == engine().getLoopMode()) idx = i;
 			                   idx = (idx + delta + 3) % 3;
 			                   engine().setLoopMode(order[idx]);
+			                   repaint();
+		                   } });
+		// Where double-tap STOP / a further BACK on the transport row rewinds to (Alan's
+		// request, 2026-08-24) - see D110SequencerEngine::setStartBar()'s own comment.
+		items.push_back({ "STARTING POINT", juce::String(eng.getStartBar()), true,
+		                   [this] { pushScreen(buildStartingPointForm()); }, {}, [this](int delta) {
+			                   engine().setStartBar(engine().getStartBar() + delta);
 			                   repaint();
 		                   } });
 		return items;
@@ -1385,6 +1504,18 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildGotoBarForm() {
 	return s;
 }
 
+D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildStartingPointForm() {
+	Screen s;
+	s.kind = ScreenKind::form;
+	s.title = "STARTING POINT";
+	auto value = std::make_shared<int>(engine().getStartBar());
+	// Same asymmetric LEFT/RIGHT-1-bar/UP-DOWN-10-bars idiom as GO TO BAR above.
+	s.fields.push_back({ "BAR", value, 1, 9999, [](int v) { return juce::String(v); }, /* upDownStep */ 10,
+	                      /* leftRightStep */ 1 });
+	s.onConfirm = [this, value] { engine().setStartBar(*value); };
+	return s;
+}
+
 D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildPunchForm() {
 	Screen s;
 	s.kind = ScreenKind::form;
@@ -1443,12 +1574,17 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildStepMenu() {
 	s.buildItems = [this]() {
 		auto &eng = engine();
 		std::vector<ListItem> items;
-		items.push_back({ "STEP REC", eng.isStepRecording() ? "ON" : "OFF", true, [this] {
-			                 auto &e = engine();
-			                 if (e.isStepRecording()) e.stopStepRecording();
-			                 else if (e.getArmedTrack() >= 0) e.startStepRecording();
-			                 repaint();
-		                 } });
+		// startStepRecording() needs an armed track; without one ENTER used to silently
+		// do nothing. Grey the row out and say why, same as COPY/CLEAR/UNDO/REDO below do
+		// for their own preconditions, instead of leaving it looking actionable but dead.
+		const bool canToggle = eng.isStepRecording() || eng.getArmedTrack() >= 0;
+		items.push_back({ "STEP REC", eng.isStepRecording() ? "ON" : canToggle ? "OFF" : "ARM A TRACK", canToggle,
+			               [this] {
+				               auto &e = engine();
+				               if (e.isStepRecording()) e.stopStepRecording();
+				               else if (e.getArmedTrack() >= 0) { e.startStepRecording(); stepOverlayCursor = 0; }
+				               repaint();
+			               } });
 		items.push_back({ "DURATION", stepDurationShortLabel(eng.getStepDuration()), true,
 		                   [this] { pushScreen(buildStepDurationMenu()); } });
 		items.push_back({ "DOT", eng.getStepDotted() ? "ON" : "OFF", true, [this] {
@@ -1467,10 +1603,7 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildStepDurationMenu()
 	s.kind = ScreenKind::list;
 	s.title = "STEP DUR";
 	s.buildItems = [this]() {
-		static const std::array<QuantizeGrid, 8> presets { { QuantizeGrid::whole, QuantizeGrid::half, QuantizeGrid::quarter,
-		                                                       QuantizeGrid::eighth, QuantizeGrid::sixteenth,
-		                                                       QuantizeGrid::eighthTriplet, QuantizeGrid::sixteenthTriplet,
-		                                                       QuantizeGrid::thirtySecond } };
+		const auto &presets = stepDurationPresets();
 		const auto current = engine().getStepDuration();
 		std::vector<ListItem> items;
 		for (auto grid : presets)
@@ -1555,7 +1688,7 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildNewSongConfirm() {
 	Screen s;
 	s.kind = ScreenKind::confirm;
 	s.title = "NEW SONG?";
-	s.message = "CLEARS EVERY TRACK IN THIS SLOT";
+	s.message = "CLEARS EVERY TRACK IN SLOT " + juce::String(engine().getCurrentSongSlot() + 1);
 	s.onConfirm = [this] {
 		engine().pushUndoSnapshot("New song (Slot " + juce::String(engine().getCurrentSongSlot() + 1) + ")");
 		// newSong() also resets tempo and the fixed per-track Program Change/Bank/Volume/Pan
@@ -1880,19 +2013,21 @@ void D110SequencerRetroPanel::paintLcd(juce::Graphics &g, juce::Rectangle<float>
 		const int stepIndex = eng.getStepIndexInBar();
 		const int stepsPerBar = eng.getStepsPerBar();
 		g.setColour(kLcdInk);
+		// BAR/DUR each get a ">"/" " cursor marker, same convention as every List/Form
+		// row elsewhere - see stepOverlayCursor's own comment.
+		const juce::String barText = (stepOverlayCursor == 0 ? juce::String(">") : juce::String(" ")) + "BAR "
+		    + juce::String(eng.getStepBar()) + " STEP " + juce::String(stepIndex) + "/" + juce::String(stepsPerBar);
+		const juce::String durText = (stepOverlayCursor == 1 ? juce::String(">") : juce::String(" ")) + "DUR "
+		    + stepDurationShortLabel(eng.getStepDuration()) + (eng.getStepDotted() ? " DOT" : "");
 		if (lcdCompactMode) {
-			// Same information as the 4-line version below, condensed onto the 2 rows LCD
-			// LINES leaves it - see bodyRows()'s own comment.
+			// Same two rows as the 4-line version below, just without the static
+			// header/footer - no room for those once LCD LINES halves the row count (see
+			// bodyRows()'s own comment).
 			const float lineH = inner.getHeight() / 2.0f;
 			auto l0 = inner.removeFromTop(lineH);
 			auto l1 = inner.removeFromTop(lineH);
-			drawDotText(g, "STEP BAR " + juce::String(eng.getStepBar()) + " " + juce::String(stepIndex) + "/"
-			                    + juce::String(stepsPerBar),
-			            l0, juce::Justification::centredLeft, charPx);
-			drawDotText(g,
-			            stepDurationShortLabel(eng.getStepDuration()) + (eng.getStepDotted() ? "." : "") + "  "
-			                + juce::String(juce::jmax(0, stepsPerBar - stepIndex)) + " LEFT",
-			            l1, juce::Justification::centredLeft, charPx);
+			drawDotText(g, barText, l0, juce::Justification::centredLeft, charPx);
+			drawDotText(g, durText, l1, juce::Justification::centredLeft, charPx);
 		} else {
 			const float lineH = inner.getHeight() / 4.0f;
 			auto l0 = inner.removeFromTop(lineH);
@@ -1900,12 +2035,8 @@ void D110SequencerRetroPanel::paintLcd(juce::Graphics &g, juce::Rectangle<float>
 			auto l2 = inner.removeFromTop(lineH);
 			auto l3 = inner.removeFromTop(lineH);
 			drawDotText(g, "STEP RECORDING", l0, juce::Justification::centredLeft, charPx);
-			drawDotText(g,
-			            "BAR " + juce::String(eng.getStepBar()) + " STEP " + juce::String(stepIndex) + "/"
-			                + juce::String(stepsPerBar),
-			            l1, juce::Justification::centredLeft, charPx);
-			drawDotText(g, "DUR " + stepDurationShortLabel(eng.getStepDuration()) + (eng.getStepDotted() ? " DOT" : ""),
-			            l2, juce::Justification::centredLeft, charPx);
+			drawDotText(g, barText, l1, juce::Justification::centredLeft, charPx);
+			drawDotText(g, durText, l2, juce::Justification::centredLeft, charPx);
 			drawDotText(g, juce::String(juce::jmax(0, stepsPerBar - stepIndex)) + " STEPS LEFT", l3,
 			            juce::Justification::centredLeft, charPx);
 		}
@@ -1956,9 +2087,6 @@ void D110SequencerRetroPanel::paintListScreen(juce::Graphics &g, juce::Rectangle
 		const auto &it = items[(size_t) idx];
 		const bool selected = idx == s.cursor;
 		g.setColour(it.enabled ? kLcdInk : kLcdInk.withAlpha(0.35f));
-		auto labelArea = lineArea.removeFromLeft(lineArea.getWidth() * 0.62f);
-		drawDotText(g, (selected ? juce::String(">") : juce::String(" ")) + it.label, labelArea,
-		            juce::Justification::centredLeft, charPx);
 		// A quick-bar row shows whichever action is currently dialled (LEFT/RIGHT-cycled,
 		// see pressLeft/pressRight) instead of a plain value - same column, same layout.
 		juce::String valueText = it.value;
@@ -1967,6 +2095,18 @@ void D110SequencerRetroPanel::paintListScreen(juce::Graphics &g, juce::Rectangle
 			valueText = (selected ? juce::String("<") : juce::String()) + it.quickActions[(size_t) qi].label
 			            + (selected ? juce::String(">") : juce::String());
 		}
+		// The label/value split used to be a fixed 62/38 - fine for a short value like
+		// REC/PLAY, but it clipped an empty-value row's label (TEMPO/SIG/METRO,
+		// PRECOUNT/LOOP...) for no reason once drawDotText started clipping to its own
+		// column (Alan's report, 2026-08-23: "c'est coupe n'importe comment"). Size the
+		// label off the value that's actually there instead: a row with nothing on the
+		// right gets (almost) the whole line, one with a real value only gives up exactly
+		// the room that value needs.
+		const float valueW = valueText.isEmpty() ? 0.0f : dotTextWidth(valueText, charPx) + charPx * 0.9f;
+		const float labelW = juce::jmax(lineArea.getWidth() * 0.35f, lineArea.getWidth() - valueW);
+		auto labelArea = lineArea.removeFromLeft(labelW);
+		drawDotText(g, (selected ? juce::String(">") : juce::String(" ")) + it.label, labelArea,
+		            juce::Justification::centredLeft, charPx);
 		drawDotText(g, valueText, lineArea, juce::Justification::centredRight, charPx);
 	}
 }

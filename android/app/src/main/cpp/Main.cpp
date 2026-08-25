@@ -25,16 +25,20 @@
 
 class MainComponent : public juce::Component, private juce::Timer, private juce::MidiInputCallback {
 public:
+	// The app's own external files dir - the one location the native core can always read
+	// with a plain filesystem path on Android (see chooseRomFolder()'s own comment for why
+	// that rules out pointing setCustomRomFolder() at an arbitrary SAF folder directly).
+	static juce::File romBringUpDir() {
+		return juce::File("/storage/emulated/0/Android/data/com.d110emulator.android/files/roms");
+	}
+
 	MainComponent() : panel(processor), keyboard(processor), gridSeq(processor), retroSeq(processor) {
-		// Bring-up shortcut: ROMs were adb-pushed to the app's own external files dir
-		// (see docs/roms.md's automatic-locations list, none of which know about Android's
-		// storage model yet). A real Android release needs a proper SAF file-picker here,
-		// the same job the desktop ROM setup dialog does with a plain folder chooser -
-		// deliberately not built yet, this milestone is about the engine, not ROM setup UX.
-		auto romDir = juce::File(
-			"/storage/emulated/0/Android/data/com.d110emulator.android/files/roms");
-		if (romDir.isDirectory())
-			D110AudioProcessor::setCustomRomFolder(romDir.getFullPathName());
+		// Bring-up shortcut, still the path chooseRomFolder() (hamburger menu) now also copies
+		// into - see its own comment. Originally ROMs only got there via `adb push`; the
+		// picker below is the "proper SAF file-picker" this comment used to say was still
+		// missing.
+		if (romBringUpDir().isDirectory())
+			D110AudioProcessor::setCustomRomFolder(romBringUpDir().getFullPathName());
 		processor.reloadRomsAndPowerOn();
 		loadPersistedState();
 
@@ -231,8 +235,18 @@ public:
 		menuButton.setVisible(!inGridSequencer);
 		statusLabel.setVisible(!inGridSequencer && !inRetroSequencer);
 		if (!inGridSequencer) {
-			auto transport = area.removeFromTop(72);
-			menuButton.setBounds(transport.removeFromRight(72).reduced(6));
+			// Retro landscape's top strip only ever holds the hamburger (Play/Stop/status
+			// stay hidden there - see this function's own comment above on why) - the full
+			// 72px transport-row height was sized for Panel mode's 3-button row, wasted here
+			// on one corner button. Alan's request, 2026-08-24: shrink the button by half and
+			// hand every pixel reclaimed from the strip to the sequencer/keyboard below
+			// (nothing else needed to explicitly "shift up" - less removed from the top of
+			// `area` here means more of it left for them further down).
+			const bool shrinkHamburger = inRetroSequencer && isLandscape;
+			const int transportH = shrinkHamburger ? 36 : 72;
+			const int menuButtonW = shrinkHamburger ? 36 : 72;
+			auto transport = area.removeFromTop(transportH);
+			menuButton.setBounds(transport.removeFromRight(menuButtonW).reduced(shrinkHamburger ? 3 : 6));
 			if (!inRetroSequencer) {
 				const int halfWidth = transport.getWidth() / 2;
 				playButton.setBounds(transport.removeFromLeft(halfWidth).reduced(6));
@@ -292,9 +306,14 @@ public:
 			// scale-based height (already tuned and confirmed there); portrait gets the same
 			// width-based cap Panel mode uses, just a bit tighter (width/5 not /4) to leave more
 			// of the screen to the 9 track rows, which is the whole point of this view.
+			//
+			// Retro landscape specifically gets a further x1.6 on top of that (Alan's request,
+			// 2026-08-24, "environ 60% plus haut") - Grid keeps the plain scale-based height,
+			// this is retro only.
+			const float retroLandscapeBoost = (retro && isLandscape) ? 1.6f : 1.0f;
 			const int keyboardHeight =
 				isLandscape
-					? juce::jmin(area.getHeight(), juce::roundToInt(D110Keyboard::kRefH * scale))
+					? juce::jmin(area.getHeight(), juce::roundToInt(D110Keyboard::kRefH * scale * retroLandscapeBoost))
 					: juce::jmin(area.getHeight(), juce::roundToInt(area.getWidth() / 5.0f));
 			auto seqBounds = area;
 			seqBounds.removeFromBottom(keyboardHeight);
@@ -348,6 +367,10 @@ private:
 	// Every item is a self-contained action callback rather than a numeric result ID precisely
 	// so it can be dropped into either menu with no ID-space coordination between them.
 	void buildAppMenu(juce::PopupMenu &m) {
+		// Reachable up top and unconditionally (not gated behind processor.isSynthReady()) -
+		// this is exactly the thing to reach for when the ROMs are missing and everything else
+		// in the app is sitting there showing the "ROMs not found" error instead of the panel.
+		m.addItem("Choose ROM files...", [this] { chooseRomFolder(); });
 		m.addItem("Load MIDI file...", [this] { chooseMidiFile(); });
 		m.addItem(showingSequencer ? "Front Panel" : "Sequencer", [this] { toggleSequencerView(); });
 		// D110Keyboard::showContextMenu() is the exact same channel/omni/PC-keyboard menu the
@@ -444,6 +467,79 @@ private:
 				auto url = fc.getURLResult();
 				if (url != juce::URL()) loadAndPlayMidi(url);
 			});
+	}
+
+	// Android's equivalent of the desktop Utility tab's "ROM FOLDER" picker (PluginEditor.cpp,
+	// id 16) - but it can't work the same way desktop does (pointing setCustomRomFolder()
+	// straight at whatever folder the user picks), and not only for the reason chooseMidiFile()'s
+	// own comment already gives (content:// URIs aren't real filesystem paths, and
+	// D110CoreNative::start() needs one). A canSelectDirectories FileChooser (tried first) hands
+	// back a SAF *tree* URI, and this build's JUCE has no working way to list a tree's contents:
+	// the public juce::AndroidDocumentIterator - despite its class comment - turns out to be
+	// backed by plain juce::File/DirectoryIterator under the hood (see
+	// AndroidDocumentIterator::makeRecursive()/makeNonRecursive() in
+	// juce_AndroidDocument_android.cpp, both call dir.getUrl().getLocalFile() and iterate that),
+	// which silently visits zero children for a real content:// tree (confirmed empirically on a
+	// real device - a picked folder with 7 real ROM files inside came back "seen=0"). The
+	// DocumentsContract-based recursive engine that WOULD walk a tree correctly
+	// (AndroidDocumentDetail::RecursiveEngine) exists in that same file but is never actually
+	// wired up to the public API - dead code in this JUCE version.
+	//
+	// So: ask for the ROM FILES themselves (multi-select), not a folder. That sidesteps tree
+	// listing entirely and reuses AndroidDocument::fromDocument()+createInputStream() - the exact
+	// per-file mechanism loadAndPlayMidi() already relies on successfully. Each selected file
+	// gets copied into romBringUpDir() (a real path the native core can open), then
+	// setCustomRomFolder() points there - same as before, and still the same folder the
+	// constructor auto-detects on every future launch with no extra step.
+	void chooseRomFolder() {
+		fileChooser = std::make_unique<juce::FileChooser>(
+			"Choose your D-110 ROM files (select all of them at once)", juce::File());
+		fileChooser->launchAsync(
+			juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+				| juce::FileBrowserComponent::canSelectMultipleItems,
+			[this](const juce::FileChooser &fc) { copyRomFilesAndReload(fc.getURLResults()); });
+	}
+
+	void copyRomFilesAndReload(const juce::Array<juce::URL> &urls) {
+		// Same whole-image/chip-dump size set PluginProcessor.cpp's materializeLooseRomsIfNeeded
+		// filters loose ROM candidates by - lets the user select more than strictly needed (e.g.
+		// their whole extracted romset) without copying in anything unrecognised. File CONTENT
+		// (which chip a same-sized dump actually is) and Control-image splitting are sorted out
+		// afterwards by tryAutoLoadRoms() itself, same as every other ROM location.
+		auto isKnownRomSize = [](juce::int64 n) {
+			return n == 4096 || n == 32768 || n == 131072 || n == 163840 || n == 524288 || n == 1048576;
+		};
+
+		const auto dest = romBringUpDir();
+		dest.createDirectory();
+
+		int copied = 0;
+		for (const auto &url : urls) {
+			auto doc = juce::AndroidDocument::fromDocument(url);
+			auto in = doc.hasValue() ? doc.createInputStream() : nullptr;
+			if (in == nullptr) continue;
+
+			auto outFile = dest.getChildFile(url.getFileName());
+			outFile.deleteFile();
+			auto out = outFile.createOutputStream();
+			if (out == nullptr || out->writeFromInputStream(*in, -1) <= 0) {
+				outFile.deleteFile();
+				continue;
+			}
+			out.reset();
+			if (isKnownRomSize(outFile.getSize())) ++copied;
+			else outFile.deleteFile();
+		}
+
+		if (copied == 0) {
+			statusLabel.setText("None of those looked like ROM files", juce::dontSendNotification);
+			return;
+		}
+
+		D110AudioProcessor::setCustomRomFolder(dest.getFullPathName());
+		processor.reloadRomsAndPowerOn();
+		statusLabel.setText(processor.isSynthReady() ? "Ready" : processor.getLastError(),
+		                     juce::dontSendNotification);
 	}
 
 	// Roland's own factory default is Part N -> MIDI channel N+1 (docs/factory_defaults.md,

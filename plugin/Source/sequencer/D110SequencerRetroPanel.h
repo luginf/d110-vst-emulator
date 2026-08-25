@@ -137,6 +137,14 @@ private:
 
 	void pushScreen(Screen s);
 	void popScreen();
+
+	// Index of the transportRowLabel() row within homeScreen's own items, computed fresh by
+	// matching its label rather than hardcoded - a couple of the rows ahead of it (MIDI
+	// inside its own quick actions aside, the whole SNAPSHOT action) are conditional on host
+	// capabilities, so its position isn't a fixed constant across hosts. Used by
+	// popScreen()/pressExit() so "back to a known place" still lands on the transport row
+	// now that it's no longer index 0 - see buildHomeMenu()'s own header comment.
+	int homeTransportRowIndex();
 	// HOME (the permanent base of the stack, never pushed/popped) is a Screen like any
 	// other - stack.empty() means "showing HOME", and top() transparently returns the
 	// persistent homeScreen member in that case, so every input handler and paintListScreen
@@ -166,6 +174,18 @@ private:
 	enum BindingIndex { bindUp, bindDown, bindLeft, bindRight, bindEnter, bindExit, kBindingCount };
 	std::array<juce::KeyPress, kBindingCount> keyBindings;
 	int capturingBinding = -1;
+
+	// Which row the STEP RECORDING overlay's cursor sits on (0 = BAR, 1 = DUR) - Alan's
+	// request, 2026-08-23: UP/DOWN used to be hardcoded to REST/undo-step everywhere in the
+	// overlay; now UP/DOWN moves the cursor between the two vertically-stacked rows, and
+	// LEFT/RIGHT acts on whichever one is focused (advances/rewinds the step on BAR, steps
+	// through stepDurationPresets() on DUR) - the opposite pairing from a Form screen's own
+	// UP/DOWN-adjusts/LEFT-RIGHT-navigates idiom (see FormField's own comment); tried that
+	// pairing here first and Alan corrected it the same day, since unlike a Form's fields
+	// these two rows are stacked vertically, so UP/DOWN reads as "move" between them, not
+	// LEFT/RIGHT. No real Screen/FormField behind this either way, since the overlay isn't
+	// one (see paintLcd()).
+	int stepOverlayCursor = 0;
 	static std::array<juce::KeyPress, kBindingCount> defaultRetroKeyBindings();
 	// Round-trip through D110SequencerHost::getRetroKeyBindings()/setRetroKeyBindings() - see
 	// that method's own comment for the wire format. Called once at construction (decode) and
@@ -179,6 +199,8 @@ private:
 	// currently recording) - the HOME TRACK row's REC quick action. Unlike the ARM toggle
 	// still available under MORE, this never leaves a track armed-but-not-recording.
 	void pressTrackRec(int track);
+	// Same, for step recording - the HOME TRACK row's STEP quick action.
+	void pressTrackStep(int track);
 
 	// Screen builders - one per HOME destination and its own children. Each mirrors the
 	// equivalent D110SequencerPanel control 1:1 (see the .cpp for exact call sites). A
@@ -211,6 +233,7 @@ private:
 	Screen buildMetronomeMenu();
 	Screen buildMetronomeVolumeMenu();
 	Screen buildPrecountForm();
+	Screen buildStartingPointForm();
 	Screen buildLoopMenu();
 	Screen buildBarMenu();
 	Screen buildGotoBarForm();

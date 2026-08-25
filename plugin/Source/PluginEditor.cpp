@@ -874,6 +874,66 @@ juce::String noteName(int note) {
 	return juce::MidiMessage::getMidiNoteName(note, true, true, 4);
 }
 
+// The PCM ROM's own 128 wave names, one table per bank, straight from Roland's own
+// "PCM Sounds" appendix - Github issue #2 asked for names instead of a bare 0-127 number.
+// Which bank a partial's PCM field (offset 5) indexes into is the OTHER bit of the
+// neighbouring WAVEFORM field (offset 4: 0/1 = bank 1, 2/3 = bank 2 - see
+// docs/la32_register_map.md's "WG PCM Bank / PCM Wave" entry), so callers need that byte
+// too, not just this table. Bank 2's first 30 are the same rhythm hits as Bank 1's (marked
+// with a "*" in the manual - pitch there isn't affected by Master Tuning), the rest are
+// unnamed Loop-N/Jam-N combination sounds, transcribed as-is rather than invented.
+const char *const kPcmBank1Names[128] = {
+	"Bass Drum-1", "Bass Drum-2", "Bass Drum-3", "Snare Drum-1", "Snare Drum-2",
+	"Snare Drum-3", "Snare Drum-4", "Tom Tom-1", "Tom Tom-2", "High-Hat",
+	"High-Hat (Loop)", "Crash Cymbal-1", "Crash Cymbal-2 (Loop)", "Ride Cymbal-1",
+	"Ride Cymbal-2 (Loop)", "Cup", "China Cymbal-1", "China Cymbal-2 (Loop)", "Rim Shot",
+	"Hand Clap", "Mute High Conga", "Conga", "Bongo", "Cowbell", "Tambourine", "Agogo",
+	"Claves", "Timbale High", "Timbale Low", "Cabasa", "Timpani Attack", "Timpani",
+	"Acoustic Piano High", "Acoustic Piano Low", "Piano Forte Thump", "Organ Percussion",
+	"Trumpet", "Lips", "Trombone", "Clarinet", "Flute High", "Flute Low", "Steamer",
+	"Indian Flute", "Breath", "Vibraphone High", "Vibraphone Low", "Marimba",
+	"Xylophone High", "Xylophone Low", "Kalimba", "Wind Bell", "Chime Bar", "Hammer",
+	"Guiro", "Chink", "Nails", "Fretless Bass", "Pull Bass", "Slap Bass", "Thump Bass",
+	"Acoustic Bass", "Electric Bass", "Gut Guitar", "Steel Guitar", "Dirty Guitar",
+	"Pizzicato", "Harp", "Contrabass", "Cello", "Violin-1", "Violin-2", "Koto",
+	"Drawbars (Loop)", "High Organ (Loop)", "Low Organ (Loop)", "Trumpet (Loop)",
+	"Trombone (Loop)", "Sax-1 (Loop)", "Sax-2 (Loop)", "Reed (Loop)", "Slap Bass (Loop)",
+	"Acoustic Bass (Loop)", "Electric Bass-1 (Loop)", "Electric Bass-2 (Loop)",
+	"Gut Guitar (Loop)", "Steel Guitar (Loop)", "Electric Guitar (Loop)", "Clav (Loop)",
+	"Cello (Loop)", "Violin (Loop)", "Electric Piano-1 (Loop)", "Electric Piano-2 (Loop)",
+	"Harpsichord-1 (Loop)", "Harpsichord-2 (Loop)", "Telephone Bell",
+	"Female Voice-1 (Loop)", "Female Voice-2 (Loop)", "Male Voice-1 (Loop)",
+	"Male Voice-2 (Loop)", "Spectrum-1 (Loop)", "Spectrum-2 (Loop)", "Spectrum-3 (Loop)",
+	"Spectrum-4 (Loop)", "Spectrum-5 (Loop)", "Spectrum-6 (Loop)", "Spectrum-7 (Loop)",
+	"Spectrum-8 (Loop)", "Spectrum-9 (Loop)", "Spectrum-10 (Loop)", "Noise (Loop)",
+	"Shot-1", "Shot-2", "Shot-3", "Shot-4", "Shot-5", "Shot-6", "Shot-7", "Shot-8",
+	"Shot-9", "Shot-10", "Shot-11", "Shot-12", "Shot-13", "Shot-14", "Shot-15", "Shot-16",
+	"Shot-17",
+};
+const char *const kPcmBank2Names[128] = {
+	"Bass Drum-1*", "Bass Drum-2*", "Bass Drum-3*", "Snare Drum-1*", "Snare Drum-2*",
+	"Snare Drum-3*", "Snare Drum-4*", "Tom Tom-1*", "Tom Tom-2*", "High-Hat*",
+	"High-Hat* (Loop)", "Crash Cymbal-1*", "Crash Cymbal-2* (Loop)", "Ride Cymbal-1*",
+	"Ride Cymbal-2* (Loop)", "Cup*", "China Cymbal-1*", "China Cymbal-2* (Loop)",
+	"Rim Shot*", "Hand Clap*", "Mute High Conga*", "Conga*", "Bongo*", "Cowbell*",
+	"Tambourine*", "Agogo*", "Claves*", "Timbale High*", "Timbale Low*", "Cabasa*",
+	"Loop-1", "Loop-2", "Loop-3", "Loop-4", "Loop-5", "Loop-6", "Loop-7", "Loop-8",
+	"Loop-9", "Loop-10", "Loop-11", "Loop-12", "Loop-13", "Loop-14", "Loop-15", "Loop-16",
+	"Loop-17", "Loop-18", "Loop-19", "Loop-20", "Loop-21", "Loop-22", "Loop-23", "Loop-24",
+	"Loop-25", "Loop-26", "Loop-27", "Loop-28", "Loop-29", "Loop-30", "Loop-31", "Loop-32",
+	"Loop-33", "Loop-34", "Loop-35", "Loop-36", "Loop-37", "Loop-38", "Loop-39", "Loop-40",
+	"Loop-41", "Loop-42", "Loop-43", "Loop-44", "Loop-45", "Loop-46", "Loop-47", "Loop-48",
+	"Loop-49", "Loop-50", "Loop-51", "Loop-52", "Loop-53", "Loop-54", "Loop-55", "Loop-56",
+	"Loop-57", "Loop-58", "Loop-59", "Loop-60", "Loop-61", "Loop-62", "Loop-63", "Loop-64",
+	"Jam-1 (Loop)", "Jam-2 (Loop)", "Jam-3 (Loop)", "Jam-4 (Loop)", "Jam-5 (Loop)",
+	"Jam-6 (Loop)", "Jam-7 (Loop)", "Jam-8 (Loop)", "Jam-9 (Loop)", "Jam-10 (Loop)",
+	"Jam-11 (Loop)", "Jam-12 (Loop)", "Jam-13 (Loop)", "Jam-14 (Loop)", "Jam-15 (Loop)",
+	"Jam-16 (Loop)", "Jam-17 (Loop)", "Jam-18 (Loop)", "Jam-19 (Loop)", "Jam-20 (Loop)",
+	"Jam-21 (Loop)", "Jam-22 (Loop)", "Jam-23 (Loop)", "Jam-24 (Loop)", "Jam-25 (Loop)",
+	"Jam-26 (Loop)", "Jam-27 (Loop)", "Jam-28 (Loop)", "Jam-29 (Loop)", "Jam-30 (Loop)",
+	"Jam-31 (Loop)", "Jam-32 (Loop)", "Jam-33 (Loop)", "Jam-34 (Loop)",
+};
+
 } // namespace
 
 D110EditorPane::D110EditorPane(D110AudioProcessor &p) : processor(p) {
@@ -1992,7 +2052,12 @@ juce::String D110EditorPane::textOf(const Cell &c) const {
 			static const char *kWave[] = { "SQU/1", "SAW/1", "SQU/2", "SAW/2" };
 			return kWave[juce::jlimit(0, 3, v)];
 		}
-		case 5: return juce::String(v + 1);             // номер образца PCM
+		case 5: {   // номер образца PCM - имя из ПЗУ, банк решает соседнее поле WAVEFORM
+			const size_t waveAt = addressOf(c) - 1;
+			const bool bank2 = (waveAt < ram.size()) && ((ram[waveAt] & 2) != 0);
+			const int n = juce::jlimit(0, 127, v);
+			return juce::String(v + 1) + "  " + (bank2 ? kPcmBank2Names[n] : kPcmBank1Names[n]);
+		}
 		case 7: return juce::String(v - 7);             // чувствительность ширины импульса
 		case 15: case 16: case 17: case 18: case 19:    // уровни огибающей высоты, -50..+50
 			return juce::String(v - 50);
@@ -2071,6 +2136,33 @@ juce::String D110EditorPane::textOf(const Cell &c) const {
 }
 
 // --- рисование --------------------------------------------------------------
+
+bool D110EditorPane::isPartialMuteCell(const Cell &c) const {
+	return c.area == Area::ToneTemp && c.field == 12;
+}
+
+juce::Rectangle<float> D110EditorPane::partialMuteSegment(const Cell &c, int partial) const {
+	const float segW = c.bounds.getWidth() / 4.0f;
+	return juce::Rectangle<float>(c.bounds.getX() + segW * float(partial), c.bounds.getY(),
+	                              segW - 2.0f, c.bounds.getHeight());
+}
+
+void D110EditorPane::paintPartialMuteCell(juce::Graphics &g, const Cell &c, bool hover) const {
+	const int v = juce::jmax(0, valueOf(c));
+	const juce::Font valueFont(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), 12.0f,
+	                                             juce::Font::plain));
+	for (int i = 0; i < 4; ++i) {
+		const auto seg = partialMuteSegment(c, i);
+		const bool on = ((v >> i) & 1) != 0;
+		g.setColour(on ? kEdBox().brighter(0.3f) : kEdBox());
+		g.fillRoundedRectangle(seg, 3.0f);
+		g.setColour(on ? kEdValue() : (hover ? kEdValue().withAlpha(0.55f) : kEdBorder()));
+		g.drawRoundedRectangle(seg.reduced(0.5f), 3.0f, 1.0f);
+		g.setColour(on ? kEdValue() : kEdDim());
+		g.setFont(valueFont);
+		g.drawText(juce::String(i + 1), seg, juce::Justification::centred);
+	}
+}
 
 void D110EditorPane::paint(juce::Graphics &g) {
 	g.fillAll(kEdBack());
@@ -2211,6 +2303,10 @@ void D110EditorPane::paint(juce::Graphics &g) {
 	g.setFont(valueFont);
 	for (size_t i = 0; i < cells.size(); ++i) {
 		const Cell &c = cells[i];
+		if (isPartialMuteCell(c)) {
+			paintPartialMuteCell(g, c, int(i) == hovered);
+			continue;
+		}
 		drawBox(g, c.bounds, int(i) == hovered || int(i) == dragging);
 		g.setColour(kEdValue());
 		g.drawText(textOf(c), c.bounds.reduced(6.0f, 0.0f), juce::Justification::centredLeft);
@@ -2681,6 +2777,30 @@ void D110EditorPane::showRhythmSoundMenu(int slot) {
 		});
 }
 
+// Правый клик по PCM - список всех 128 образцов ПЗУ выбранного банка по имени. Банк решает
+// соседнее поле WAVEFORM (тот же байт, что читает textOf()'s Area::ToneTemp case 5), поэтому
+// список читает его тем же способом, а не спрашивает заново.
+void D110EditorPane::showPcmWaveMenu(const Cell &pcmCell) {
+	const size_t waveAt = addressOf(pcmCell) - 1;
+	const bool bank2 = (waveAt < ram.size()) && ((ram[waveAt] & 2) != 0);
+	const char *const *names = bank2 ? kPcmBank2Names : kPcmBank1Names;
+
+	juce::PopupMenu menu;
+	juce::PopupMenu lower, upper;
+	for (int n = 0; n < 64; ++n)
+		lower.addItem(n + 1, juce::String(n + 1).paddedLeft('0', 3) + "  " + names[n]);
+	for (int n = 64; n < 128; ++n)
+		upper.addItem(n + 1, juce::String(n + 1).paddedLeft('0', 3) + "  " + names[n]);
+	menu.addSubMenu("001 - 064", lower);
+	menu.addSubMenu("065 - 128", upper);
+
+	menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
+		[this, pcmCell](int result) {
+			if (result <= 0) return; // отменено
+			setValue(pcmCell, result - 1);
+		});
+}
+
 void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 	const auto p = e.position;
 	if (!optionsButtonBounds.isEmpty() && optionsButtonBounds.contains(p)) {
@@ -2764,6 +2884,11 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 				showRhythmSoundMenu(c.index);
 				return;
 			}
+			if (tab == Tab::Tone && c.area == Area::ToneTemp && c.field >= 14
+			    && (c.field - 14) % 58 == 5) {
+				showPcmWaveMenu(c);
+				return;
+			}
 		}
 	}
 	if (tab == Tab::Tone || tab == Tab::Timbres || tab == Tab::Tones) {
@@ -2819,6 +2944,24 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 		buttonPressed(b.id);
 		return;
 	}
+
+	// PARTIAL MUTE (Github issue #1): four independent toggles, not a drag/wheel field - a
+	// click just flips whichever partial's button it landed on and stops there.
+	{
+		const int i = cellAt(p);
+		if (i >= 0 && isPartialMuteCell(cells[(size_t)i])) {
+			const Cell &c = cells[(size_t)i];
+			const int v = valueOf(c);
+			if (v >= 0) {
+				int bit = 3;
+				for (int partial = 0; partial < 4; ++partial)
+					if (partialMuteSegment(c, partial).contains(p)) { bit = partial; break; }
+				setValue(c, v ^ (1 << bit));
+			}
+			return;
+		}
+	}
+
 	dragging = cellAt(p);
 	if (dragging < 0) return;
 	dragStartY = p.y;
@@ -2869,6 +3012,7 @@ void D110EditorPane::mouseExit(const juce::MouseEvent &) {
 void D110EditorPane::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
 	const int i = cellAt(e.position);
 	if (i >= 0) {
+		if (isPartialMuteCell(cells[(size_t)i])) return;   // click-to-toggle only, see mouseDown()
 		const int v = valueOf(cells[(size_t)i]);
 		if (v < 0) return;
 		setValue(cells[(size_t)i], v + (w.deltaY > 0 ? 1 : -1));

@@ -28,6 +28,8 @@ works too - see [`docs/roms.md`](docs/roms.md).)
 Right-click the panel to see what was recognised. Full requirements, checksums, and what to do
 if you only have `D-110_PCM.bin`/`D-110_Control.bin`: [`docs/roms.md`](docs/roms.md).
 
+The doc in pdf format for the synthesizer is located at [https://cdn.roland.com/assets/media/pdf/D-110_OM.pdf](https://cdn.roland.com/assets/media/pdf/D-110_OM.pdf)
+
 ## Build
 
 Requires CMake and a C++ compiler (Visual Studio Build Tools on Windows; GCC and
@@ -65,9 +67,8 @@ build details, see [`docs/building.md`](docs/building.md).
   the code.
 - [`docs/host_compatibility.md`](docs/host_compatibility.md) - the optional JACK MIDI input port
   (Linux Standalone), and known VST3 hosting quirks in specific DAWs (Ardour/Carla/Qtractor).
-- [`docs/android.md`](docs/android.md) - the Android port (Standalone only, currently paused,
-  unreleased): what's implemented, how to build it, and JUCE-on-Android file I/O gotchas worth
-  knowing before touching that code again.
+- [`docs/android.md`](docs/android.md) - the Android port (Standalone only): what's implemented,
+  how to build it, and how to place ROM files on-device.
 - [`Roland-D110.idf`](Roland-D110.idf) - a MusE instrument definition with all 128 factory Patch
   names, measured off the real firmware rather than copied from a manual.
 

@@ -1,11 +1,5 @@
 # How it works
 
-> **Note (2026-08-05):** the original upstream repository this project is forked from
-> ([PatriotBY/d110-vst-emulator](https://github.com/PatriotBY/d110-vst-emulator)) is currently
-> unavailable - removed or made private by its author. This fork's `main` branch is up to date
-> with the last commit we pulled from it before that happened, and all Linux-port work continues
-> here. If the upstream project reappears, we intend to reconcile with it as before.
-
 **It runs the D-110's real Roland firmware.** The menus, the display, the patch and timbre
 editors and all sixteen front-panel buttons are the hardware's own - nothing about them is a
 reimplementation. That half comes from [MAME](https://github.com/mamedev/mame)'s `roland_d10`
@@ -44,12 +38,8 @@ pages are real and not decoration:
   and TVA envelopes, for all eight parts. Editing `Tone Edit / Structure 1&2` moves the sound
   immediately. It is re-sent after every Timbre Temporary change, because writing a timbre
   makes the sound engine reload that part's tone from one of its four MT-32 banks - and a bank
-  holds the factory tone, not the one you just edited. Without it **any** tone edit is lost the
-  moment you touch a part parameter: measured on an ordinary patch, renaming a tone and then
-  moving Key Shift left the engine playing the factory sound again. On the first demo song the
-  same fault was audible rather than subtle, because that song's tone group is one the four
-  banks cannot name at all, so two parts played a closed hi-hat instead of a lead and measured
-  21 dB down. See [`timbre_group_5.md`](timbre_group_5.md).
+  holds the factory tone, not the one you just edited. Without it any tone edit would be lost
+  the moment you touch a part parameter. See [`timbre_group_5.md`](timbre_group_5.md).
 - **System** - partial reserve, the per-part MIDI channel map and Master Tune, so the SYSTEM
   page's channel assignment and tuning actually take effect.
 
@@ -73,11 +63,8 @@ Nine tabs, and everything on them is the instrument's own memory:
 - **PATCHES** — two sub-tabs. **ALL PATCHES** lists the 64 stored patches — **clicking a
   number selects that patch on the instrument**, by pressing its own PATCH / BANK / NUMBER
   buttons, so the display, the parts and the sound follow exactly as they do by hand.
-  Selecting a patch this way does **not** switch sub-tabs on its own (it used to; Alan found
-  the auto-jump disorienting while browsing patches by ear) — switch to **PARTS OF PATCH**
-  yourself to see or edit that patch's own eight part assignments. Split into two full-height
-  sub-tabs (rather than a fixed vertical split of both) so neither is clipped when the drawer
-  is resized short.
+  Selecting a patch this way does **not** switch sub-tabs on its own — switch to **PARTS OF
+  PATCH** yourself to see or edit that patch's own eight part assignments.
 - **TIMBRES** — the 128 stored timbres; clicking one sends that program change on the chosen
   part's own MIDI channel, as an external keyboard would.
 - **TONES** — the 64 internal tone slots, with STORE and RECALL against the part's tone.
@@ -91,41 +78,28 @@ Roland exclusive message through its own MIDI IN, exactly as an external editor 
 firmware changes its memory and the mirror carries that to the engine. An edit made here and
 an edit made on the panel are therefore the same event, and each shows up in both places.
 
-That this works is measured rather than assumed — `plugin/editor_write_probe.cpp` sends one
-write into each area and reports which byte of the battery RAM moved, which is also how the
-two areas nobody had located were found (Timbre Memory at `0x2994`, Tone Memory at `0x4000`);
-`plugin/editor_test.cpp` then checks each editor field end to end, proves an edit is audible
-against a control measurement, and checks that a patch click lands on the patch asked for.
-See [`sysex_address_map.md`](sysex_address_map.md).
+See [`sysex_address_map.md`](sysex_address_map.md) for the full memory map and how each field
+was verified.
 
 Host MIDI is delivered to **both** halves, as one cable feeds both on the real instrument. The
 firmware therefore sees what you play: the top LCD row replaces a part's digit with a solid
 block while that part is sounding, exactly as the hardware does, and the display follows
 program changes sent by the DAW.
 
-> The offline harness in `plugin/audio_test.cpp` reports this check unreliably, and its verdict
-> should not be trusted: it renders audio far faster than real time while the control board runs
-> on its own thread at real time, so its MIDI arrives in bursts and its LCD reads race the
-> firmware. Confirmed working in a live DAW, which is the environment that matters.
-
 ## Firmware memory and plugin settings
 
 The firmware's memory is **one file beside the ROMs**, as the instrument has one battery RAM.
-It is written on an explicit POWER OFF, and (Standalone only, since 2026-08-12) also on plain
-quit even if you never powered off - so close the app or the host and reopen it and your
+It is written on an explicit POWER OFF, and (Standalone only) also on plain quit even if you
+never powered off - so close the app or the host and reopen it and your
 patches are where you left them either way. In a DAW host, your project saves a copy of that
 same memory too, so reloading a session brings back the sounds it was saved with rather than
 whatever the shared file has since become.
 
-**The Standalone app deliberately does *not* do the same project-style round trip.** Its own
-settings file used to also embed a firmware-RAM copy, restored unconditionally at every
-launch - which meant a settings file that hadn't been re-saved in a while (any quit path that
-skipped JUCE's own save-state hook) could silently overwrite fresher on-disk memory the moment
-the app next started, before you touched anything. Real data loss, reported and fixed
-2026-08-12: the Standalone now relies solely on the battery-RAM file above (kept current by
-the POWER OFF/quit flush described above), and never round-trips memory through its own
-settings file at all. A DAW project, by contrast, genuinely should carry the instrument's
-exact state with it, so this round trip is unchanged there.
+**The Standalone app deliberately does *not* do the same project-style round trip** - it relies
+solely on the battery-RAM file above (kept current by the POWER OFF/quit flush described above),
+and never round-trips memory through its own settings file. A DAW project, by contrast,
+genuinely should carry the instrument's exact state with it, so that round trip stays in place
+there.
 
 **Moving to a different machine also means copying a second, separate file.** The battery RAM
 above only holds the firmware's own memory - patches, timbres, system settings, the memory

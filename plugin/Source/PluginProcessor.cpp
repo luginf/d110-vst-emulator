@@ -229,9 +229,19 @@ void D110AudioProcessor::setPoweredOn(bool shouldBePoweredOn) {
 			// machine" lock - every instance is fully independent, so several can run at
 			// once. A false return here can only mean one thing: it couldn't read one of
 			// the three ROM files it needs from romArg.
+#if JUCE_ANDROID
+			// No Utility tab on Android (the extended editor drawer it lives in is excluded
+			// there entirely - see docs/android.md) - point at the hamburger menu's own
+			// "Choose ROM files..." instead, the actual way to fix this on this platform.
+			lastError = "Could not start the emulator: " + core.lastStartError()
+			            + ". Check that the Control ROM, PCM ROM and character-generator ROM "
+			              "are present there, or use the hamburger menu's \"Choose ROM "
+			              "files...\" to pick them.";
+#else
 			lastError = "Could not start the emulator: " + core.lastStartError()
 			            + ". Check that the Control ROM, PCM ROM and character-generator ROM "
 			              "are present in the data folder shown on the Utility tab.";
+#endif
 #else
 			// The MAME-backed core does hold a single process-wide machine slot (see
 			// D110Core::sMachineLive) - a second D110Emulator instance really can't run
@@ -499,7 +509,17 @@ juce::File D110AudioProcessor::getAutoRomFolder() {
 	// Colocated with the platform's standard shared VST3 folder (see VST3_COPY_DIR in
 	// plugin/CMakeLists.txt) - makes sense for the plugin, since every DAW scans there anyway,
 	// and is the default location for a fresh install (checked first, below).
-#if JUCE_WINDOWS
+#if JUCE_ANDROID
+	// Android has no VST3/DAW concept at all, so the desktop "colocated with ~/.vst3" fallback
+	// below is meaningless there (it used to resolve to a nonsense path under the app's private
+	// internal storage, e.g. "/data/user/0/<pkg>/.vst3/D-110 Data", shown verbatim in the
+	// "ROMs not found" error - confusing on a phone). Use the same fixed external-files folder
+	// Main.cpp's romBringUpDir() already auto-detects/writes into instead - duplicated here as a
+	// literal path since this file has no shared header with the Android-only Main.cpp; keep
+	// both in sync if this ever changes.
+	const auto vst3Colocated = juce::File(
+		"/storage/emulated/0/Android/data/com.d110emulator.android/files/roms");
+#elif JUCE_WINDOWS
 	const auto vst3Colocated = resolveNamedFolder(juce::File("C:/Program Files/Common Files/VST3"), "D-110 Data");
 #elif JUCE_MAC
 	const auto vst3Colocated = resolveNamedFolder(

@@ -1,5 +1,6 @@
 #include "D110SequencerEngine.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -126,7 +127,12 @@ void D110SequencerEngine::stop() {
 	// Folds the in-progress take in first - STOP is also how a take normally ends, and
 	// skipping the fold here used to silently discard whatever had just been recorded.
 	if (recording) stopRecording();
+	if (stepRecording) stopStepRecording();
 	playing = false;
+	// The caller's own midiPanic() (see D110SequencerHost.h) actually silences whatever was
+	// sounding - this just drops soundingNotes' bookkeeping so a track muted long after this
+	// STOP doesn't send a stale, harmless-but-pointless note-off for something no longer playing.
+	for (int t = 0; t < kMaxTracks; ++t) trackAt(t).soundingNotes.clear();
 
 	// Snap back to the start of whatever bar the transport was in - "remettre le compteur à
 	// zéro" (Alan, 2026-08-07). Without this, positionBeats stays at wherever STOP happened
@@ -924,9 +930,22 @@ void D110SequencerEngine::renderInto(juce::MidiBuffer &midiMessages, int numSamp
 			// meanwhile would sound like a doubled performance for content that's being thrown
 			// away, so it stays silent for the whole take rather than only over whatever range
 			// turns out to get erased.
-			const auto &track = trackAt(t);
-			if (track.muted) continue;
-			if (solo && !track.soloed) continue;
+			auto &track = trackAt(t);
+			// Muting (or losing solo focus) mid-note used to just skip this track outright below,
+			// which also skipped the pending note-off already sitting in its own timeline for
+			// whatever was sounding - a stuck note until the next global midiPanic(). soundingNotes
+			// tracks what this track itself has turned on (via the note loop further down) so it
+			// can be shut off right here, on the sample this mute/solo change first takes effect,
+			// without touching any other track's notes the way midiPanic() would.
+			if (track.muted || (solo && !track.soloed)) {
+				if (!track.soundingNotes.empty()) {
+					const int channel = channelForTrack(t);
+					for (int note : track.soundingNotes)
+						midiMessages.addEvent(juce::MidiMessage::noteOff(channel, note), samplesRendered);
+					track.soundingNotes.clear();
+				}
+				continue;
+			}
 			if (recording && t == armedTrack && recordMode != RecordMode::overdub) continue;
 
 			// Soft quantize (see QuantizeMode's own comment): the track's own recorded events
@@ -956,6 +975,11 @@ void D110SequencerEngine::renderInto(juce::MidiBuffer &midiMessages, int numSamp
 				int sampleOffset = samplesRendered + juce::roundToInt((ts - windowStart) / beatsPerSample);
 				sampleOffset = juce::jlimit(0, numSamples - 1, sampleOffset);
 				midiMessages.addEvent(msg, sampleOffset);
+				if (msg.isNoteOn()) track.soundingNotes.push_back(msg.getNoteNumber());
+				else if (msg.isNoteOff())
+					track.soundingNotes.erase(
+					    std::remove(track.soundingNotes.begin(), track.soundingNotes.end(), msg.getNoteNumber()),
+					    track.soundingNotes.end());
 			}
 		}
 
