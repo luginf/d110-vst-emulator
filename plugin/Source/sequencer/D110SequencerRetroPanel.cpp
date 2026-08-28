@@ -379,8 +379,12 @@ void D110SequencerRetroPanel::pressUp() {
 		if (!items.empty()) s.cursor = (s.cursor - 1 + (int) items.size()) % (int) items.size();
 	} else if (s.kind == ScreenKind::form) {
 		if (!s.fields.empty()) {
-			auto &f = s.fields[(size_t) juce::jlimit(0, (int) s.fields.size() - 1, s.cursor)];
-			*f.value = juce::jlimit(f.minValue, f.maxValue, *f.value + f.upDownStep);
+			if (s.verticalFields) {
+				s.cursor = (s.cursor - 1 + (int) s.fields.size()) % (int) s.fields.size();
+			} else {
+				auto &f = s.fields[(size_t) juce::jlimit(0, (int) s.fields.size() - 1, s.cursor)];
+				*f.value = juce::jlimit(f.minValue, f.maxValue, *f.value + f.upDownStep);
+			}
 		}
 	} else if (s.kind == ScreenKind::nameEdit) {
 		nameEditAdjust(+1);
@@ -396,8 +400,12 @@ void D110SequencerRetroPanel::pressDown() {
 		if (!items.empty()) s.cursor = (s.cursor + 1) % (int) items.size();
 	} else if (s.kind == ScreenKind::form) {
 		if (!s.fields.empty()) {
-			auto &f = s.fields[(size_t) juce::jlimit(0, (int) s.fields.size() - 1, s.cursor)];
-			*f.value = juce::jlimit(f.minValue, f.maxValue, *f.value - f.upDownStep);
+			if (s.verticalFields) {
+				s.cursor = (s.cursor + 1) % (int) s.fields.size();
+			} else {
+				auto &f = s.fields[(size_t) juce::jlimit(0, (int) s.fields.size() - 1, s.cursor)];
+				*f.value = juce::jlimit(f.minValue, f.maxValue, *f.value - f.upDownStep);
+			}
 		}
 	} else if (s.kind == ScreenKind::nameEdit) {
 		nameEditAdjust(-1);
@@ -434,7 +442,8 @@ void D110SequencerRetroPanel::pressLeft() {
 		if (!s.fields.empty()) {
 			const int idx = juce::jlimit(0, (int) s.fields.size() - 1, s.cursor);
 			auto &f = s.fields[(size_t) idx];
-			if (f.leftRightStep != 0) *f.value = juce::jlimit(f.minValue, f.maxValue, *f.value - f.leftRightStep);
+			if (s.verticalFields) *f.value = juce::jlimit(f.minValue, f.maxValue, *f.value - (f.leftRightStep != 0 ? f.leftRightStep : f.upDownStep));
+			else if (f.leftRightStep != 0) *f.value = juce::jlimit(f.minValue, f.maxValue, *f.value - f.leftRightStep);
 			else if (s.fields.size() == 1) *f.value = juce::jlimit(f.minValue, f.maxValue, *f.value - f.upDownStep);
 			else s.cursor = (s.cursor - 1 + (int) s.fields.size()) % (int) s.fields.size();
 		}
@@ -472,7 +481,8 @@ void D110SequencerRetroPanel::pressRight() {
 		if (!s.fields.empty()) {
 			const int idx = juce::jlimit(0, (int) s.fields.size() - 1, s.cursor);
 			auto &f = s.fields[(size_t) idx];
-			if (f.leftRightStep != 0) *f.value = juce::jlimit(f.minValue, f.maxValue, *f.value + f.leftRightStep);
+			if (s.verticalFields) *f.value = juce::jlimit(f.minValue, f.maxValue, *f.value + (f.leftRightStep != 0 ? f.leftRightStep : f.upDownStep));
+			else if (f.leftRightStep != 0) *f.value = juce::jlimit(f.minValue, f.maxValue, *f.value + f.leftRightStep);
 			else if (s.fields.size() == 1) *f.value = juce::jlimit(f.minValue, f.maxValue, *f.value + f.upDownStep);
 			else s.cursor = (s.cursor + 1) % (int) s.fields.size();
 		}
@@ -1122,6 +1132,12 @@ D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildChannelForm(int tr
 D110SequencerRetroPanel::Screen D110SequencerRetroPanel::buildProgramForm(int track) {
 	Screen s;
 	s.kind = ScreenKind::form;
+	// One field per line, UP/DOWN to move between them, LEFT/RIGHT to adjust - see
+	// Screen::verticalFields's own comment. This form can hold up to 5 fields (Nonet
+	// Sequencer, PRG+BANK(HIGH)+BANK(LOW)+VOL+PAN), which the default two-per-line grid
+	// packed onto 3 rows with no room left for the value itself (Alan's report, 2026-08-26:
+	// PRG's own value was invisible at PRG 11).
+	s.verticalFields = true;
 	const bool hasProgram = processor.supportsProgramChangeForTrack(track);
 	s.title = hasProgram ? "PROGRAM CHG" : "CC CHANGE";
 	const int currentProgram = hasProgram ? processor.getTrackProgram(track) : -1;
@@ -1798,7 +1814,11 @@ void D110SequencerRetroPanel::nameEditCommit() {
 // ---------------------------------------------------------------------------
 
 void D110SequencerRetroPanel::doLoadSong() {
-	auto *chooser = new juce::FileChooser("Load a MIDI file into the sequencer", processor.getLastDialogDir(), "*.mid");
+	// "*.MID" alongside "*.mid" because Linux's native picker (zenity/kdialog) matches filters
+	// with a case-sensitive glob - see PluginEditor.cpp's SysEx-import chooser
+	// (TieredNativeFileChooser) for the fuller explanation and its own "*.*" fallback,
+	// deliberately not duplicated here to keep this dialog's default filter narrow.
+	auto *chooser = new juce::FileChooser("Load a MIDI file into the sequencer", processor.getLastDialogDir(), "*.mid;*.MID");
 	chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
 	                      [this, chooser](const juce::FileChooser &fc) {
 		                      const auto file = fc.getResult();
@@ -1812,7 +1832,7 @@ void D110SequencerRetroPanel::doLoadSong() {
 }
 
 void D110SequencerRetroPanel::doSaveSong() {
-	auto *chooser = new juce::FileChooser("Save the sequencer as a MIDI file", processor.getLastDialogDir(), "*.mid");
+	auto *chooser = new juce::FileChooser("Save the sequencer as a MIDI file", processor.getLastDialogDir(), "*.mid;*.MID");
 	chooser->launchAsync(
 		juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
 			| juce::FileBrowserComponent::warnAboutOverwriting,
@@ -2124,6 +2144,37 @@ void D110SequencerRetroPanel::paintFormScreen(juce::Graphics &g, juce::Rectangle
 			const auto &f = s.fields[(size_t) s.cursor];
 			g.setColour(kLcdInk);
 			drawDotText(g, ">" + f.label + " " + f.format(*f.value), textArea, juce::Justification::centredLeft, charPx);
+		}
+		return;
+	}
+
+	// verticalFields: one field per line instead of the two-per-line grid below, scrolling
+	// like paintListScreen's own rows do when there are more fields than bodyRows() - see
+	// Screen::verticalFields's own comment for why (a long label like "PRG(0=OFF)" packed
+	// two to a line left no room for the value itself to actually show). Reuses the same
+	// width-aware label/value split paintListScreen uses, for the same reason: a value-less
+	// field would otherwise give up half the line for nothing.
+	if (s.verticalFields) {
+		const float lineH = textArea.getHeight() / (float) rows;
+		int scroll = 0;
+		if (!s.fields.empty()) {
+			const int maxScroll = juce::jmax(0, (int) s.fields.size() - rows);
+			scroll = juce::jlimit(0, maxScroll, s.cursor - (rows - 1) / 2);
+		}
+		for (int row = 0; row < rows; ++row) {
+			auto lineArea = textArea.removeFromTop(lineH);
+			const int idx = scroll + row;
+			if (idx < 0 || idx >= (int) s.fields.size()) continue;
+			const auto &f = s.fields[(size_t) idx];
+			const bool selected = idx == s.cursor;
+			const juce::String valueText = f.format(*f.value);
+			g.setColour(kLcdInk);
+			const float valueW = valueText.isEmpty() ? 0.0f : dotTextWidth(valueText, charPx) + charPx * 0.9f;
+			const float labelW = juce::jmax(lineArea.getWidth() * 0.35f, lineArea.getWidth() - valueW);
+			auto labelArea = lineArea.removeFromLeft(labelW);
+			drawDotText(g, (selected ? juce::String(">") : juce::String(" ")) + f.label, labelArea,
+			            juce::Justification::centredLeft, charPx);
+			drawDotText(g, valueText, lineArea, juce::Justification::centredRight, charPx);
 		}
 		return;
 	}

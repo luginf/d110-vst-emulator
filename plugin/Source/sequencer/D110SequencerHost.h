@@ -8,6 +8,8 @@
 
 #include <juce_core/juce_core.h>
 
+#include <vector>
+
 namespace d110seq { class D110SequencerEngine; }
 
 class D110SequencerHost {
@@ -96,6 +98,39 @@ public:
 	virtual bool supportsBankLsb() const { return false; }
 	virtual int getTrackBankLsb(int /*track*/) const { return 1; }
 	virtual void setTrackBankLsb(int /*track*/, int /*bankLsb*/) {}
+
+	// One named patch out of a loaded instrument definition file (see
+	// supportsInstrumentDefinitions() below) - prog/bank/bankLsb are 0-based wire values, same
+	// convention D110SequencerEngine::Track's own fields use, ready to feed straight into
+	// setTrackProgram()/setTrackBank()/setTrackBankLsb() (which take the 0-based value, not the
+	// 1-based number the dialog shows). bank/bankLsb are -1 when the source .idf entry left that
+	// attribute out entirely (most GM-only files never set one at all) - leave the corresponding
+	// field untouched in that case, same "nothing to say" meaning -1 already carries on
+	// getTrackProgramHint().
+	struct InstrumentPatch {
+		juce::String group, name;
+		int prog = 0, bank = -1, bankLsb = -1;
+	};
+
+	// Optional: whether this host can load a MusE-style instrument definition (.idf - plain XML,
+	// <MidiInstrument><PatchGroup><Patch name="..." prog=".." hbank=".." lbank=".."/>) and use it
+	// to label patches by name in the Program Change dialog's own "Pick instrument..." picker,
+	// rather than by bare number - Nonet Sequencer only (Alan's request, 2026-08-26). The D-110
+	// plugin doesn't override this: its own Program Change always addresses this instrument's own
+	// Timbre Memory directly, which already has real names of its own (the TIMBRES tab reads them
+	// straight off the firmware), so an externally-authored file naming some OTHER synth's patches
+	// wouldn't describe what Program Change here actually selects.
+	// getInstrumentDefinitionPath() persists just the file's path (NonetSeqHost's own settings
+	// file, like getRetroKeyBindings() does for its own string) - the patch list itself is
+	// re-parsed from that path at startup, not persisted separately; a path that no longer
+	// resolves (moved/deleted file) leaves getInstrumentPatches() empty rather than erroring.
+	// loadInstrumentDefinition() returns false (and leaves whatever was loaded before in place)
+	// if the file can't be parsed as one of these.
+	virtual bool supportsInstrumentDefinitions() const { return false; }
+	virtual juce::String getInstrumentDefinitionName() const { return {}; }
+	virtual juce::String getInstrumentDefinitionPath() const { return {}; }
+	virtual bool loadInstrumentDefinition(const juce::File & /*file*/) { return false; }
+	virtual std::vector<InstrumentPatch> getInstrumentPatches() const { return {}; }
 
 	// Re-sends whatever supportsProgramChange() would send at the next PLAY/REC edge right now
 	// instead, even if the transport is already mid-play - Alan asked for this 2026-08-19 as a

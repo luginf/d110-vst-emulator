@@ -13,7 +13,7 @@
   and the window narrowed to match - see `panel_reference_notes.md`'s own "Compact mode" section
   for the seam geometry and `D110Panel::currentRefW()`/`kCompactShift`.
 - `plugin/Source/D110Keyboard.h/.cpp` - the on-screen test keyboard (mouse piano + tracker-
-  style PC keyboard input, MIDI channel/omni routing via right-click), extracted out of
+  style PC keyboard input, MIDI channel/remap routing via right-click), extracted out of
   `PluginEditor.*` so it can be reused outside the plugin. Talks to its owner only through
   `plugin/Source/D110KeyboardHost.h` (note injection + its own persisted config); both
   `D110AudioProcessor` and `NonetSeqHost` (below) implement it. Keys light up both instantly
@@ -67,3 +67,13 @@
   comparing three snapshots of the battery RAM. See [`memory_card.md`](memory_card.md).
 - `plugin/bridge_probe.cpp`, `core_test.cpp` - the harnesses used to map the firmware's RAM and
   to exercise the control board on its own.
+- `plugin/pcm_custom_sample_probe.cpp` - loads a synthetic WAV into a PCM wave slot, checks
+  `hasCustomPcmWave()` flips on load and off after `restoreFactoryPcmWave()`, and round-trips the
+  override through `getStateInformation`/`setStateInformation` into a second instance. See
+  [`architecture.md`](architecture.md#custom-pcm-samples-desktop-only).
+- `plugin/pcm_pitch_calibration_probe.cpp` - a one-off measurement tool for the PCM pitch
+  calibration constant, kept for reference rather than as a trusted regression test - its own
+  zero-crossing frequency measurement has an unexplained bug (identical readings across
+  unrelated Tone-parameter changes) and, separately, once suggested a "better" constant that a
+  real listening test showed was actually worse. Don't ship a pitch-constant change on this
+  probe's numbers alone.

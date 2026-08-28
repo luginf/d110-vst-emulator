@@ -74,6 +74,15 @@ public:
 	int getTrackBankLsb(int track) const override;
 	void setTrackBankLsb(int track, int bankLsb) override;
 
+	// Instrument definition (.idf) support - see D110SequencerHost.h's own comment. Parsing
+	// lives in the .cpp (parseInstrumentDefinition()); only the parsed result and the source
+	// path (persisted) are kept here.
+	bool supportsInstrumentDefinitions() const override { return true; }
+	juce::String getInstrumentDefinitionName() const override { return instrumentDefinitionName; }
+	juce::String getInstrumentDefinitionPath() const override { return instrumentDefinitionPath; }
+	bool loadInstrumentDefinition(const juce::File &file) override;
+	std::vector<InstrumentPatch> getInstrumentPatches() const override { return instrumentPatches; }
+
 	// Volume/Pan alongside the Program Change - see D110SequencerHost.h's own comment. Sent as
 	// real MIDI CC7/CC10, the 0-100/0-14 musician-facing values scaled to the wire's 0-127.
 	bool supportsTrackVolumePan() const override { return true; }
@@ -107,8 +116,8 @@ public:
 	void injectTestNote(int channel, int note, float velocity, bool on) override;
 	int getKeyboardMidiChannel() const override { return keyboardMidiChannel; }
 	void setKeyboardMidiChannel(int channel) override { keyboardMidiChannel = juce::jlimit(1, 16, channel); }
-	bool getKeyboardOmni() const override { return keyboardOmni; }
-	void setKeyboardOmni(bool omni) override { keyboardOmni = omni; }
+	bool getMidiRemap() const override { return midiRemap; }
+	void setMidiRemap(bool remap) override { midiRemap = remap; }
 	bool getKeyboardPcInputEnabled() const override { return keyboardPcInput; }
 	void setKeyboardPcInputEnabled(bool enabled) override { keyboardPcInput = enabled; }
 	int getKeyboardPcLayout() const override { return keyboardPcLayout; }
@@ -246,9 +255,11 @@ private:
 	// audio/timer thread), read from the message thread by D110Keyboard's own low-Hz timer.
 	std::array<std::atomic<bool>, 128> remoteNoteActive{};
 
-	// D110Keyboard's own config - see the accessors above.
+	// D110Keyboard's own config - see the accessors above. Default true (force to one
+	// channel) unchanged from before the Omni->MIDI Remap rename (2026-08-25) - Nonet
+	// Sequencer's own default behaviour wasn't part of that change, only the naming.
 	int keyboardMidiChannel = 1;
-	bool keyboardOmni = false;
+	bool midiRemap = true;
 	bool keyboardPcInput = false;
 	int keyboardPcLayout = 0;
 
@@ -256,4 +267,11 @@ private:
 	bool sequencerRetroMode = false;
 	juce::String retroKeyBindings;
 	bool retroLcdCompactMode = false;
+
+	// Instrument definition (.idf) - path is persisted (loadSettings() re-parses from it at
+	// startup, via loadInstrumentDefinition() itself); name/patches are derived, not persisted
+	// separately. See loadInstrumentDefinition()'s own comment in the .cpp.
+	juce::String instrumentDefinitionPath;
+	juce::String instrumentDefinitionName;
+	std::vector<InstrumentPatch> instrumentPatches;
 };

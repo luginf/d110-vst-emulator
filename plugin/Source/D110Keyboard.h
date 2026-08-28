@@ -8,7 +8,7 @@
 
 // On-screen test keyboard: a two-octave mouse piano plus optional tracker-style PC
 // keyboard input (QWERTY/AZERTY, FastTracker2/Impulse Tracker convention), MIDI
-// channel/omni set via right-click. Talks to its owner only through D110KeyboardHost,
+// channel/remap set via right-click. Talks to its owner only through D110KeyboardHost,
 // so it works identically inside the plugin's own drawer and inside the independent
 // Nonet Sequencer app's window.
 //
@@ -59,7 +59,7 @@ public:
 	// it either - holding a key down is an ordinary sustained note, not a gesture, so timing it
 	// out into "must mean a menu" would just break holding notes. The Android app instead
 	// reaches this same menu from its own hamburger menu ("Keyboard channel..."), calling this
-	// directly rather than reimplementing channel/omni/PC-layout selection a second time.
+	// directly rather than reimplementing channel/remap/PC-layout selection a second time.
 	void showContextMenu();
 
 private:
@@ -79,7 +79,7 @@ private:
 	int keyAt(juce::Point<float>) const;
 	void setHeldNote(int note); // -1 releases (mouse/touch - only one held note at a time)
 	void changeOctave(int delta);
-	void sendNote(int note, float velocity, bool on); // honours channel/omni
+	void sendNote(int note, float velocity, bool on); // honours channel/midiRemap
 	void releaseAllPcNotes();
 	bool isPcKeyDownForNote(int note) const;
 	void timerCallback() override; // polls host.isNoteActive() for remote/incoming activity
@@ -90,7 +90,10 @@ private:
 	bool draggingKey = false; // mouse went down on a key, not on OCT-/OCT+
 
 	int midiChannel = 1;        // 1..16 - which channel injectTestNote() targets
-	bool omni = false;          // when on, every note goes out on all 16 channels at once
+	// When on, every note is forced onto midiChannel; when off, it broadcasts to all 16 at
+	// once instead (named "Omni" until 2026-08-25 - see D110KeyboardHost.h's own comment on
+	// why that name was dropped).
+	bool midiRemap = false;
 	bool pcKeyboardEnabled = false;
 	PcLayout pcLayout = PcLayout::qwerty;
 	// One flag per trackerKeys() entry, so keyStateChanged() (a single "something changed"

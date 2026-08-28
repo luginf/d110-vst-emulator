@@ -36,15 +36,17 @@ public:
 	std::function<void()> onRetroModeToggled;
 	std::function<void()> onAudioSettingsRequested;
 	std::function<void()> onQuantizeModeToggled;
+	std::function<void()> onLoadInstrumentDefinition;
 
 	void setValues(bool themeLightIn, int programOffsetIn, int bankOffsetIn, bool extraTracksOnIn,
-	               bool retroModeOnIn, bool quantizeSoftIn) {
+	               bool retroModeOnIn, bool quantizeSoftIn, const juce::String &instrumentDefNameIn) {
 		themeLight = themeLightIn;
 		programOffset = programOffsetIn;
 		bankOffset = bankOffsetIn;
 		extraTracksOn = extraTracksOnIn;
 		retroModeOn = retroModeOnIn;
 		quantizeSoft = quantizeSoftIn;
+		instrumentDefName = instrumentDefNameIn;
 		repaint();
 	}
 
@@ -65,6 +67,8 @@ public:
 		b.removeFromTop(kRowGap);
 		quantizeModeRowBounds = b.removeFromTop(kRowH);
 		b.removeFromTop(kRowGap);
+		instrumentDefRowBounds = b.removeFromTop(kRowH);
+		b.removeFromTop(kRowGap);
 		audioRowBounds = b.removeFromTop(kRowH);
 
 		paintToggleRow(g, pal, themeRowBounds, "Theme", themeLight ? "LIGHT" : "DARK");
@@ -73,6 +77,8 @@ public:
 		paintToggleRow(g, pal, extraTracksRowBounds, "Extra tracks (16 total)", extraTracksOn ? "ON" : "OFF");
 		paintToggleRow(g, pal, retroModeRowBounds, "Retro Sequencer (D-20 style)", retroModeOn ? "ON" : "OFF");
 		paintToggleRow(g, pal, quantizeModeRowBounds, "Quantize mode", quantizeSoft ? "SOFT" : "HARD");
+		paintToggleRow(g, pal, instrumentDefRowBounds, "Instrument Definition (.idf)",
+		               instrumentDefName.isEmpty() ? "Load..." : instrumentDefName);
 		paintToggleRow(g, pal, audioRowBounds, "Audio Device", "Configure...");
 	}
 
@@ -85,6 +91,7 @@ public:
 		if (extraTracksRowBounds.contains(e.position)) { if (onExtraTracksToggled) onExtraTracksToggled(); return; }
 		if (retroModeRowBounds.contains(e.position)) { if (onRetroModeToggled) onRetroModeToggled(); return; }
 		if (quantizeModeRowBounds.contains(e.position)) { if (onQuantizeModeToggled) onQuantizeModeToggled(); return; }
+		if (instrumentDefRowBounds.contains(e.position)) { if (onLoadInstrumentDefinition) onLoadInstrumentDefinition(); return; }
 		if (audioRowBounds.contains(e.position)) { if (onAudioSettingsRequested) onAudioSettingsRequested(); return; }
 	}
 
@@ -135,8 +142,9 @@ private:
 	bool extraTracksOn = false;
 	bool retroModeOn = false;
 	bool quantizeSoft = false;
+	juce::String instrumentDefName;
 	juce::Rectangle<float> themeRowBounds, progMinusBounds, progPlusBounds, bankMinusBounds, bankPlusBounds,
-		extraTracksRowBounds, retroModeRowBounds, quantizeModeRowBounds, audioRowBounds;
+		extraTracksRowBounds, retroModeRowBounds, quantizeModeRowBounds, instrumentDefRowBounds, audioRowBounds;
 };
 
 // Three clickable fields: MIDI In and MIDI Out (the same idea as
@@ -194,12 +202,13 @@ private:
 
 	void showOptionsDialog() {
 		auto *content = new OptionsDialogContent();
-		content->setSize(320, 7 * 30 + 6 * 10 + 12);
+		content->setSize(320, 8 * 30 + 7 * 10 + 12);
 		auto refresh = [this, content] {
 			content->setValues(d110ui::getTheme() == d110ui::Theme::Light, host.getProgramChangeOffset(),
 			                    host.getBankOffset(), host.getSequencer().getExtraTracksEnabled(),
 			                    host.getSequencerRetroMode(),
-			                    host.getSequencer().getQuantizeMode() == d110seq::QuantizeMode::soft);
+			                    host.getSequencer().getQuantizeMode() == d110seq::QuantizeMode::soft,
+			                    host.getInstrumentDefinitionName());
 		};
 		refresh();
 		content->onThemeToggled = [this, content, refresh] {
@@ -231,6 +240,30 @@ private:
 			eng.setQuantizeMode(eng.getQuantizeMode() == d110seq::QuantizeMode::soft ? d110seq::QuantizeMode::hard
 			                                                                        : d110seq::QuantizeMode::soft);
 			refresh();
+		};
+		content->onLoadInstrumentDefinition = [this, refresh] {
+			auto *chooser = new juce::FileChooser("Load instrument definition", host.getLastDialogDir(), "*.idf");
+			chooser->launchAsync(
+				juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+				[this, chooser, refresh](const juce::FileChooser &fc) {
+					const auto file = fc.getResult();
+					if (file != juce::File()) {
+						host.setLastDialogDir(file.getParentDirectory());
+						if (!host.loadInstrumentDefinition(file)) {
+							juce::AlertWindow::showAsync(
+								juce::MessageBoxOptions()
+									.withIconType(juce::MessageBoxIconType::WarningIcon)
+									.withTitle("Instrument definition")
+									.withMessage("Couldn't read \"" + file.getFileName()
+									             + "\" as a MusE-style instrument definition (.idf) - either the "
+									               "file isn't XML, has no <MidiInstrument>, or defines no patches.")
+									.withButton("OK"),
+								nullptr);
+						}
+					}
+					delete chooser;
+					refresh();
+				});
 		};
 		content->onAudioSettingsRequested = [this] { showAudioSettingsDialog(); };
 

@@ -10,13 +10,20 @@ public:
 
 	virtual void injectTestNote(int channel, int note, float velocity, bool on) = 0;
 
-	// D110Keyboard's own config (MIDI channel/omni, PC-keyboard tracker input,
+	// D110Keyboard's own config (MIDI channel/remap, PC-keyboard tracker input,
 	// QWERTY/AZERTY) - read once at construction and written back on every change, so it
 	// survives as long as the host does.
 	virtual int getKeyboardMidiChannel() const = 0;
 	virtual void setKeyboardMidiChannel(int channel) = 0;
-	virtual bool getKeyboardOmni() const = 0;
-	virtual void setKeyboardOmni(bool omni) = 0;
+	// When true, every note this keyboard plays (and, in the D-110 plugin, all incoming host/
+	// port MIDI too - see PluginProcessor.cpp's own comment) is forced onto getKeyboardMidi
+	// Channel() instead of going out unchanged. Renamed from "Omni" (2026-08-25, Alan's
+	// request) - the old name suggested "arrives on every channel", which is backwards from
+	// what turning it OFF actually does (broadcast to all 16 / pass external MIDI through
+	// untouched); MIDI Remap names the ACTUAL effect instead of borrowing a MIDI-spec term
+	// that didn't quite fit either state.
+	virtual bool getMidiRemap() const = 0;
+	virtual void setMidiRemap(bool remap) = 0;
 	virtual bool getKeyboardPcInputEnabled() const = 0;
 	virtual void setKeyboardPcInputEnabled(bool enabled) = 0;
 	// 0 = QWERTY, 1 = AZERTY.

@@ -48,8 +48,8 @@ build details, see [`docs/building.md`](docs/building.md).
 
 ## More documentation
 
-- [`docs/architecture.md`](docs/architecture.md) - how it works, the extended editor, firmware
-  memory vs. plugin settings, the memory card slot, known limits.
+- [`docs/architecture.md`](docs/architecture.md) - how it works, the extended editor, loading
+  custom PCM samples, firmware memory vs. plugin settings, the memory card slot, known limits.
 - [`docs/sequencer.md`](docs/sequencer.md) - the D-20-style multitrack sequencer: tracks and
   channels, transport, real-time and step recording, quantize, bar editing, undo, song slots,
   MIDI Out, and the independent sequencer app (no firmware/ROMs needed at all).

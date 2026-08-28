@@ -2,6 +2,8 @@
 #include "PluginEditor.h"
 #include "sequencer/D110SequencerSongsFile.h"
 
+#include <juce_audio_formats/juce_audio_formats.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -52,6 +54,20 @@ static std::vector<std::vector<MT32Emu::Bit8u>> extractSysexMessagesFromMidiFile
 		}
 	}
 	return messages;
+}
+
+// Inverse of LA32FloatWaveGenerator::getPCMSample()'s decode (amplitude = pow(2, (mag -
+// 32787) / 2048.0), sign from bit 15) - see Synth::setPCMWaveSamples()'s own comment. mag 0
+// decodes back to about -16 dBFS-ish silence (pow(2,-16.01)), not true zero - the format has
+// no exact zero, matching the real ROM's own encoding, so genuine silence in a custom sample
+// still gets the closest representable near-silent value rather than being a special case.
+static MT32Emu::Bit16s encodePcmLogSample(float amplitude) {
+	amplitude = juce::jlimit(-1.0f, 1.0f, amplitude);
+	const bool sign = amplitude < 0.0f;
+	const float mag = std::abs(amplitude);
+	int log = mag <= 0.0f ? 0 : juce::roundToInt((std::log2(mag) * 2048.0f) + 32787.0f);
+	log = juce::jlimit(0, 32767, log);
+	return static_cast<MT32Emu::Bit16s>(sign ? (log | 0x8000) : log);
 }
 
 static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout() {
@@ -567,6 +583,22 @@ void D110AudioProcessor::setCustomRomFolder(const juce::String &path) {
 	file.replaceWithText(path.trim());
 }
 
+juce::String D110AudioProcessor::getCustomSampleFolder() {
+	const auto file = getCustomSamplePathFile();
+	if (!file.existsAsFile()) return {};
+	return file.loadFileAsString().trim();
+}
+
+void D110AudioProcessor::setCustomSampleFolder(const juce::String &path) {
+	const auto file = getCustomSamplePathFile();
+	if (path.trim().isEmpty()) {
+		file.deleteFile();
+		return;
+	}
+	file.getParentDirectory().createDirectory();
+	file.replaceWithText(path.trim());
+}
+
 bool D110AudioProcessor::identifyRomData(const juce::MemoryBlock &data,
                                          MT32Emu::ROMInfo::Type &typeOut) {
 	if (data.getSize() == 0) return false;
@@ -833,6 +865,11 @@ bool D110AudioProcessor::openSynthIfReady() {
 		lastSuperModeApplied = useSuper;
 		controlRomDescription = newControlRomDescription;
 		pcmRomDescription = newPcmRomDescription;
+		// synth->open() above just freshly decoded every PCM wave from the real ROM file,
+		// wiping any custom sample from a previous session (or power cycle) - reapply while
+		// still under the same lock, before anything on the audio thread can touch the new
+		// synth's PCM data.
+		reapplyCustomPcmWaves();
 	}
 
 	// Same order as closeSynth(): the synth before the ROM images it references, the images
@@ -921,17 +958,17 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 	// MIDI input, in VST3) onto the on-screen keyboard's own selected channel - Alan's own USB
 	// keyboard is hardwired to channel 1, so this is what lets him record other sequencer
 	// tracks/parts just by changing the on-screen keyboard's channel, without a controller
-	// that can actually transmit on other channels. Omni intentionally passes this through
+	// that can actually transmit on other channels. With midiRemap off, this passes through
 	// unchanged - there is no single target channel to remap to. Only channel-voice messages
 	// (getChannel() > 0) are touched, matching the same idiom the sequencer's own
 	// channelForTrack rechannelling already uses. This has to run before anything below adds
 	// the on-screen keyboard's OWN notes (injectTestNote, merged in from osMidiCollector just
 	// below) into midiMessages - those are already explicitly channelized (or looped across
-	// all 16 channels for Omni) at the point of injection and must not be touched here. The
-	// Standalone app's own directly-opened MIDI port is handled the same way, but earlier -
-	// see handleIncomingMidiMessage(), which rechannelizes before a message ever reaches
-	// osMidiCollector in the first place.
-	if (!keyboardOmni) {
+	// all 16 channels when midiRemap is off) at the point of injection and must not be touched
+	// here. The Standalone app's own directly-opened MIDI port is handled the same way, but
+	// earlier - see handleIncomingMidiMessage(), which rechannelizes before a message ever
+	// reaches osMidiCollector in the first place.
+	if (midiRemap) {
 		juce::MidiBuffer rechannelized;
 		for (const auto meta : midiMessages) {
 			auto msg = meta.getMessage();
@@ -1518,7 +1555,7 @@ void D110AudioProcessor::handleIncomingMidiMessage(juce::MidiInput *, const juce
 	// processBlock()'s own comment (the equivalent rechannelling for a DAW-hosted external
 	// controller) for why. This is the Standalone app's directly-opened MIDI port, the other
 	// place real external MIDI enters.
-	if (!keyboardOmni && m.getChannel() > 0) {
+	if (midiRemap && m.getChannel() > 0) {
 		auto msg = m;
 		msg.setChannel(keyboardMidiChannel);
 		osMidiCollector.addMessageToQueue(msg);
@@ -1672,6 +1709,174 @@ void D110AudioProcessor::setMasterVolume(float newValue) {
 
 void D110AudioProcessor::resetDisplayToMainMode() {
 	if (synth) synth->setMainDisplayMode();
+}
+
+// Pitch calibration for a custom PCM wave, resampled to the LA32 engine's own native rate
+// (kPcmSampleRate in loadCustomPcmWave() below) - see MT32Emu::Synth::setPCMWavePitchOffset()'s
+// own comment for the concept.
+//
+// 2026-08-27: briefly changed to 57344, derived on paper from LA32WaveGenerator.cpp's own
+// comment ("pcmSampleStep = EXP2F(pitch/4096 + 3)", the fixed-point renderer this project
+// actually runs by default - RendererType_BIT16S, nothing in plugin/Source overrides it) and
+// seemingly backed by this file's own pcm_pitch_calibration_probe.cpp (measured 953-987 Hz for
+// a 1000 Hz test tone, vs. 902-911 Hz for 20480). Alan's own listening test immediately after
+// contradicted this: 57344 played back "quasi silencieux" without loop and "un son bizarre,
+// très éloigné de l'original" with loop - both symptoms of a pitch that's actually much too
+// HIGH (a one-shot sample racing through its whole stored length almost instantly then sitting
+// silent for the rest of the note; looped, the same fast race repeating audibly as a buzz) -
+// the opposite conclusion from the probe's own numbers. Reverted to 20480 on the strength of
+// that direct listening test, which is a more trustworthy signal than either paper derivation
+// or this probe - the probe's methodology has at least one already-observed unexplained bug
+// (identical readings across unrelated Tone-parameter changes earlier the same session), so
+// its measurements should not be trusted over a real A/B listen until that's actually found.
+// If revisiting: verify by ear first, and treat any formula/measurement that disagrees with a
+// direct listening test as the thing that's wrong, not the other way around.
+constexpr MT32Emu::Bit16u kNeutralPcmPitchOffset = 20480;
+
+void D110AudioProcessor::reapplyCustomPcmWaves() {
+	if (!synth) return;
+	for (const auto &entry : customPcmWaves) {
+		std::vector<MT32Emu::Bit16s> backup(entry.second.size());
+		synth->getPCMWaveSamples(static_cast<MT32Emu::Bit32u>(entry.first), backup.data(),
+		                         static_cast<MT32Emu::Bit32u>(backup.size()));
+		factoryPcmWaveBackup[entry.first] = std::move(backup);
+		MT32Emu::Bit16u pitchBackup = 0;
+		synth->getPCMWavePitchOffset(static_cast<MT32Emu::Bit32u>(entry.first), pitchBackup);
+		factoryPcmWavePitchBackup[entry.first] = pitchBackup;
+		MT32Emu::Bit32u infoAddr = 0, infoLen = 0;
+		bool factoryLoop = true;
+		synth->getPCMWaveInfo(static_cast<MT32Emu::Bit32u>(entry.first), infoAddr, infoLen, factoryLoop);
+		factoryPcmWaveLoopBackup[entry.first] = factoryLoop;
+		synth->setPCMWaveSamples(static_cast<MT32Emu::Bit32u>(entry.first), entry.second.data(),
+		                         static_cast<MT32Emu::Bit32u>(entry.second.size()));
+		synth->setPCMWavePitchOffset(static_cast<MT32Emu::Bit32u>(entry.first), kNeutralPcmPitchOffset);
+		const auto loopIt = customPcmWaveLoops.find(entry.first);
+		synth->setPCMWaveLoop(static_cast<MT32Emu::Bit32u>(entry.first),
+		                      loopIt != customPcmWaveLoops.end() ? loopIt->second : factoryLoop);
+	}
+}
+
+bool D110AudioProcessor::loadCustomPcmWave(int waveIndex, const juce::File &audioFile) {
+	if (!synth) {
+		lastImportMessage = "Switch the instrument on first.";
+		return false;
+	}
+	MT32Emu::Bit32u addr = 0, len = 0;
+	bool loop = false;
+	if (!synth->getPCMWaveInfo(static_cast<MT32Emu::Bit32u>(waveIndex), addr, len, loop)) {
+		lastImportMessage = "Invalid PCM wave slot.";
+		return false;
+	}
+
+	juce::AudioFormatManager formatManager;
+	formatManager.registerBasicFormats();
+	std::unique_ptr<juce::AudioFormatReader> reader(formatManager.createReaderFor(audioFile));
+	if (reader == nullptr) {
+		lastImportMessage = "Could not read audio file: " + audioFile.getFileName();
+		return false;
+	}
+
+	// Mixed to mono (the D-110's PCM partials are single-channel) by simple averaging.
+	const auto numSourceFrames = static_cast<int>(juce::jmin<juce::int64>(reader->lengthInSamples, 1 << 24));
+	juce::AudioBuffer<float> source(static_cast<int>(reader->numChannels), juce::jmax(1, numSourceFrames));
+	reader->read(&source, 0, numSourceFrames, 0, true, true);
+	std::vector<float> mono(static_cast<size_t>(numSourceFrames), 0.0f);
+	for (int ch = 0; ch < source.getNumChannels(); ++ch) {
+		const float *src = source.getReadPointer(ch);
+		for (int i = 0; i < numSourceFrames; ++i) mono[static_cast<size_t>(i)] += src[i];
+	}
+	if (source.getNumChannels() > 1) {
+		const float scale = 1.0f / static_cast<float>(source.getNumChannels());
+		for (auto &s : mono) s *= scale;
+	}
+
+	// Resample to the LA32 engine's own native rate - D110CoreType::kMidiBytesPerSecond's
+	// neighbourhood constant is unrelated; the actual figure is MT32Emu::SAMPLE_RATE (32000),
+	// matching extract_pcm.py's own SAMPLE_RATE in ../LA-16/pcm_waves/.
+	constexpr double kPcmSampleRate = 32000.0;
+	const double ratio = reader->sampleRate / kPcmSampleRate;
+	std::vector<float> resampled;
+	if (numSourceFrames > 0 && ratio > 0.0) {
+		resampled.resize(static_cast<size_t>(std::ceil(numSourceFrames / ratio)) + 4, 0.0f);
+		juce::LagrangeInterpolator interpolator;
+		const int produced = interpolator.process(ratio, mono.data(), resampled.data(),
+		                                          static_cast<int>(resampled.size()));
+		resampled.resize(static_cast<size_t>(juce::jmax(0, produced)));
+	}
+
+	// Fit to the slot's own fixed length (from the real control ROM's wave table, unchanged) -
+	// silence-padded if shorter, simply cut off if longer. No time-stretching: matching length
+	// exactly is the user's job if that matters for their use, same as the LA-16 tribute site's
+	// own "capped" PCM slot loading.
+	std::vector<MT32Emu::Bit16s> encoded(len, 0);
+	const size_t toCopy = juce::jmin(resampled.size(), static_cast<size_t>(len));
+	for (size_t i = 0; i < toCopy; ++i) encoded[i] = encodePcmLogSample(resampled[i]);
+	// encodePcmLogSample(0.0f) for the silence-padded tail: mag<=0 branch -> log=0 -> the same
+	// near-silent (not exact zero) value the format uses everywhere else, not a hard cut.
+	for (size_t i = toCopy; i < encoded.size(); ++i) encoded[i] = encodePcmLogSample(0.0f);
+
+	if (customPcmWaves.count(waveIndex) == 0) {
+		std::vector<MT32Emu::Bit16s> backup(len, 0);
+		synth->getPCMWaveSamples(static_cast<MT32Emu::Bit32u>(waveIndex), backup.data(), len);
+		factoryPcmWaveBackup[waveIndex] = std::move(backup);
+		MT32Emu::Bit16u pitchBackup = 0;
+		synth->getPCMWavePitchOffset(static_cast<MT32Emu::Bit32u>(waveIndex), pitchBackup);
+		factoryPcmWavePitchBackup[waveIndex] = pitchBackup;
+		// Starting loop state is the factory wave's own - matches the pre-existing behaviour
+		// Alan observed ("reprend la valeur de loop d'origine"); setCustomPcmWaveLoop() is the
+		// explicit override on top of that. factoryPcmWaveLoopBackup keeps the ORIGINAL value
+		// specifically for restoreFactoryPcmWave(), separate from customPcmWaveLoops (the
+		// current, possibly-overridden setting) since the two can differ once toggled.
+		factoryPcmWaveLoopBackup[waveIndex] = loop;
+		customPcmWaveLoops[waveIndex] = loop;
+	}
+	synth->setPCMWaveSamples(static_cast<MT32Emu::Bit32u>(waveIndex), encoded.data(),
+	                         static_cast<MT32Emu::Bit32u>(encoded.size()));
+	// Without this, a replacement plays back pitch-shifted by whatever the ORIGINAL factory
+	// wave's own calibration was - see kNeutralPcmPitchOffset's own comment. This is the fix
+	// for Alan's "sounds like a high-pitched whistle" report, 2026-08-27.
+	synth->setPCMWavePitchOffset(static_cast<MT32Emu::Bit32u>(waveIndex), kNeutralPcmPitchOffset);
+	customPcmWaves[waveIndex] = std::move(encoded);
+	customPcmWaveNames[waveIndex] = audioFile.getFileNameWithoutExtension();
+
+	lastImportMessage = "Loaded custom sample into PCM wave " + juce::String(waveIndex + 1)
+		+ " from " + audioFile.getFileName();
+	return true;
+}
+
+bool D110AudioProcessor::setCustomPcmWavePitchOffset(int waveIndex, int pitchOffset) {
+	if (!synth) return false;
+	return synth->setPCMWavePitchOffset(static_cast<MT32Emu::Bit32u>(waveIndex),
+	                                    static_cast<MT32Emu::Bit16u>(pitchOffset));
+}
+
+bool D110AudioProcessor::setCustomPcmWaveLoop(int waveIndex, bool loop) {
+	if (!synth || customPcmWaves.count(waveIndex) == 0) return false;
+	customPcmWaveLoops[waveIndex] = loop;
+	return synth->setPCMWaveLoop(static_cast<MT32Emu::Bit32u>(waveIndex), loop);
+}
+
+bool D110AudioProcessor::restoreFactoryPcmWave(int waveIndex) {
+	const auto it = factoryPcmWaveBackup.find(waveIndex);
+	if (it == factoryPcmWaveBackup.end() || !synth) return false;
+	synth->setPCMWaveSamples(static_cast<MT32Emu::Bit32u>(waveIndex), it->second.data(),
+	                         static_cast<MT32Emu::Bit32u>(it->second.size()));
+	const auto pitchIt = factoryPcmWavePitchBackup.find(waveIndex);
+	if (pitchIt != factoryPcmWavePitchBackup.end()) {
+		synth->setPCMWavePitchOffset(static_cast<MT32Emu::Bit32u>(waveIndex), pitchIt->second);
+		factoryPcmWavePitchBackup.erase(pitchIt);
+	}
+	const auto loopIt = factoryPcmWaveLoopBackup.find(waveIndex);
+	if (loopIt != factoryPcmWaveLoopBackup.end()) {
+		synth->setPCMWaveLoop(static_cast<MT32Emu::Bit32u>(waveIndex), loopIt->second);
+		factoryPcmWaveLoopBackup.erase(loopIt);
+	}
+	factoryPcmWaveBackup.erase(it);
+	customPcmWaves.erase(waveIndex);
+	customPcmWaveNames.erase(waveIndex);
+	customPcmWaveLoops.erase(waveIndex);
+	lastImportMessage = "Restored factory PCM wave " + juce::String(waveIndex + 1) + ".";
+	return true;
 }
 
 void D110AudioProcessor::importSysexBank(const juce::File &file) {
@@ -2526,12 +2731,16 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	// The on-screen test keyboard's own config - see D110AudioProcessor::getKeyboardMidiChannel()
 	// and friends for why this lives on the processor rather than the UI component.
 	xml->setAttribute("kbChannel", keyboardMidiChannel);
-	xml->setAttribute("kbOmni", keyboardOmni ? 1 : 0);
+	// "kbMidiRemap" since 2026-08-25 - see setStateInformation()'s own comment for the
+	// legacy "kbOmni" fallback this replaces (same underlying setting, inverted sense).
+	xml->setAttribute("kbMidiRemap", midiRemap ? 1 : 0);
 	xml->setAttribute("kbPcInput", keyboardPcInput ? 1 : 0);
 	xml->setAttribute("kbPcLayout", keyboardPcLayout);
 
 	// Utility tab's THEME toggle - see getUiThemeLight().
 	xml->setAttribute("uiThemeLight", uiThemeLight ? 1 : 0);
+	// See getUiThemeFollowSystem().
+	xml->setAttribute("uiThemeFollowSystem", uiThemeFollowSystem ? 1 : 0);
 	// See getSequencerRetroMode().
 	xml->setAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0);
 	// See getCompactPanelMode().
@@ -2593,6 +2802,27 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	// is the new, slotted format rather than an older single-song project - see its own
 	// comment.
 	writeSequencerSongsXml(*xml);
+
+	// Custom PCM wave samples (see loadCustomPcmWave()) - instrument-wide, not per-song, since
+	// they replace what a wave NUMBER sounds like everywhere it's referenced, the same way
+	// swapping a real ROM chip would be. Sparse (only customized slots are listed) rather than
+	// one attribute per possible wave index, since almost every project will customize few if
+	// any of the 256 slots.
+	{
+		juce::StringArray indices;
+		for (const auto &entry : customPcmWaves) {
+			indices.add(juce::String(entry.first));
+			juce::MemoryBlock raw(entry.second.data(), entry.second.size() * sizeof(MT32Emu::Bit16s));
+			xml->setAttribute("pcmWave" + juce::String(entry.first), packBlock(raw));
+			const auto nameIt = customPcmWaveNames.find(entry.first);
+			if (nameIt != customPcmWaveNames.end())
+				xml->setAttribute("pcmWaveName" + juce::String(entry.first), nameIt->second);
+			const auto loopIt = customPcmWaveLoops.find(entry.first);
+			if (loopIt != customPcmWaveLoops.end())
+				xml->setAttribute("pcmWaveLoop" + juce::String(entry.first), loopIt->second ? 1 : 0);
+		}
+		if (!indices.isEmpty()) xml->setAttribute("pcmWaveIndices", indices.joinIntoString(","));
+	}
 
 	copyXmlToBinary(*xml, destData);
 }
@@ -2672,11 +2902,18 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 	// has none of these attributes, and every getAttribute call below already has this
 	// instance's own current (default) value as its fallback.
 	setKeyboardMidiChannel(xml->getIntAttribute("kbChannel", keyboardMidiChannel));
-	setKeyboardOmni(xml->getIntAttribute("kbOmni", keyboardOmni ? 1 : 0) != 0);
+	// "kbMidiRemap" (2026-08-25) replaced "kbOmni" - same setting, inverted sense (Omni=on
+	// meant no remap). A project saved before the rename only has the old attribute; fall
+	// back to it, inverted, rather than silently reverting such a project to today's default.
+	if (xml->hasAttribute("kbMidiRemap"))
+		setMidiRemap(xml->getIntAttribute("kbMidiRemap", midiRemap ? 1 : 0) != 0);
+	else
+		setMidiRemap(xml->getIntAttribute("kbOmni", midiRemap ? 0 : 1) == 0);
 	setKeyboardPcInputEnabled(xml->getIntAttribute("kbPcInput", keyboardPcInput ? 1 : 0) != 0);
 	setKeyboardPcLayout(xml->getIntAttribute("kbPcLayout", keyboardPcLayout));
 
 	setUiThemeLight(xml->getIntAttribute("uiThemeLight", uiThemeLight ? 1 : 0) != 0);
+	setUiThemeFollowSystem(xml->getIntAttribute("uiThemeFollowSystem", uiThemeFollowSystem ? 1 : 0) != 0);
 	setSequencerRetroMode(xml->getIntAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0) != 0);
 	setCompactPanelMode(xml->getIntAttribute("compactPanelMode", compactPanelMode ? 1 : 0) != 0);
 	setRetroKeyBindings(xml->getStringAttribute("retroKeyBindings", retroKeyBindings));
@@ -2752,6 +2989,29 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 				t, static_cast<d110seq::QuantizeGrid>(xml->getIntAttribute("seqQuantize" + suffix, 0)));
 		}
 	}
+
+	// Custom PCM wave samples - see getStateInformation()'s own comment. Populates
+	// customPcmWaves from the saved (gzip+base64) blobs; reapplyCustomPcmWaves() then either
+	// applies them right away (if the synth's already open, e.g. reloading state into a live
+	// instance) or is a no-op here and gets picked up by openSynthIfReady()'s own call to it
+	// the next time the instrument powers on.
+	customPcmWaves.clear();
+	customPcmWaveNames.clear();
+	customPcmWaveLoops.clear();
+	factoryPcmWaveBackup.clear();
+	for (const auto &token : juce::StringArray::fromTokens(xml->getStringAttribute("pcmWaveIndices"), ",", "")) {
+		if (token.trim().isEmpty()) continue;
+		const int waveIndex = token.getIntValue();
+		const auto raw = unpackBlock(xml->getStringAttribute("pcmWave" + juce::String(waveIndex)));
+		if (raw.getSize() == 0 || (raw.getSize() % sizeof(MT32Emu::Bit16s)) != 0) continue;
+		const auto *samples = static_cast<const MT32Emu::Bit16s *>(raw.getData());
+		customPcmWaves[waveIndex].assign(samples, samples + raw.getSize() / sizeof(MT32Emu::Bit16s));
+		const auto nameAttr = "pcmWaveName" + juce::String(waveIndex);
+		if (xml->hasAttribute(nameAttr)) customPcmWaveNames[waveIndex] = xml->getStringAttribute(nameAttr);
+		const auto loopAttr = "pcmWaveLoop" + juce::String(waveIndex);
+		if (xml->hasAttribute(loopAttr)) customPcmWaveLoops[waveIndex] = xml->getIntAttribute(loopAttr) != 0;
+	}
+	reapplyCustomPcmWaves();
 }
 
 juce::AudioProcessor *JUCE_CALLTYPE createPluginFilter() {

@@ -25,6 +25,7 @@ using D110CoreType = D110Core;
 #include "JackMidiInput.h"
 #endif
 #include <array>
+#include <map>
 #include <memory>
 #include <thread>
 
@@ -135,6 +136,53 @@ public:
 	static juce::String getCustomRomFolder();
 	static void setCustomRomFolder(const juce::String &path);
 
+	// Custom PCM wave samples (desktop only - see D110EditorPane's Tone tab, PCM field's
+	// right-click menu). Overwrites one of the real, checksum-validated PCM ROM's 256 wave
+	// slots' audio content in memory - see MT32Emu::Synth::setPCMWaveSamples()'s own comment
+	// for why this can't just be a rebuilt ROM file. Reads any audio format JUCE recognises,
+	// resamples/fits it to the target wave's own declared length, applies immediately (no
+	// power cycle needed), and persists across getStateInformation/setStateInformation so it
+	// survives a reload. Returns false on read/decode failure or an out-of-range waveIndex.
+	bool loadCustomPcmWave(int waveIndex, const juce::File &audioFile);
+	// Reverts one wave slot back to the real ROM's own original content. False if that slot
+	// wasn't customized in the first place.
+	bool restoreFactoryPcmWave(int waveIndex);
+	bool hasCustomPcmWave(int waveIndex) const { return customPcmWaves.count(waveIndex) != 0; }
+	// Temporarily overrides whether a customized wave loops - only meaningful while the slot is
+	// customized (restoreFactoryPcmWave() brings back the factory wave's own loop setting along
+	// with everything else). The real LA32 PCM engine only supports "loop the whole stored
+	// sample from the start" or "play once" - no loop start point, no ping-pong, a genuine
+	// hardware limitation carried into the emulation, not a missing feature of this override.
+	// Only meaningful while waveIndex is customized (see hasCustomPcmWave()). Persisted.
+	bool setCustomPcmWaveLoop(int waveIndex, bool loop);
+	// What loadCustomPcmWave() set it to initially (the factory wave's own loop setting,
+	// unchanged unless setCustomPcmWaveLoop() was called since) - undefined/meaningless if
+	// !hasCustomPcmWave(waveIndex).
+	bool getCustomPcmWaveLoop(int waveIndex) const {
+		const auto it = customPcmWaveLoops.find(waveIndex);
+		return it != customPcmWaveLoops.end() && it->second;
+	}
+	// The source file's own name (no extension) for a customized wave, for the PCM field to
+	// show instead of the factory wave name - see D110EditorPane::textOf()'s own PCM case.
+	// Empty if that slot isn't customized.
+	juce::String getCustomPcmWaveName(int waveIndex) const {
+		const auto it = customPcmWaveNames.find(waveIndex);
+		return it == customPcmWaveNames.end() ? juce::String() : it->second;
+	}
+	// Directly sets a wave's pitch calibration (MT32Emu::Synth::setPCMWavePitchOffset()'s own
+	// comment explains the units/meaning) - exposed so pcm_pitch_calibration_probe.cpp can
+	// measure the constant loadCustomPcmWave() itself now applies automatically
+	// (kNeutralPcmPitchOffset, PluginProcessor.cpp). Not meant for the UI - a custom sample's
+	// calibration isn't a user-facing knob, it's fixed to whatever makes playback match the
+	// recording's own pitch.
+	bool setCustomPcmWavePitchOffset(int waveIndex, int pitchOffset);
+
+	// Where custom PCM samples are picked from by name instead of browsing a file dialog every
+	// time (D110EditorPane's "Sample Library" submenu) - a machine-wide setting, same reasoning
+	// and storage pattern as getCustomRomFolder() above. Empty = not configured yet.
+	static juce::String getCustomSampleFolder();
+	static void setCustomSampleFolder(const juce::String &path);
+
 	// Snapshot of everything the virtual front panel needs to redraw itself each frame.
 	// Built entirely from stable, always-current getters (not mt32emu's own getDisplayState() text,
 	// which is designed to flash transient messages and revert after a couple of seconds, and whose
@@ -183,7 +231,7 @@ public:
 	// standalone MIDI file playback, which has no host/DAW to route file events through.
 	void injectMidiMessage(const juce::MidiMessage &message);
 
-	// D110Keyboard's own config (MIDI channel/omni, PC-keyboard tracker input, QWERTY/AZERTY
+	// D110Keyboard's own config (MIDI channel/remap, PC-keyboard tracker input, QWERTY/AZERTY
 	// layout) - stored here, not as plain members on the UI component itself, so it survives
 	// getStateInformation/setStateInformation regardless of whether an editor happens to be
 	// open at save/restore time (a host can create/destroy the editor independently of the
@@ -191,8 +239,8 @@ public:
 	// back through these setters on every change - see its own constructor/showContextMenu().
 	int getKeyboardMidiChannel() const override { return keyboardMidiChannel; }
 	void setKeyboardMidiChannel(int channel) override { keyboardMidiChannel = juce::jlimit(1, 16, channel); }
-	bool getKeyboardOmni() const override { return keyboardOmni; }
-	void setKeyboardOmni(bool omni) override { keyboardOmni = omni; }
+	bool getMidiRemap() const override { return midiRemap; }
+	void setMidiRemap(bool remap) override { midiRemap = remap; }
 	bool getKeyboardPcInputEnabled() const override { return keyboardPcInput; }
 	void setKeyboardPcInputEnabled(bool enabled) override { keyboardPcInput = enabled; }
 	// 0 = QWERTY, 1 = AZERTY - a plain int rather than D110Keyboard's own private PcLayout
@@ -212,6 +260,13 @@ public:
 	// the same way the keyboard config above does.
 	bool getUiThemeLight() const { return uiThemeLight; }
 	void setUiThemeLight(bool light) { uiThemeLight = light; }
+
+	// "System" (follow the OS dark-mode setting) on top of the plain light/dark choice above -
+	// Android's Options menu only, 2026-08-28. Kept as a separate bool rather than folding into
+	// uiThemeLight (a tri-state) so old saved state without this attribute still loads exactly
+	// as before (uiThemeLight alone, follow defaulting off) - see setStateInformation().
+	bool getUiThemeFollowSystem() const { return uiThemeFollowSystem; }
+	void setUiThemeFollowSystem(bool follow) { uiThemeFollowSystem = follow; }
 
 	// Whether the sequencer drawer shows the classic graphical panel or the D-20-style
 	// LCD+9-button retro view - see D110SequencerRetroPanel.h. Toggled from D110Panel's
@@ -396,6 +451,13 @@ public:
 		return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
 			.getChildFile("D-110 Emulator")
 			.getChildFile("custom_rom_path.txt");
+	}
+
+	// Same pattern as getCustomRomPathFile() above, for the custom-PCM-sample folder setting.
+	static juce::File getCustomSamplePathFile() {
+		return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+			.getChildFile("D-110 Emulator")
+			.getChildFile("custom_sample_path.txt");
 	}
 
 	// The panel draws its own VOLUME knob out of the reference photograph, so it talks to the
@@ -634,8 +696,8 @@ private:
 #ifdef D110_HAVE_JACK_MIDI
 	// Standalone only (checked at runtime in prepareToPlay(), where wrapperType is reliably
 	// set - see its own comment): a real JACK MIDI input port, separate from the ALSA device
-	// picker above. Feeds the very same handleIncomingMidiMessage() path, so omni/rechannel
-	// behaves identically regardless of which of the two a message arrived through.
+	// picker above. Feeds the very same handleIncomingMidiMessage() path, so the MIDI Remap
+	// setting behaves identically regardless of which of the two a message arrived through.
 	std::unique_ptr<JackMidiInput> jackMidiIn;
 	bool jackMidiSetupAttempted = false;
 #endif
@@ -713,6 +775,34 @@ private:
 	std::vector<juce::uint8> pendingPanicBytes;
 	juce::String lastImportMessage;
 
+	// Active custom PCM wave overrides, keyed by wave index (0-255) - the log-format samples
+	// last handed to synth->setPCMWaveSamples(), persisted so a reload/power-cycle can reapply
+	// them (see openSynthIfReady()'s own comment; pcmROMData is decoded fresh from the real ROM
+	// file every time, wiping any override). See loadCustomPcmWave()/restoreFactoryPcmWave().
+	std::map<int, std::vector<MT32Emu::Bit16s>> customPcmWaves;
+	// Source file name (no extension) per customized wave, purely cosmetic (see
+	// getCustomPcmWaveName()) - persisted alongside customPcmWaves in getStateInformation.
+	std::map<int, juce::String> customPcmWaveNames;
+	// Current loop on/off per customized wave (see setCustomPcmWaveLoop()) - persisted.
+	std::map<int, bool> customPcmWaveLoops;
+	// The real ROM's own original samples for whatever's in customPcmWaves, snapshotted the
+	// first time each slot is touched each time the synth (re)opens - not persisted (cheap to
+	// re-derive from the ROM itself, and it's exactly what powers restoreFactoryPcmWave()).
+	std::map<int, std::vector<MT32Emu::Bit16s>> factoryPcmWaveBackup;
+	// Same idea, for the wave's pitch calibration (see MT32Emu::Synth::setPCMWavePitchOffset()'s
+	// own comment) - not persisted, re-snapshotted alongside factoryPcmWaveBackup.
+	std::map<int, MT32Emu::Bit16u> factoryPcmWavePitchBackup;
+	// Same idea, for the wave's loop flag - kept separate from customPcmWaveLoops (the current,
+	// possibly user-overridden setting) since restoreFactoryPcmWave() needs the ORIGINAL value
+	// specifically, not whatever the user last toggled it to.
+	std::map<int, bool> factoryPcmWaveLoopBackup;
+	// Applies every entry in customPcmWaves to the (already-open) synth, snapshotting each
+	// slot's current (factory) content into factoryPcmWaveBackup first. Called from
+	// openSynthIfReady() (every power-on/ROM reload wipes pcmROMData back to factory) and from
+	// setStateInformation() (so a project reload takes effect immediately on an already-running
+	// instance, not just on the next power cycle). No-op if synth isn't open.
+	void reapplyCustomPcmWaves();
+
 	D110CoreType core;
 
 	bool powerBlocked = false;
@@ -720,15 +810,17 @@ private:
 	// D110Keyboard's own config - see the accessors above for why this lives here rather than
 	// on the UI component itself.
 	int keyboardMidiChannel = 1;
-	// Default ON since 2026-08-25 (Github issue #4): with this off, processBlock() and
+	// Default OFF since 2026-08-25 (Github issue #4; named "Omni" until the same day - see
+	// D110KeyboardHost.h's own comment on the rename). With this ON, processBlock() and
 	// handleIncomingMidiMessage() force EVERY incoming channel-voice message - host-routed or
 	// from a directly-opened port, not just the on-screen keyboard's own notes - onto
 	// keyboardMidiChannel above. That's the right behaviour for a controller hardwired to one
 	// channel (the reason this remapping exists at all), but the wrong default for anyone
 	// sending real per-Part multichannel MIDI from a DAW, which is the common case. Still
-	// fully persisted/toggleable exactly as before - see getStateInformation's "kbOmni" and
-	// D110Panel::showOptionsMenu()'s own Omni entry.
-	bool keyboardOmni = true;
+	// fully persisted/toggleable exactly as before - see getStateInformation's "kbMidiRemap"
+	// (with a legacy-"kbOmni" fallback) and D110Panel::showOptionsMenu()'s own MIDI Remap
+	// entry.
+	bool midiRemap = false;
 	bool keyboardPcInput = false;
 	int keyboardPcLayout = 0;
 
@@ -740,6 +832,8 @@ private:
 
 	// See getUiThemeLight()/setUiThemeLight() above.
 	bool uiThemeLight = false;
+	// See getUiThemeFollowSystem()/setUiThemeFollowSystem() above.
+	bool uiThemeFollowSystem = false;
 	// See getSequencerRetroMode()/setSequencerRetroMode() above.
 	bool sequencerRetroMode = false;
 	bool compactPanelMode = false;

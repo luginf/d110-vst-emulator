@@ -366,6 +366,58 @@ public:
 	// Returns true if the synth is in completely initialized state, otherwise returns false.
 	MT32EMU_EXPORT bool isOpen() const;
 
+	// D-110 emulator local addition (not upstream munt): the control ROM's own wave table
+	// (initPCMList(), read-only) tells you addr/len/loop for a PCM ROM wave slot without
+	// exposing pcmWaves/pcmROMData themselves. len is in samples. Returns false if waveIndex
+	// is out of range or the synth isn't open yet.
+	MT32EMU_EXPORT bool getPCMWaveInfo(Bit32u waveIndex, Bit32u &addrOut, Bit32u &lenOut, bool &loopOut) const;
+
+	// D-110 emulator local addition (not upstream munt): overwrites one PCM ROM wave's samples
+	// in memory, in place, on top of whatever loadPCMROM() decoded from a real (checksum-
+	// validated) ROM file - this exists specifically so a user-supplied custom sample can
+	// replace a factory wave without needing a ROM file of its own (which would fail
+	// ROMInfo's SHA1 gate; see docs/roms.md and munt/mt32emu/src/ROMInfo.cpp). logSamples must
+	// already be in the same 16-bit sign+magnitude-log format loadPCMROM()'s decode loop
+	// produces (mag = bits 0-14, sign = bit 15, amplitude = pow(2, (mag-32787)/2048.0) with
+	// sign applied - the exact inverse of what LA32FloatWaveGenerator::getPCMSample() decodes
+	// at playback time). Only min(numSamples, the wave's own declared length) samples are
+	// written; a shorter logSamples array leaves the remainder of the slot untouched (whatever
+	// it held before - silence right after open(), since pcmROMData is a fresh decode every
+	// time). Returns false if waveIndex is out of range or the synth isn't open yet.
+	MT32EMU_EXPORT bool setPCMWaveSamples(Bit32u waveIndex, const Bit16s *logSamples, Bit32u numSamples);
+
+	// D-110 emulator local addition (not upstream munt): the read-side counterpart of
+	// setPCMWaveSamples() above, e.g. to snapshot a wave's original factory content before
+	// overwriting it. Same log format, same length-clamping behaviour. Returns false if
+	// waveIndex is out of range or the synth isn't open yet.
+	MT32EMU_EXPORT bool getPCMWaveSamples(Bit32u waveIndex, Bit16s *logSamplesOut, Bit32u numSamples) const;
+
+	// D-110 emulator local addition (not upstream munt): each PCM wave's control-ROM table
+	// entry (ControlROMPCMStruct, see Structures.h) carries a 16-bit pitch CALIBRATION value
+	// (TVP.cpp's calcBasePitch(): "basePitch += (pitchMSB<<8)|pitchLSB" for a PCM partial,
+	// where the equivalent constant for a synth oscillator - 37133 - is documented as putting
+	// Middle C at 261.64Hz) - it's what makes a given factory recording play back in tune
+	// regardless of what pitch it was actually recorded at. A custom sample's own audio data
+	// (setPCMWaveSamples() above) has no such calibration of its own, so without also setting
+	// this, a replacement plays back pitch-shifted by whatever the ORIGINAL factory wave's
+	// calibration happened to be. Bit16u (not Bit16s) deliberately - TVP.cpp reconstructs and
+	// adds this as an unsigned 0-65535 quantity (Bit32s(Bit8u)<<8 | Bit32s(Bit8u) never sign-
+	// extends), so a signed type here would misrepresent values with the top bit set. Units are
+	// the same log-pitch space as the rest of TVP.cpp (4096 per semitone). Returns false if
+	// waveIndex is out of range or the synth isn't open.
+	MT32EMU_EXPORT bool setPCMWavePitchOffset(Bit32u waveIndex, Bit16u pitchOffset);
+	MT32EMU_EXPORT bool getPCMWavePitchOffset(Bit32u waveIndex, Bit16u &pitchOffsetOut) const;
+
+	// D-110 emulator local addition (not upstream munt): overrides whether a PCM wave loops
+	// (plays its whole stored length once) or sustains by repeating from the start once it
+	// reaches the end - PCMWaveEntry::loop, normally fixed by the control ROM's own wave table
+	// (initPCMList(), the same "len & 0x80" bit extract_pcm.py already documents). Note the real
+	// LA32 PCM engine only supports this one loop shape (the whole buffer, from address 0) or no
+	// loop at all - no loop-start-point, no ping-pong; that's a genuine hardware limitation, not
+	// something left out of this patch. Returns false if waveIndex is out of range or the synth
+	// isn't open.
+	MT32EMU_EXPORT bool setPCMWaveLoop(Bit32u waveIndex, bool loop);
+
 	// All the enqueued events are processed by the synth immediately.
 	MT32EMU_EXPORT void flushMIDIQueue();
 

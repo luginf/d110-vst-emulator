@@ -133,6 +133,17 @@ private:
 		int cursor = 0;                                       // list row / form field index
 		bool confirmYes = false;                              // confirm only
 		std::vector<int> quickIndex;                          // list: dialled quickActions index per row
+		// form only, default false (every pre-existing form keeps the original UP/DOWN-adjusts-
+		// value/LEFT-RIGHT-navigates-fields pairing described on FormField above). Set true for a
+		// form with too many fields to read once packed two-per-line and label-clipped the way a
+		// list row used to before it grew its own width-aware split (see paintListScreen's own
+		// comment) - buildProgramForm() is the first (Alan's report, 2026-08-26: PRG's value fell
+		// off screen entirely at PRG 11 with BANK sharing its line). Swaps to the same pairing the
+		// STEP RECORDING overlay already uses for its stacked BAR/DUR rows (see stepOverlayCursor's
+		// comment): UP/DOWN moves the cursor between fields, one per line, scrolling like a list
+		// when there are more than bodyRows(); LEFT/RIGHT adjusts whichever field is selected, by
+		// leftRightStep if it's set, else upDownStep.
+		bool verticalFields = false;
 	};
 
 	void pushScreen(Screen s);

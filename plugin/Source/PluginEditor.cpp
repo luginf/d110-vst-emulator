@@ -649,6 +649,84 @@ void D110Panel::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheel
 		processor.setMasterVolume(processor.getMasterVolume() + w.deltaY * 0.5f);
 }
 
+namespace {
+// Linux's native picker (zenity/kdialog, juce_FileChooser_linux.cpp) shells out with the raw
+// filter string and matches it with a case-sensitive glob - "*.mid" alone never matches
+// "Bank.MID" there (unlike Windows/macOS, or JUCE's own non-native fallback browser, both
+// case-insensitive). Simply widening the pattern (adding "*.SYX"/"*.MID"/"*.SMF") fixes the
+// common cases, but a stray ".Mid" or similar still wouldn't match anything - and folding a
+// permissive "*.*" into that same always-on filter (an earlier attempt) is explicitly NOT what
+// Alan wants (2026-08-27): the default should stay narrow, with "*.*" reachable only as an
+// explicit, separate choice. juce::FileChooser's single filter string can't express two
+// independently selectable filter groups on Linux (addZenityArgs()/addKDialogArgs() always
+// collapse everything into one "--file-filter="), so this bypasses it for the two SysEx/MIDI
+// import pickers (the panel's own right-click menu, and the Utility tab's copy of the same
+// feature) and talks to zenity/kdialog directly, mirroring their own tool-selection logic
+// (isKdeFullSession() favouring kdialog) so behaviour matches what juce::FileChooser would have
+// picked anyway. Falls back to a plain juce::FileChooser (with the widened pattern, no "*.*")
+// on any other platform, or if neither zenity nor kdialog is installed.
+class TieredNativeFileChooser final : private juce::Timer {
+public:
+	using Callback = std::function<void(const juce::File &)>;
+
+	static bool isAvailable() { return exeIsAvailable("zenity") || exeIsAvailable("kdialog"); }
+
+	TieredNativeFileChooser(const juce::String &title, const juce::File &startDir,
+	                         const juce::String &strictLabel, const juce::String &strictPatterns,
+	                         Callback callbackIn)
+	    : callback(std::move(callbackIn)) {
+		juce::StringArray args;
+		if (useKdialog()) {
+			args.add("kdialog");
+			args.add("--title=" + title);
+			args.add("--getopenfilename");
+			args.add(startDir.getFullPathName());
+			// kdialog's own filter syntax: one or more "patterns|label" groups, "\n"-separated.
+			args.add(strictPatterns + "|" + strictLabel + "\n*.*|All files");
+		} else {
+			args.add("zenity");
+			args.add("--file-selection");
+			args.add("--title=" + title);
+			args.add("--filename=" + startDir.getFullPathName() + "/");
+			// Two separate --file-filter= args, so both show up as independently selectable
+			// entries in the dialog's own filter dropdown, strict one active by default.
+			args.add("--file-filter=" + strictLabel + " | " + strictPatterns);
+			args.add("--file-filter=All files | *.*");
+		}
+		child.start(args, juce::ChildProcess::wantStdOut);
+		startTimer(100);
+	}
+
+private:
+	static bool exeIsAvailable(const juce::String &executable) {
+		juce::ChildProcess p;
+		if (!p.start("which " + executable)) return false;
+		p.waitForProcessToFinish(5000);
+		return p.getExitCode() == 0;
+	}
+	static bool isKdeFullSession() {
+		return juce::SystemStats::getEnvironmentVariable("KDE_FULL_SESSION", {}).equalsIgnoreCase("true");
+	}
+	static bool useKdialog() { return exeIsAvailable("kdialog") && (isKdeFullSession() || !exeIsAvailable("zenity")); }
+
+	void timerCallback() override {
+		if (child.isRunning()) return;
+		stopTimer();
+		const auto result = child.readAllProcessOutput().trim();
+		child.waitForProcessToFinish(1000);
+		const auto file = result.isNotEmpty()
+		                       ? juce::File::getCurrentWorkingDirectory().getChildFile(result)
+		                       : juce::File();
+		const auto cb = callback;
+		cb(file);
+		delete this;
+	}
+
+	juce::ChildProcess child;
+	Callback callback;
+};
+} // namespace
+
 void D110Panel::showOptionsMenu()
 {
 	auto *reverb = processor.parameters.getParameter("reverbEnabled");
@@ -668,23 +746,24 @@ void D110Panel::showOptionsMenu()
 	m.addItem(5, "Retro Sequencer (D-20 style LCD+buttons)", true, processor.getSequencerRetroMode());
 	// Github issue #3: the LA Reference (structures/envelopes chart, UTILITY tab) was only
 	// reachable by opening the editor drawer and navigating there. Repeated here so it's one
-	// right-click away, the same shortcut the channel/omni entries below get.
+	// right-click away, the same shortcut the channel/remap entries below get.
 	m.addItem(6, "LA Reference (algorithms & envelopes)...");
 	// Same setting D110Keyboard's own right-click already exposes (see its showContextMenu) -
 	// repeated here so it's reachable without opening/finding the on-screen keyboard drawer.
-	// Github issue #4: with Omni off, this channel is also what ALL incoming MIDI (host- or
-	// port-fed, not just the on-screen keyboard) gets forced onto - see processBlock()'s
-	// rechannelizing block and handleIncomingMidiMessage(). Omni is the default since
+	// Github issue #4: with MIDI Remap on, this channel is also what ALL incoming MIDI (host-
+	// or port-fed, not just the on-screen keyboard) gets forced onto - see processBlock()'s
+	// rechannelizing block and handleIncomingMidiMessage(). Off is the default since
 	// 2026-08-25 for exactly that reason: it's the only setting where external MIDI reaches
-	// each Part on the channel it was actually sent on, unmodified.
+	// each Part on the channel it was actually sent on, unmodified. Called "Omni" until this
+	// same day - see D110KeyboardHost.h's own comment on why that name was dropped.
 	{
 		const int curCh = processor.getKeyboardMidiChannel();
-		const bool omniOn = processor.getKeyboardOmni();
+		const bool remapOn = processor.getMidiRemap();
 		juce::PopupMenu channelMenu;
 		for (int ch = 1; ch <= 16; ++ch)
-			channelMenu.addItem(700 + ch, "Channel " + juce::String(ch), true, !omniOn && curCh == ch);
-		m.addSubMenu("MIDI Channel (on-screen keyboard / incoming MIDI remap)", channelMenu, !omniOn);
-		m.addItem(717, "Omni (incoming MIDI keeps its own channel, no remap)", true, omniOn);
+			channelMenu.addItem(700 + ch, "Channel " + juce::String(ch), true, remapOn && curCh == ch);
+		m.addSubMenu("MIDI Channel (on-screen keyboard / forced remap target)", channelMenu, remapOn);
+		m.addItem(717, "MIDI Remap (force everything onto the channel above)", true, remapOn);
 	}
 	// Пункта «пусть ноты озвучивает прошивка» здесь нет намеренно. Это не настройка, а
 	// единственное поведение: ноты идут в прошивку, она применяет свои диапазоны клавиш,
@@ -775,22 +854,28 @@ void D110Panel::showOptionsMenu()
 				return;
 			}
 			switch (result) {
-			case 1:
-				// Explicit uppercase variants because file glob matching is case-sensitive on Linux
-				// (unlike Windows/macOS); "*.*" is included to also offer an all-files fallback.
+			case 1: {
+				auto onPicked = [this](const juce::File &file) {
+					if (file != juce::File()) {
+						processor.setLastDialogDir(file.getParentDirectory());
+						processor.importSysexBank(file);
+					}
+				};
+				if (TieredNativeFileChooser::isAvailable()) {
+					// See TieredNativeFileChooser's own comment: a real, independently selectable
+					// "All files" fallback in the same dialog, not a permissive filter always on.
+					new TieredNativeFileChooser("Select a SysEx bank or MIDI file", processor.getLastDialogDir(),
+					                            "SysEx/MIDI files", "*.syx *.SYX *.mid *.MID *.smf *.SMF", onPicked);
+					break;
+				}
 				fileChooser = std::make_unique<juce::FileChooser>(
 					"Select a SysEx bank or MIDI file", processor.getLastDialogDir(),
-					"*.syx;*.SYX;*.mid;*.MID;*.smf;*.SMF;*.*");
+					"*.syx;*.SYX;*.mid;*.MID;*.smf;*.SMF");
 				fileChooser->launchAsync(
 					juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-					[this](const juce::FileChooser &fc) {
-						const auto file = fc.getResult();
-						if (file != juce::File()) {
-							processor.setLastDialogDir(file.getParentDirectory());
-							processor.importSysexBank(file);
-						}
-					});
+					[onPicked](const juce::FileChooser &fc) { onPicked(fc.getResult()); });
 				break;
+			}
 			case 2:
 				if (reverb != nullptr) {
 					reverb->beginChangeGesture();
@@ -821,7 +906,7 @@ void D110Panel::showOptionsMenu()
 				showLaReferencePopup(getTopLevelComponent()->getWidth());
 				break;
 			case 717:
-				processor.setKeyboardOmni(!processor.getKeyboardOmni());
+				processor.setMidiRemap(!processor.getMidiRemap());
 				break;
 			case 900:
 			case 901:
@@ -2209,9 +2294,16 @@ juce::String D110EditorPane::textOf(const Cell &c) const {
 			return kWave[juce::jlimit(0, 3, v)];
 		}
 		case 5: {   // номер образца PCM - имя из ПЗУ, банк решает соседнее поле WAVEFORM
+			const int n = juce::jlimit(0, 127, v);
+			// A customized slot's real audio no longer matches the factory name at all - show
+			// the source file's own name (falling back to a plain "custom" marker for an old
+			// project saved before names were tracked) instead of the now-wrong factory name.
+			if (processor.hasCustomPcmWave(n)) {
+				const auto customName = processor.getCustomPcmWaveName(n);
+				return juce::String(v + 1) + " *" + (customName.isNotEmpty() ? customName : juce::String("custom"));
+			}
 			const size_t waveAt = addressOf(c) - 1;
 			const bool bank2 = (waveAt < ram.size()) && ((ram[waveAt] & 2) != 0);
-			const int n = juce::jlimit(0, 127, v);
 			return juce::String(v + 1) + "  " + (bank2 ? kPcmBank2Names[n] : kPcmBank1Names[n]);
 		}
 		case 7: return juce::String(v - 7);             // чувствительность ширины импульса
@@ -2770,16 +2862,26 @@ void D110EditorPane::buttonPressed(int id) {
 	if (id == 2) {
 		// Диалог асинхронный, поэтому объект обязан пережить вызов; он и живёт в поле панели
 		// прибора, у которой уже есть такой же выбор в меню правой кнопки.
+		auto onPicked = [this](const juce::File &file) {
+			if (file != juce::File()) {
+				processor.setLastDialogDir(file.getParentDirectory());
+				processor.importSysexBank(file);
+			}
+		};
+		if (TieredNativeFileChooser::isAvailable()) {
+			// See TieredNativeFileChooser's own comment: gives a real, independently selectable
+			// "All files" fallback in the same dialog, which a single juce::FileChooser pattern
+			// string can't express on Linux.
+			new TieredNativeFileChooser("Select a SysEx bank or MIDI file", processor.getLastDialogDir(),
+			                            "SysEx/MIDI files", "*.syx *.SYX *.mid *.MID *.smf *.SMF", onPicked);
+			return;
+		}
 		auto *chooser = new juce::FileChooser("Select a SysEx bank or MIDI file", processor.getLastDialogDir(),
-		                                      "*.syx;*.mid;*.smf");
+		                                      "*.syx;*.SYX;*.mid;*.MID;*.smf;*.SMF");
 		chooser->launchAsync(juce::FileBrowserComponent::openMode
 		                         | juce::FileBrowserComponent::canSelectFiles,
-		                     [this, chooser](const juce::FileChooser &fc) {
-			                     const auto file = fc.getResult();
-			                     if (file != juce::File()) {
-				                     processor.setLastDialogDir(file.getParentDirectory());
-				                     processor.importSysexBank(file);
-			                     }
+		                     [chooser, onPicked](const juce::FileChooser &fc) {
+			                     onPicked(fc.getResult());
 			                     delete chooser;
 		                     });
 		return;
@@ -2972,6 +3074,7 @@ void D110EditorPane::showPcmWaveMenu(const Cell &pcmCell) {
 	const size_t waveAt = addressOf(pcmCell) - 1;
 	const bool bank2 = (waveAt < ram.size()) && ((ram[waveAt] & 2) != 0);
 	const char *const *names = bank2 ? kPcmBank2Names : kPcmBank1Names;
+	const int currentWave = valueOf(pcmCell);
 
 	juce::PopupMenu menu;
 	juce::PopupMenu lower, upper;
@@ -2981,11 +3084,88 @@ void D110EditorPane::showPcmWaveMenu(const Cell &pcmCell) {
 		upper.addItem(n + 1, juce::String(n + 1).paddedLeft('0', 3) + "  " + names[n]);
 	menu.addSubMenu("001 - 064", lower);
 	menu.addSubMenu("065 - 128", upper);
+	menu.addSeparator();
+
+	// Custom PCM samples (desktop only): replaces what wave number currentWave actually
+	// SOUNDS LIKE - every part/patch referencing it hears the change, the same as swapping a
+	// real ROM chip - see D110AudioProcessor::loadCustomPcmWave()'s own comment. ID ranges:
+	// 1-128 above (wave picks), 9000/9001 fixed actions below, 9100+i for the i-th sample
+	// library entry (capped well under the wave-pick range's own 1-128 to avoid collisions -
+	// no overlap possible either way, but keeping them visually far apart in the source too).
+	static constexpr int kLoadFromFileId = 9000;
+	static constexpr int kRestoreFactoryId = 9001;
+	static constexpr int kChooseFolderId = 9002;
+	static constexpr int kToggleLoopId = 9003;
+	static constexpr int kLibraryBaseId = 9100;
+
+	menu.addItem(kLoadFromFileId, "Load custom sample from file...");
+
+	const auto sampleFolder = D110AudioProcessor::getCustomSampleFolder();
+	juce::Array<juce::File> libraryFiles;
+	if (sampleFolder.isNotEmpty() && juce::File(sampleFolder).isDirectory()) {
+		libraryFiles = juce::File(sampleFolder).findChildFiles(
+			juce::File::findFiles, false,
+			"*.wav;*.WAV;*.aif;*.AIF;*.aiff;*.AIFF;*.flac;*.FLAC;*.ogg;*.OGG;*.mp3;*.MP3");
+		libraryFiles.sort();
+	}
+	if (sampleFolder.isEmpty()) {
+		menu.addItem(kChooseFolderId, "Set sample library folder...");
+	} else {
+		juce::PopupMenu library;
+		for (int i = 0; i < libraryFiles.size() && i < 900; ++i)
+			library.addItem(kLibraryBaseId + i, libraryFiles[i].getFileNameWithoutExtension());
+		if (libraryFiles.isEmpty())
+			library.addItem(kLibraryBaseId - 1, "(no audio files found)", false);
+		library.addSeparator();
+		library.addItem(kChooseFolderId, "Change folder...");
+		menu.addSubMenu("Sample Library (" + juce::String(libraryFiles.size()) + ")", library);
+	}
+
+	// Only meaningful (and only shown) once a wave is actually customized - the real LA32 PCM
+	// engine only supports "loop the whole stored sample" or "play once", no loop start point
+	// or ping-pong (a genuine hardware limitation, not a missing feature here).
+	if (processor.hasCustomPcmWave(currentWave)) {
+		menu.addItem(kToggleLoopId, juce::String("Loop: ") + (processor.getCustomPcmWaveLoop(currentWave) ? "ON" : "OFF"));
+	}
+
+	menu.addItem(kRestoreFactoryId, "Restore factory sample",
+	             processor.hasCustomPcmWave(currentWave));
 
 	menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
-		[this, pcmCell](int result) {
+		[this, pcmCell, currentWave, libraryFiles](int result) {
 			if (result <= 0) return; // отменено
-			setValue(pcmCell, result - 1);
+			if (result <= 128) {
+				setValue(pcmCell, result - 1);
+			} else if (result == kLoadFromFileId) {
+				auto *chooser = new juce::FileChooser("Choose a custom sample for PCM wave "
+					+ juce::String(currentWave + 1));
+				chooser->launchAsync(juce::FileBrowserComponent::openMode
+				                         | juce::FileBrowserComponent::canSelectFiles,
+				                     [this, currentWave, chooser](const juce::FileChooser &fc) {
+					                     const auto file = fc.getResult();
+					                     if (file != juce::File()) processor.loadCustomPcmWave(currentWave, file);
+					                     delete chooser;
+				                     });
+			} else if (result == kRestoreFactoryId) {
+				processor.restoreFactoryPcmWave(currentWave);
+			} else if (result == kToggleLoopId) {
+				processor.setCustomPcmWaveLoop(currentWave, !processor.getCustomPcmWaveLoop(currentWave));
+			} else if (result == kChooseFolderId) {
+				auto *chooser = new juce::FileChooser("Choose your sample library folder",
+					D110AudioProcessor::getCustomSampleFolder().isNotEmpty()
+						? juce::File(D110AudioProcessor::getCustomSampleFolder())
+						: juce::File());
+				chooser->launchAsync(juce::FileBrowserComponent::openMode
+				                         | juce::FileBrowserComponent::canSelectDirectories,
+				                     [currentWave, chooser](const juce::FileChooser &fc) {
+					                     const auto dir = fc.getResult();
+					                     if (dir != juce::File())
+						                     D110AudioProcessor::setCustomSampleFolder(dir.getFullPathName());
+					                     delete chooser;
+				                     });
+			} else if (result >= kLibraryBaseId && result - kLibraryBaseId < libraryFiles.size()) {
+				processor.loadCustomPcmWave(currentWave, libraryFiles[result - kLibraryBaseId]);
+			}
 		});
 }
 

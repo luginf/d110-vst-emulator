@@ -5,6 +5,26 @@ namespace d110ui {
 namespace {
 
 Theme currentTheme = Theme::Dark;
+ThemeMode currentMode = ThemeMode::Dark;
+
+// Re-resolves currentTheme from currentMode - the only place System gets turned into an
+// actual Dark/Light. Kept separate from setThemeMode() itself so the live OS-change listener
+// below can call straight into it without re-registering anything.
+void applyResolvedTheme();
+
+// Registered lazily (only once System is picked at all) rather than unconditionally at
+// startup - juce::Desktop::getInstance() touches the message manager, which isn't guaranteed
+// constructed yet this early on every platform/host.
+struct SystemThemeWatcher : public juce::DarkModeSettingListener {
+	void darkModeSettingChanged() override {
+		if (currentMode == ThemeMode::System) applyResolvedTheme();
+	}
+};
+SystemThemeWatcher &systemThemeWatcher() {
+	static SystemThemeWatcher watcher;
+	return watcher;
+}
+bool systemThemeWatcherRegistered = false;
 
 // Dark palette - the same numbers that used to be scattered across PluginEditor.cpp and
 // D110SequencerPanel.cpp as local kEdXxx constants/literals; the values didn't change, just
@@ -83,13 +103,28 @@ const Palette kLight {
 	juce::Colour(0xffd0311f), // seqArmDot
 };
 
+void applyResolvedTheme() {
+	currentTheme = currentMode == ThemeMode::System
+	                   ? (juce::Desktop::getInstance().isDarkModeActive() ? Theme::Dark : Theme::Light)
+	                   : (currentMode == ThemeMode::Light ? Theme::Light : Theme::Dark);
+	sharedLookAndFeel().refresh();
+}
+
 } // namespace
 
 Theme getTheme() { return currentTheme; }
-void setTheme(Theme theme) {
-	currentTheme = theme;
-	sharedLookAndFeel().refresh();
+void setTheme(Theme theme) { setThemeMode(theme == Theme::Light ? ThemeMode::Light : ThemeMode::Dark); }
+
+ThemeMode getThemeMode() { return currentMode; }
+void setThemeMode(ThemeMode mode) {
+	currentMode = mode;
+	if (mode == ThemeMode::System && !systemThemeWatcherRegistered) {
+		juce::Desktop::getInstance().addDarkModeSettingListener(&systemThemeWatcher());
+		systemThemeWatcherRegistered = true;
+	}
+	applyResolvedTheme();
 }
+
 const Palette &palette() { return currentTheme == Theme::Light ? kLight : kDark; }
 
 LookAndFeel::LookAndFeel() { refresh(); }

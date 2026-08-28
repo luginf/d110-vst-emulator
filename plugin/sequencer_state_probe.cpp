@@ -47,7 +47,7 @@ int main() {
 		// D110Keyboard's own config - stored on the processor precisely so this round-trips
 		// without an editor ever having existed (see PluginProcessor.h's own comment).
 		proc.setKeyboardMidiChannel(7);
-		proc.setKeyboardOmni(true);
+		proc.setMidiRemap(true);
 		proc.setKeyboardPcInputEnabled(true);
 		proc.setKeyboardPcLayout(1); // AZERTY
 
@@ -81,7 +81,7 @@ int main() {
 	check(eng2.isTrackSoloed(4), "track 4 solo restored");
 	check(eng2.getTrackQuantize(2) == d110seq::QuantizeGrid::eighth, "track 2 quantize restored");
 	check(proc2.getKeyboardMidiChannel() == 7, "keyboard MIDI channel restored");
-	check(proc2.getKeyboardOmni(), "keyboard omni restored");
+	check(proc2.getMidiRemap(), "keyboard MIDI remap restored");
 	check(proc2.getKeyboardPcInputEnabled(), "keyboard PC-input-enabled restored");
 	check(proc2.getKeyboardPcLayout() == 1, "keyboard PC layout (AZERTY) restored");
 	check(proc2.getUiThemeLight(), "UI theme (light) restored");

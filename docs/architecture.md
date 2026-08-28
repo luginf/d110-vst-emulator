@@ -88,11 +88,33 @@ program changes sent by the DAW.
 
 **Every incoming channel reaches the firmware unchanged, by default** - a DAW sending Part 1
 on channel 2 and Part 3 on channel 4 lands on those parts exactly as sent. Right-click the
-panel (or the on-screen test keyboard) for **MIDI Channel / Omni**: turning Omni off remaps
-*all* incoming channel-voice messages - host-routed or from a directly-opened port, not just
-notes played on the on-screen keyboard - onto one chosen channel instead. That only makes
-sense if your own MIDI controller can only ever transmit on a single channel and you want the
-on-screen keyboard's channel picker to stand in for a real one; leave Omni on otherwise.
+panel (or the on-screen test keyboard) for **MIDI Channel / MIDI Remap**: turning MIDI Remap
+on forces *all* incoming channel-voice messages - host-routed or from a directly-opened port,
+not just notes played on the on-screen keyboard - onto one chosen channel instead. That only
+makes sense if your own MIDI controller can only ever transmit on a single channel and you
+want the on-screen keyboard's channel picker to stand in for a real one; leave it off
+otherwise.
+
+## Custom PCM samples (desktop only)
+
+The TONE tab's **PCM** field can do more than pick one of the 128 named factory samples: right-
+click it for **Load custom sample from file...**, a **Sample Library** submenu (pick a
+configured folder once, then choose any audio file in it by name), and **Restore factory
+sample**. Loading a file replaces what that wave *number* actually sounds like, in memory -
+every part and patch that references it hears the change immediately, the same as swapping a
+ROM chip, not a one-off override for a single tone. Any format JUCE can decode is accepted; the
+audio is resampled and fit to that wave's own fixed length (silence-padded if shorter, cut off
+if longer - there is no separate "extend the slot" option). Once a wave is customized, the field
+also shows the source file's name instead of the factory one, and a **Loop: ON/OFF** entry
+appears to override whether it sustains by repeating or plays once, independent of what the
+factory wave used. The whole override, including the loop choice, is part of the plugin's saved
+state, so a project or `.midiseq` reload brings it back automatically. This does not touch any
+ROM file on disk - custom PCM ROM images cannot be loaded directly, since the sound engine
+validates the real ROM's content before it will run at all.
+
+The real LA32 PCM engine only supports two loop shapes: repeat the *entire* stored sample from
+its start, or play it once and stop. There is no loop-start point and no ping-pong mode - that
+is a hardware limitation carried into the emulation, not a missing option in this feature.
 
 ## Firmware memory and plugin settings
 

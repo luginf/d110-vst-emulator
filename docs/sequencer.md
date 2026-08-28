@@ -53,6 +53,12 @@ range); while PUNCH is active, recording is also restricted to that range.
 Arm a track, press **REC** (or click it while stopped). **REC: mode** (click to cycle) picks how
 the take is folded into the track:
 
+**Nonet Sequencer only:** capture accepts any incoming MIDI channel while a track is armed - a
+single controller plugged into MIDI In records onto whichever track is armed regardless of what
+channel it actually sends on. The D-110 plugin, which can have a DAW driving several Parts on
+their own distinct channels at once, still requires the incoming channel to match the armed
+track's own.
+
 - **Overdub** - adds new notes; nothing already there is removed.
 - **Replace** - erases only the span you actually recorded.
 - **Replace to end** - erases everything on the track from the take's start onward.
@@ -133,6 +139,13 @@ Click a track's **CH** readout for **Program Change...** - pick a program 1-128 
 plugin only) has no Program Change equivalent, so its dialog reads **CC Change** instead -
 Volume/Pan only.
 
+**Nonet Sequencer only:** load a MusE-style instrument definition file (**OPTIONS > Instrument
+Definition (.idf)**) to pick programs by name instead of by number. Once loaded, the Program
+Change dialog gets a **Pick instrument...** button listing every patch the file defines,
+grouped the same way the file groups them; picking one fills in Program (and Bank/Bank LSB,
+when the file sets them) - still just plain numbers in those fields afterwards, so a pick can
+be nudged by hand before OK.
+
 Wire format differs between the two apps (Nonet Sequencer sends real MIDI Bank Select/CC7/CC10;
 the D-110 plugin uses its own native SysEx addressing, since the real D-110 predates MIDI Bank
 Select and has no MIDI Channel Volume/Pan concept at all). This is per-song-slot data, exactly
@@ -162,7 +175,8 @@ just works from this app's MIDI Out. Unlike the plugin, this app also thrus MIDI
 MIDI Out, since there's no internal synth to hear what you're playing while you record.
 
 Underneath the transport is the same on-screen test keyboard the plugin has - a two-octave mouse
-piano plus optional PC keyboard input, right-click for MIDI routing (channel or omni).
+piano plus optional PC keyboard input, right-click for MIDI routing (a fixed channel, or MIDI
+Remap off to broadcast to all 16 at once).
 
 Its own state lives in its own settings file, separate from the plugin's:
 

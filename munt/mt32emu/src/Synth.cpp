@@ -1096,6 +1096,63 @@ bool Synth::isOpen() const {
 	return opened;
 }
 
+// D-110 emulator local addition (not upstream munt) - see Synth.h's own comment.
+bool Synth::getPCMWaveInfo(Bit32u waveIndex, Bit32u &addrOut, Bit32u &lenOut, bool &loopOut) const {
+	if (!opened || (controlROMMap == NULL) || (waveIndex >= controlROMMap->pcmCount)) return false;
+	addrOut = pcmWaves[waveIndex].addr;
+	lenOut = pcmWaves[waveIndex].len;
+	loopOut = pcmWaves[waveIndex].loop;
+	return true;
+}
+
+// D-110 emulator local addition (not upstream munt) - see Synth.h's own comment.
+bool Synth::setPCMWaveSamples(Bit32u waveIndex, const Bit16s *logSamples, Bit32u numSamples) {
+	if (!opened || (controlROMMap == NULL) || (waveIndex >= controlROMMap->pcmCount)) return false;
+	const PCMWaveEntry &wave = pcmWaves[waveIndex];
+	const Bit32u toCopy = (numSamples < wave.len) ? numSamples : wave.len;
+	for (Bit32u i = 0; i < toCopy; i++) {
+		pcmROMData[wave.addr + i] = logSamples[i];
+	}
+	return true;
+}
+
+// D-110 emulator local addition (not upstream munt) - see Synth.h's own comment.
+bool Synth::getPCMWaveSamples(Bit32u waveIndex, Bit16s *logSamplesOut, Bit32u numSamples) const {
+	if (!opened || (controlROMMap == NULL) || (waveIndex >= controlROMMap->pcmCount)) return false;
+	const PCMWaveEntry &wave = pcmWaves[waveIndex];
+	const Bit32u toCopy = (numSamples < wave.len) ? numSamples : wave.len;
+	for (Bit32u i = 0; i < toCopy; i++) {
+		logSamplesOut[i] = pcmROMData[wave.addr + i];
+	}
+	return true;
+}
+
+// D-110 emulator local addition (not upstream munt) - see Synth.h's own comment.
+bool Synth::setPCMWavePitchOffset(Bit32u waveIndex, Bit16u pitchOffset) {
+	if (!opened || (controlROMMap == NULL) || (waveIndex >= controlROMMap->pcmCount)) return false;
+	ControlROMPCMStruct *s = pcmWaves[waveIndex].controlROMPCMStruct;
+	if (s == NULL) return false;
+	s->pitchLSB = Bit8u(pitchOffset & 0xFF);
+	s->pitchMSB = Bit8u((pitchOffset >> 8) & 0xFF);
+	return true;
+}
+
+// D-110 emulator local addition (not upstream munt) - see Synth.h's own comment.
+bool Synth::getPCMWavePitchOffset(Bit32u waveIndex, Bit16u &pitchOffsetOut) const {
+	if (!opened || (controlROMMap == NULL) || (waveIndex >= controlROMMap->pcmCount)) return false;
+	const ControlROMPCMStruct *s = pcmWaves[waveIndex].controlROMPCMStruct;
+	if (s == NULL) return false;
+	pitchOffsetOut = Bit16u((Bit16u(s->pitchMSB) << 8) | Bit16u(s->pitchLSB));
+	return true;
+}
+
+// D-110 emulator local addition (not upstream munt) - see Synth.h's own comment.
+bool Synth::setPCMWaveLoop(Bit32u waveIndex, bool loop) {
+	if (!opened || (controlROMMap == NULL) || (waveIndex >= controlROMMap->pcmCount)) return false;
+	pcmWaves[waveIndex].loop = loop;
+	return true;
+}
+
 void Synth::flushMIDIQueue() {
 	if (midiQueue == NULL) return;
 	for (;;) {

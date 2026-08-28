@@ -38,7 +38,7 @@ D110Keyboard::D110Keyboard(D110KeyboardHost &h) : host(h) {
 	// D110KeyboardHost's own accessors for why the host, not this component, is the
 	// actual source of truth.
 	midiChannel = host.getKeyboardMidiChannel();
-	omni = host.getKeyboardOmni();
+	midiRemap = host.getMidiRemap();
 	pcKeyboardEnabled = host.getKeyboardPcInputEnabled();
 	pcLayout = host.getKeyboardPcLayout() == 1 ? PcLayout::azerty : PcLayout::qwerty;
 
@@ -59,10 +59,10 @@ D110Keyboard::D110Keyboard(D110KeyboardHost &h) : host(h) {
 D110Keyboard::~D110Keyboard() { stopTimer(); setHeldNote(-1); releaseAllPcNotes(); }
 
 void D110Keyboard::sendNote(int note, float velocity, bool on) {
-	if (omni) {
-		for (int ch = 1; ch <= 16; ++ch) host.injectTestNote(ch, note, velocity, on);
-	} else {
+	if (midiRemap) {
 		host.injectTestNote(midiChannel, note, velocity, on);
+	} else {
+		for (int ch = 1; ch <= 16; ++ch) host.injectTestNote(ch, note, velocity, on);
 	}
 }
 
@@ -77,15 +77,15 @@ void D110Keyboard::releaseAllPcNotes() {
 void D110Keyboard::showContextMenu() {
 	juce::PopupMenu channelMenu;
 	for (int ch = 1; ch <= 16; ++ch)
-		channelMenu.addItem(1000 + ch, "Channel " + juce::String(ch), true, !omni && midiChannel == ch);
+		channelMenu.addItem(1000 + ch, "Channel " + juce::String(ch), true, midiRemap && midiChannel == ch);
 
 	juce::PopupMenu layoutMenu;
 	layoutMenu.addItem(2001, "QWERTY", true, pcLayout == PcLayout::qwerty);
 	layoutMenu.addItem(2002, "AZERTY", true, pcLayout == PcLayout::azerty);
 
 	juce::PopupMenu m;
-	m.addSubMenu("MIDI Channel", channelMenu, !omni);
-	m.addItem(3000, "Omni (all 16 channels at once)", true, omni);
+	m.addSubMenu("MIDI Channel", channelMenu, midiRemap);
+	m.addItem(3000, "MIDI Remap (send on one channel instead of all 16)", true, midiRemap);
 	m.addSeparator();
 	m.addItem(4000, "PC keyboard input (tracker-style)", true, pcKeyboardEnabled);
 	m.addSubMenu("PC keyboard layout", layoutMenu, pcKeyboardEnabled);
@@ -97,8 +97,8 @@ void D110Keyboard::showContextMenu() {
 			return;
 		}
 		if (result == 3000) {
-			omni = !omni;
-			host.setKeyboardOmni(omni);
+			midiRemap = !midiRemap;
+			host.setMidiRemap(midiRemap);
 			return;
 		}
 		if (result == 4000) {
@@ -148,12 +148,12 @@ bool D110Keyboard::isPcKeyDownForNote(int note) const {
 }
 
 void D110Keyboard::timerCallback() {
-	// Channel/omni can now also change from outside this component - D110Panel's own
+	// Channel/remap can now also change from outside this component - D110Panel's own
 	// right-click menu offers the same setting (Github issue #4) so it's reachable without
 	// finding/opening this drawer. Re-read every tick, the same cadence isNoteActive() polling
 	// already runs at, rather than only once at construction.
 	midiChannel = host.getKeyboardMidiChannel();
-	omni = host.getKeyboardOmni();
+	midiRemap = host.getMidiRemap();
 	repaint();
 }
 

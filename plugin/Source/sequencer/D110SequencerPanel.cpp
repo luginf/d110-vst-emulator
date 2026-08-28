@@ -791,10 +791,65 @@ void D110SequencerPanel::promptForTrackProgram(int track) {
 			if (currentPan < 0 && panHint >= 0)
 				panEditor->setTextToShowWhenEmpty("now: " + juce::String(panHint), juce::Colours::grey);
 	}
+
+	// "Pick instrument..." - Nonet Sequencer only (supportsInstrumentDefinitions()), and only
+	// once a .idf has actually been loaded (OPTIONS > Instrument Definition) - see
+	// D110SequencerHost::supportsInstrumentDefinitions()'s own comment for why the D-110 plugin
+	// never offers this. Fills the Program/Bank/Bank LSB fields above by name rather than
+	// requiring the number to be looked up by hand; still just text in those same fields
+	// afterwards; nothing commits until OK. A patch whose .idf entry left bank/bankLsb unset
+	// (-1) leaves whatever's already typed there alone, rather than clobbering a manual pick
+	// with a meaningless value.
+	juce::TextButton *pickButton = nullptr;
+	if (hasProgram && processor.supportsInstrumentDefinitions()) {
+		const auto patches = processor.getInstrumentPatches();
+		if (!patches.empty()) {
+			pickButton = new juce::TextButton("Pick instrument (" + processor.getInstrumentDefinitionName() + ")...");
+			// AlertWindow draws each custom component's OWN Component::getName() as a floating
+			// label above it (see its own paint(), the same way it labels a text editor) -
+			// TextButton's constructor sets that name to the button text itself, which would
+			// otherwise draw the button's own caption a second time right above it.
+			pickButton->setName({});
+			// AlertWindow::updateLayout() sizes its whole dialog off each custom component's
+			// OWN getWidth()/getHeight() (see its own loop over customComps) - an unsized
+			// component contributes zero height and is invisible, so this has to be set before
+			// addCustomComponent() below, not left to the button's own default.
+			pickButton->setSize(280, 26);
+			pickButton->onClick = [aw, pickButton, patches, hasLsb] {
+				juce::PopupMenu menu;
+				juce::PopupMenu sub;
+				juce::String currentGroup;
+				int id = 0;
+				auto flushGroup = [&] {
+					if (sub.getNumItems() > 0) menu.addSubMenu(currentGroup.isEmpty() ? "(ungrouped)" : currentGroup, sub);
+					sub = juce::PopupMenu();
+				};
+				for (auto &p : patches) {
+					if (p.group != currentGroup) { flushGroup(); currentGroup = p.group; }
+					sub.addItem(++id, p.name);
+				}
+				flushGroup();
+				menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(pickButton), [aw, patches, hasLsb](int result) {
+					if (result <= 0 || result > (int) patches.size()) return;
+					const auto &p = patches[(size_t) (result - 1)];
+					if (auto *programEditor = aw->getTextEditor("program"))
+						programEditor->setText(juce::String(p.prog + 1), juce::dontSendNotification);
+					if (p.bank >= 0)
+						if (auto *bankEditor = aw->getTextEditor("bank"))
+							bankEditor->setText(juce::String(p.bank + 1), juce::dontSendNotification);
+					if (hasLsb && p.bankLsb >= 0)
+						if (auto *bankLsbEditor = aw->getTextEditor("bankLsb"))
+							bankLsbEditor->setText(juce::String(p.bankLsb + 1), juce::dontSendNotification);
+				});
+			};
+			aw->addCustomComponent(pickButton);
+		}
+	}
+
 	aw->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
 	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 	aw->enterModalState(true, juce::ModalCallbackFunction::create(
-		[this, aw, track, hasProgram, hasLsb, hasVolPan](int result) {
+		[this, aw, track, hasProgram, hasLsb, hasVolPan, pickButton](int result) {
 		if (result == 1) {
 			if (hasProgram) {
 				const juce::String text = aw->getTextEditorContents("program").trim();
@@ -810,6 +865,7 @@ void D110SequencerPanel::promptForTrackProgram(int track) {
 			}
 			repaint();
 		}
+		delete pickButton;
 		delete aw;
 	}));
 }
@@ -1699,7 +1755,11 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 		// time, so the second one breaks the first's own callback and the file you picked
 		// never actually loads. Alan hit exactly this, 2026-08-22.
 		++longPressToken;
-		auto *chooser = new juce::FileChooser("Load a MIDI file into the sequencer", processor.getLastDialogDir(), "*.mid");
+		// "*.MID" alongside "*.mid" because Linux's native picker (zenity/kdialog) matches
+		// filters with a case-sensitive glob - see PluginEditor.cpp's SysEx-import chooser
+		// (TieredNativeFileChooser) for the fuller explanation and its own "*.*" fallback,
+		// deliberately not duplicated here to keep this dialog's default filter narrow.
+		auto *chooser = new juce::FileChooser("Load a MIDI file into the sequencer", processor.getLastDialogDir(), "*.mid;*.MID");
 		chooser->launchAsync(
 			juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
 			[this, chooser](const juce::FileChooser &fc) {
@@ -1716,7 +1776,7 @@ void D110SequencerPanel::mouseDown(const juce::MouseEvent &e) {
 	}
 	if (saveBounds.contains(p)) {
 		++longPressToken; // see loadBounds' own comment just above
-		auto *chooser = new juce::FileChooser("Save the sequencer as a MIDI file", processor.getLastDialogDir(), "*.mid");
+		auto *chooser = new juce::FileChooser("Save the sequencer as a MIDI file", processor.getLastDialogDir(), "*.mid;*.MID");
 		chooser->launchAsync(
 			juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
 				| juce::FileBrowserComponent::warnAboutOverwriting,

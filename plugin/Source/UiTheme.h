@@ -11,6 +11,10 @@ namespace d110ui {
 
 enum class Theme { Dark, Light };
 
+// The user-facing choice, as opposed to Theme above (the resolved result actually painted
+// with). System tracks the OS dark-mode setting live - see setThemeMode()'s own comment.
+enum class ThemeMode { Dark, Light, System };
+
 struct Palette {
 	juce::Colour panelBg;   // drawer background (kEdBack, keyboard/sequencer background)
 	juce::Colour box;       // field/button rectangle
@@ -47,8 +51,16 @@ struct Palette {
 };
 
 Theme getTheme();
-void setTheme(Theme theme);
+void setTheme(Theme theme); // sets an explicit theme - equivalent to setThemeMode(Dark/Light)
 const Palette &palette();
+
+// setThemeMode(System) resolves immediately against juce::Desktop::isDarkModeActive() and
+// keeps re-resolving on every live OS dark-mode change from then on (a DarkModeSettingListener
+// registered internally, once, the first time System is picked) - no polling or refresh call
+// needed at any call site. getTheme()/palette() above always reflect the last resolved result,
+// System included, so painting code never needs to know the mode was System in the first place.
+ThemeMode getThemeMode();
+void setThemeMode(ThemeMode mode);
 
 // A juce::LookAndFeel driven by palette() - keeps stock JUCE components (AlertWindow,
 // AudioDeviceSelectorComponent, PopupMenu, ComboBox, ...) themed consistently with the

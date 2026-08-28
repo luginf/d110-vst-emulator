@@ -20,6 +20,7 @@
 #include "Source/PluginProcessor.h"
 #include "Source/PluginEditor.h"
 #include "Source/D110Keyboard.h"
+#include "Source/UiTheme.h"
 #include "Source/sequencer/D110SequencerPanel.h"
 #include "Source/sequencer/D110SequencerRetroPanel.h"
 
@@ -41,6 +42,16 @@ public:
 			D110AudioProcessor::setCustomRomFolder(romBringUpDir().getFullPathName());
 		processor.reloadRomsAndPowerOn();
 		loadPersistedState();
+
+			// Theme (Options -> Theme), added 2026-08-28: the app never applied its own saved
+			// uiThemeLight/uiThemeFollowSystem to d110ui at all before this (grep confirmed zero
+			// prior d110ui:: use anywhere in this file) - D110Keyboard already reads
+			// d110ui::palette() for its own colours, so it was silently stuck on the Dark default
+			// this whole time. juce::LookAndFeel::setDefaultLookAndFeel is the same call
+			// NonetSeqMain.cpp makes to theme stock JUCE chrome (the Options popup menu itself
+			// among it) consistently with the hand-painted keyboard/sequencer.
+			juce::LookAndFeel::setDefaultLookAndFeel(&d110ui::sharedLookAndFeel());
+			applyThemeMode();
 
 		// Full panel (kRefW=2124) squeezes to illegibility on a phone-portrait width - the LCD
 		// and part indicators end up a few pixels tall. Compact mode (see D110Panel::kCompactRefW,
@@ -248,11 +259,17 @@ public:
 			auto transport = area.removeFromTop(transportH);
 			menuButton.setBounds(transport.removeFromRight(menuButtonW).reduced(shrinkHamburger ? 3 : 6));
 			if (!inRetroSequencer) {
-				const int halfWidth = transport.getWidth() / 2;
-				playButton.setBounds(transport.removeFromLeft(halfWidth).reduced(6));
-				stopButton.setBounds(transport.reduced(6));
-
-				statusLabel.setBounds(area.removeFromTop(40).reduced(10, 0));
+				// Alan's request, 2026-08-28: Play/Stop used to split the WHOLE transport row
+				// width between them (very wide, worst in landscape where that row is widest),
+				// and Ready/status sat in its own dedicated 40px strip right below, stealing
+				// that height from the panel/keyboard permanently, playing or not. Both buttons
+				// now get one fixed, modest width instead of stretching, and Ready shares the
+				// rest of the same row on their right rather than a strip of its own - the 40px
+				// this used to cost the keyboard in Panel mode is now reclaimed outright.
+				constexpr int kTransportButtonW = 84;
+				playButton.setBounds(transport.removeFromLeft(kTransportButtonW).reduced(6));
+				stopButton.setBounds(transport.removeFromLeft(kTransportButtonW).reduced(6));
+				statusLabel.setBounds(transport.reduced(10, 6));
 			}
 		}
 
@@ -358,8 +375,8 @@ private:
 	// button - one row of controls, not two, since landscape leaves the panel/keyboard little
 	// enough vertical room already). "Sequencer" and "Keyboard channel..." added the same day,
 	// once a USB MIDI keyboard became a real input source and not just the on-screen one -
-	// Omni/channel selection actually matters now, and so does having a sequencer view to
-	// record into.
+	// MIDI Remap/channel selection actually matters now, and so does having a sequencer view
+	// to record into.
 	// Shared between the app's own hamburger button and (2026-08-22) the grid sequencer's own
 	// bar-navigation menu button - see D110SequencerPanel::onBarMenuButtonExtra's own comment
 	// for why the sequencer needs this too (its own transport replaces the app's hamburger
@@ -372,8 +389,9 @@ private:
 		// in the app is sitting there showing the "ROMs not found" error instead of the panel.
 		m.addItem("Choose ROM files...", [this] { chooseRomFolder(); });
 		m.addItem("Load MIDI file...", [this] { chooseMidiFile(); });
+		m.addItem("Import SysEx/MIDI Bank...", [this] { chooseSysexFile(); });
 		m.addItem(showingSequencer ? "Front Panel" : "Sequencer", [this] { toggleSequencerView(); });
-		// D110Keyboard::showContextMenu() is the exact same channel/omni/PC-keyboard menu the
+		// D110Keyboard::showContextMenu() is the exact same channel/remap/PC-keyboard menu the
 		// desktop keyboard's right-click shows - reached here directly instead of reimplementing
 		// it, since there's no right mouse button (or safe long-press substitute - see
 		// D110Keyboard.h) on a touchscreen.
@@ -412,6 +430,23 @@ private:
 		options.addItem("Retro Sequencer (D-pad style)", true, processor.getSequencerRetroMode(),
 		                 [this] { toggleSequencerRetroMode(); });
 		options.addSeparator();
+		// Alan's request, 2026-08-28. System resolves against the OS dark-mode setting right
+		// away and keeps following it live (see UiTheme.h's setThemeMode() comment) - no restart
+		// needed either way. The checkmark reflects the stored MODE (light/dark/system), not the
+		// resolved theme, so "System" stays checked even while it happens to currently resolve
+		// to whichever of Dark/Light the OS is in.
+		{
+			const bool followSystem = processor.getUiThemeFollowSystem();
+			juce::PopupMenu theme;
+			theme.addItem("Dark", true, !followSystem && !processor.getUiThemeLight(),
+			              [this] { setThemeMode(d110ui::ThemeMode::Dark); });
+			theme.addItem("Light", true, !followSystem && processor.getUiThemeLight(),
+			              [this] { setThemeMode(d110ui::ThemeMode::Light); });
+			theme.addItem("System (follow OS)", true, followSystem,
+			              [this] { setThemeMode(d110ui::ThemeMode::System); });
+			options.addSubMenu("Theme", theme);
+		}
+		options.addSeparator();
 		// Manual escape hatch for resized()'s own nav-bar-avoidance guess (see its comment) -
 		// Alan's request, 2026-08-22, after a tablet where the nav bar apparently stays
 		// bottom-anchored even in landscape (rather than moving to a side the way phones do)
@@ -435,6 +470,21 @@ private:
 		juce::PopupMenu m;
 		buildAppMenu(m);
 		m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(menuButton));
+	}
+
+	// Resolves the persisted uiThemeLight/uiThemeFollowSystem pair into an actual d110ui call -
+	// shared by the constructor (applying whatever was saved last session) and setThemeMode()
+	// below (applying a fresh menu pick and persisting it in the same step).
+	void applyThemeMode() {
+		d110ui::setThemeMode(processor.getUiThemeFollowSystem()  ? d110ui::ThemeMode::System
+		                      : processor.getUiThemeLight()      ? d110ui::ThemeMode::Light
+		                                                          : d110ui::ThemeMode::Dark);
+	}
+
+	void setThemeMode(d110ui::ThemeMode mode) {
+		processor.setUiThemeFollowSystem(mode == d110ui::ThemeMode::System);
+		if (mode != d110ui::ThemeMode::System) processor.setUiThemeLight(mode == d110ui::ThemeMode::Light);
+		applyThemeMode();
 	}
 
 	void toggleSequencerRetroMode() {
@@ -467,6 +517,63 @@ private:
 				auto url = fc.getURLResult();
 				if (url != juce::URL()) loadAndPlayMidi(url);
 			});
+	}
+
+	// Same "Import SysEx/MIDI Bank..." feature the desktop panel's right-click Options menu has
+	// (PluginEditor.cpp, processor.importSysexBank()) - loads a real Roland librarian dump (.syx,
+	// or a .mid with SysEx events embedded) and plays it down the emulated MIDI IN cable, which is
+	// how a factory-empty internal Tone Memory (Bank I) actually gets populated. importSysexBank()
+	// takes a real juce::File and reads it synchronously (loadFileAsData()/JUCE's own MidiFile
+	// reader), neither of which work on a bare content:// SAF URI - same problem chooseMidiFile()
+	// solves via AndroidDocument, but that only gets a stream, not a juce::File importSysexBank()
+	// can hand to the firmware. So: copy the picked document into a real path first (the same copy
+	// trick copyRomFilesAndReload() uses for ROM files), then import from that path - deleting the
+	// copy is safe immediately afterwards since importSysexBank() has already fully parsed it by
+	// the time it returns (no async re-read of the file later).
+	void chooseSysexFile() {
+		// No filter pattern, deliberately - same reasoning as chooseRomFolder() below. JUCE's
+		// Android FileChooser (juce_FileChooser_android.cpp, convertFiltersToMimeTypes())
+		// resolves each "*.ext" token through a small hardcoded extension->MIME table
+		// (juce_common_MimeTypes.cpp); ".syx"/".smf" aren't in it, so they contribute nothing,
+		// and Android's picker then greys out (silently un-tappable - no callback ever fires,
+		// exactly what Alan hit) any file whose own sniffed MIME doesn't match the resulting
+		// EXTRA_MIME_TYPES array. Unlike the desktop FileBrowserComponent's own glob matcher
+		// (PluginEditor.cpp's "*.*" trick), a trailing "*.*" token does NOT mean "match
+		// everything" here - "*" isn't a table entry either, so it's a no-op. Passing no filter
+		// at all skips EXTRA_MIME_TYPES entirely (see the "if (mimeTypes.size() > 0)" guard in
+		// that same constructor) - nothing is filtered, nothing greyed out.
+		fileChooser = std::make_unique<juce::FileChooser>("Choose a SysEx or MIDI bank file", juce::File());
+		fileChooser->launchAsync(
+			juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+			[this](const juce::FileChooser &fc) {
+				auto url = fc.getURLResult();
+				if (url != juce::URL()) copySysexFileAndImport(url);
+			});
+	}
+
+	void copySysexFileAndImport(const juce::URL &url) {
+		auto doc = juce::AndroidDocument::fromDocument(url);
+		auto in = doc.hasValue() ? doc.createInputStream() : nullptr;
+		if (in == nullptr) {
+			statusLabel.setText("Could not open: " + url.getFileName(), juce::dontSendNotification);
+			return;
+		}
+
+		auto tempFile = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+			.getChildFile("sysex-import-" + url.getFileName());
+		tempFile.deleteFile();
+		auto out = tempFile.createOutputStream();
+		if (out == nullptr || out->writeFromInputStream(*in, -1) <= 0) {
+			out.reset();
+			tempFile.deleteFile();
+			statusLabel.setText("Could not read: " + url.getFileName(), juce::dontSendNotification);
+			return;
+		}
+		out.reset();
+
+		processor.importSysexBank(tempFile);
+		tempFile.deleteFile();
+		statusLabel.setText(processor.getLastImportMessage(), juce::dontSendNotification);
 	}
 
 	// Android's equivalent of the desktop Utility tab's "ROM FOLDER" picker (PluginEditor.cpp,

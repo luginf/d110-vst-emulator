@@ -1546,6 +1546,49 @@ target_link_libraries(d110_native_plugin_smoke PRIVATE
     D110PanelData MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
 
+# Custom PCM wave sample injection (loadCustomPcmWave()/restoreFactoryPcmWave()) - see the
+# probe's own header comment. Same shape as d110_native_plugin_smoke just above.
+add_executable(d110_pcm_custom_sample pcm_custom_sample_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
+target_include_directories(d110_pcm_custom_sample PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_pcm_custom_sample PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_pcm_custom_sample PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors juce::juce_audio_formats)
+
+# One-off measurement: what PCM wave pitch-calibration value makes a custom sample play back
+# at its own recorded pitch (see the probe's own header comment for the full story - this is
+# what tuned kNeutralPcmPitchOffset in PluginProcessor.cpp). Not a regression test in the usual
+# sense (its answer is baked into the constant once), kept for re-verification if TVP.cpp's
+# pitch model or the resample target rate ever changes.
+add_executable(d110_pcm_pitch_calibration pcm_pitch_calibration_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/D110Keyboard.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
+target_include_directories(d110_pcm_pitch_calibration PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_pcm_pitch_calibration PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_pcm_pitch_calibration PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors juce::juce_audio_formats)
+
 # Same shape as d110_native_plugin_smoke - the real D110AudioProcessor, wrapperType forced to
 # Standalone exactly as JUCE's own Standalone wrapper does it (see the probe's own header
 # comment), driven by prepareToPlay()/processBlock() directly. Only built when libjack was

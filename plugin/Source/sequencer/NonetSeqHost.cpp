@@ -194,24 +194,33 @@ void NonetSeqHost::advance(int numSamples, float *const *outputChannelData, int 
 		if (osMidiOut != nullptr && fromPort.getNumEvents() > 0) osMidiOut->sendBlockOfMessagesNow(fromPort);
 	}
 
+	// Capture accepts ANY incoming channel while a track is armed, not just the one that
+	// track happens to be set to (Alan's request, 2026-08-26): this app's usual setup is one
+	// physical USB controller plugged straight into MIDI In, which sends on whatever channel
+	// it always sends on (often a fixed 1) - without this, recording onto any other track
+	// meant first flipping MIDI Remap on and hand-picking a channel to match, every time a
+	// different track got armed. D110AudioProcessor's own equivalent (PluginProcessor.cpp)
+	// deliberately keeps the channel match instead - there, a DAW routes several Parts at
+	// once over their own distinct channels simultaneously, and capture has to tell them
+	// apart; that scenario doesn't apply here. The captured MidiMessage's own channel is
+	// never stored anyway (D110SequencerEngine's per-track data is note-only - see
+	// captureEvent()'s own comment - playback always goes out on channelForTrack()), so
+	// there's nothing to rewrite before capturing, only the gate to drop.
 	const double beatsPerSample = (engine.getTempo() / 60.0) / currentSampleRate;
 	const double windowStartBeats = engine.getPositionBeats();
 	const int armed = engine.isRecording() ? engine.getArmedTrack() : -1;
 	if (armed >= 0) {
-		const int armedChannel = engine.channelForTrack(armed);
 		for (const auto meta : fromPort) {
 			const auto &msg = meta.getMessage();
-			if (msg.isNoteOnOrOff() && msg.getChannel() == armedChannel)
+			if (msg.isNoteOnOrOff())
 				engine.captureEvent(msg, windowStartBeats + static_cast<double>(meta.samplePosition) * beatsPerSample);
 		}
 	}
 
 	const int stepArmed = engine.isStepRecording() ? engine.getArmedTrack() : -1;
 	if (stepArmed >= 0) {
-		const int armedChannel = engine.channelForTrack(stepArmed);
 		for (const auto meta : fromPort) {
 			const auto &msg = meta.getMessage();
-			if (msg.getChannel() != armedChannel) continue;
 			if (msg.isNoteOn()) engine.stepNoteOn(msg.getNoteNumber(), msg.getVelocity());
 			else if (msg.isNoteOff()) engine.stepNoteOff(msg.getNoteNumber());
 		}
@@ -273,7 +282,7 @@ void NonetSeqHost::handleIncomingMidiMessage(juce::MidiInput *, const juce::Midi
 	// while the virtual/PC keyboard (injectTestNote, always stamped with keyboardMidiChannel)
 	// looked like it worked fine.
 	lastMidiInActivityMs.store(juce::Time::getMillisecondCounter());
-	if (!keyboardOmni && m.getChannel() > 0) {
+	if (midiRemap && m.getChannel() > 0) {
 		auto msg = m;
 		msg.setChannel(keyboardMidiChannel);
 		midiCollector.addMessageToQueue(msg);
@@ -315,6 +324,43 @@ int NonetSeqHost::getTrackBankLsb(int track) const {
 void NonetSeqHost::setTrackBankLsb(int track, int bankLsb) {
 	if (track < 0 || track >= d110seq::D110SequencerEngine::kMaxTracks) return;
 	engine.setTrackBankLsb(track, bankLsb);
+}
+
+// MusE-style instrument definition (.idf) - plain XML, one <MidiInstrument name="..."> with
+// any number of <PatchGroup name="..."><Patch name="..." prog="0-based" [hbank="0-based"]
+// [lbank="0-based"] [drum="1"] /></PatchGroup> children (see e.g.
+// /usr/share/muse/instruments/{gm,xg}.idf on a system with MusE installed, or this project's
+// own docs/Roland-D110.idf, generated the other direction - real patch names read off the
+// firmware, exported so MusE/other DAWs can label the D-110's own Program Change). A drum
+// group's own <Patch> entries carry no useful prog/bank distinction for picking a melodic
+// Program Change (they're drum kit names, not GM-numbered patches) - skipped rather than
+// shown as confusingly-numbered picks.
+bool NonetSeqHost::loadInstrumentDefinition(const juce::File &file) {
+	std::unique_ptr<juce::XmlElement> xml(juce::XmlDocument::parse(file));
+	if (xml == nullptr) return false;
+	auto *root = xml->hasTagName("MidiInstrument") ? xml.get() : xml->getChildByName("MidiInstrument");
+	if (root == nullptr) return false;
+
+	std::vector<InstrumentPatch> parsed;
+	for (auto *group : root->getChildWithTagNameIterator("PatchGroup")) {
+		const juce::String groupName = group->getStringAttribute("name");
+		for (auto *patch : group->getChildWithTagNameIterator("Patch")) {
+			if (patch->getBoolAttribute("drum")) continue;
+			InstrumentPatch p;
+			p.group = groupName;
+			p.name = patch->getStringAttribute("name");
+			p.prog = patch->getIntAttribute("prog");
+			p.bank = patch->hasAttribute("hbank") ? patch->getIntAttribute("hbank") : -1;
+			p.bankLsb = patch->hasAttribute("lbank") ? patch->getIntAttribute("lbank") : -1;
+			if (p.name.isNotEmpty()) parsed.push_back(p);
+		}
+	}
+	if (parsed.empty()) return false;
+
+	instrumentPatches = std::move(parsed);
+	instrumentDefinitionName = root->getStringAttribute("name");
+	instrumentDefinitionPath = file.getFullPathName();
+	return true;
 }
 
 int NonetSeqHost::getTrackVolume(int track) const {
@@ -420,7 +466,13 @@ void NonetSeqHost::loadSettings() {
 	engine.setExtraTracksEnabled(xml->getIntAttribute("seqExtraTracks", 0) != 0);
 
 	keyboardMidiChannel = juce::jlimit(1, 16, xml->getIntAttribute("kbdMidiChannel", keyboardMidiChannel));
-	keyboardOmni = xml->getIntAttribute("kbdOmni", keyboardOmni ? 1 : 0) != 0;
+	// "kbdMidiRemap" (2026-08-25) replaced "kbdOmni" - same setting, inverted sense (Omni=on
+	// meant no remap). Fall back to the old attribute, inverted, for a save file from before
+	// the rename - see PluginProcessor.cpp's own "kbOmni" fallback for the same reasoning.
+	if (xml->hasAttribute("kbdMidiRemap"))
+		midiRemap = xml->getIntAttribute("kbdMidiRemap", midiRemap ? 1 : 0) != 0;
+	else
+		midiRemap = xml->getIntAttribute("kbdOmni", midiRemap ? 0 : 1) == 0;
 	keyboardPcInput = xml->getIntAttribute("kbdPcInput", keyboardPcInput ? 1 : 0) != 0;
 	keyboardPcLayout = juce::jlimit(0, 1, xml->getIntAttribute("kbdPcLayout", keyboardPcLayout));
 	uiThemeLight = xml->getIntAttribute("uiThemeLight", uiThemeLight ? 1 : 0) != 0;
@@ -429,6 +481,13 @@ void NonetSeqHost::loadSettings() {
 	retroLcdCompactMode = xml->getIntAttribute("retroLcdCompactMode", retroLcdCompactMode ? 1 : 0) != 0;
 	setProgramChangeOffset(xml->getIntAttribute("pcOffset", 0));
 	setBankOffset(xml->getIntAttribute("bankOffset", 0));
+
+	// Re-parse from the persisted path rather than persisting the patch list itself - see
+	// D110SequencerHost::getInstrumentDefinitionPath()'s own comment. A moved/deleted file
+	// just leaves the picker empty (loadInstrumentDefinition() already handles that failure
+	// quietly), not a load error for the whole settings file.
+	const juce::String idfPath = xml->getStringAttribute("instrumentDefinitionPath");
+	if (idfPath.isNotEmpty()) loadInstrumentDefinition(juce::File(idfPath));
 
 	for (int t = 0; t < d110seq::D110SequencerEngine::kMaxTracks; ++t)
 		setTrackChannel(t, xml->getIntAttribute("chTrack" + juce::String(t), trackChannels[static_cast<size_t>(t)]));
@@ -465,7 +524,7 @@ void NonetSeqHost::saveSettings() const {
 	xml.setAttribute("seqExtraTracks", engine.getExtraTracksEnabled() ? 1 : 0);
 
 	xml.setAttribute("kbdMidiChannel", keyboardMidiChannel);
-	xml.setAttribute("kbdOmni", keyboardOmni ? 1 : 0);
+	xml.setAttribute("kbdMidiRemap", midiRemap ? 1 : 0);
 	xml.setAttribute("kbdPcInput", keyboardPcInput ? 1 : 0);
 	xml.setAttribute("kbdPcLayout", keyboardPcLayout);
 	xml.setAttribute("uiThemeLight", uiThemeLight ? 1 : 0);
@@ -474,6 +533,7 @@ void NonetSeqHost::saveSettings() const {
 	xml.setAttribute("retroLcdCompactMode", retroLcdCompactMode ? 1 : 0);
 	xml.setAttribute("pcOffset", programChangeOffset);
 	xml.setAttribute("bankOffset", bankOffset);
+	xml.setAttribute("instrumentDefinitionPath", instrumentDefinitionPath);
 
 	for (int t = 0; t < d110seq::D110SequencerEngine::kMaxTracks; ++t)
 		xml.setAttribute("chTrack" + juce::String(t), trackChannels[static_cast<size_t>(t)]);
