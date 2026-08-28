@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "D110Keyboard.h"
 #include "PluginProcessor.h"
+#include "SoundbankBrowser.h"
 #include "sequencer/D110SequencerPanel.h"
 #include "sequencer/D110SequencerRetroPanel.h"
 
@@ -380,8 +381,8 @@ private:
 	// вместо перебора номера колесом. Github issue #2.
 	void showPcmWaveMenu(const Cell &pcmCell);
 
-	enum class Tab { Parts, Tone, Rhythm, Patches, Timbres, Tones, System, Monitor, Utility };
-	static constexpr int kNumTabs = 9;
+	enum class Tab { Parts, Tone, Rhythm, Patches, Timbres, Tones, System, Monitor, Soundbanks, Utility };
+	static constexpr int kNumTabs = 10;
 
 	// The PATCHES tab's own two views, switched by a small sub-tab strip under the main
 	// one - the 64-patch list and the 8-part breakdown of whichever one is selected used to
@@ -486,6 +487,7 @@ private:
 	// mouseDown()'s popup-menu branch.
 	juce::Rectangle<float> zoomBounds;
 	juce::Rectangle<float> romFolderBounds;
+	juce::Rectangle<float> soundbankFolderBounds;
 	int tonePartial = 0;
 	std::array<juce::Rectangle<float>, 4> tonePartialBounds{};
 	// Tone tab's LOCK PARTIALS toggle - while on, editing a Partial 1 field also sets the same
@@ -527,6 +529,11 @@ private:
 	juce::Rectangle<float> tableArea;
 	juce::Rectangle<float> contentArea;   // для вкладок, которые рисуются целиком
 	float rowHeight = 0.0f;
+
+	// SOUNDBANKS tab's whole content - a real child Component (unlike every other tab, which
+	// paints from cells/labels/buttons above) since it's the exact same shared component
+	// Android's own hamburger menu swaps in - see SoundbankBrowser.h's own comment.
+	SoundbankBrowser soundbankBrowser;
 
 	std::vector<Label> labels;
 	std::vector<Cell> cells;

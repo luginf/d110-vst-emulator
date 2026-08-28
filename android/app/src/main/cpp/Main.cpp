@@ -20,6 +20,7 @@
 #include "Source/PluginProcessor.h"
 #include "Source/PluginEditor.h"
 #include "Source/D110Keyboard.h"
+#include "Source/SoundbankBrowser.h"
 #include "Source/UiTheme.h"
 #include "Source/sequencer/D110SequencerPanel.h"
 #include "Source/sequencer/D110SequencerRetroPanel.h"
@@ -33,7 +34,9 @@ public:
 		return juce::File("/storage/emulated/0/Android/data/com.d110emulator.android/files/roms");
 	}
 
-	MainComponent() : panel(processor), keyboard(processor), gridSeq(processor), retroSeq(processor) {
+	MainComponent()
+		: panel(processor), keyboard(processor), gridSeq(processor), retroSeq(processor),
+		  soundbankBrowser(processor) {
 		// Bring-up shortcut, still the path chooseRomFolder() (hamburger menu) now also copies
 		// into - see its own comment. Originally ROMs only got there via `adb push`; the
 		// picker below is the "proper SAF file-picker" this comment used to say was still
@@ -67,6 +70,9 @@ public:
 		// the exact same flag and default the desktop editor's own Options menu uses.
 		addChildComponent(gridSeq);
 		addChildComponent(retroSeq);
+		// Same shared component the desktop plugin's own SOUNDBANKS tab hosts (SoundbankBrowser.h)
+		// - reached from the hamburger menu instead of a tab, this app having no tab strip at all.
+		addChildComponent(soundbankBrowser);
 		// See buildAppMenu()'s own comment: the grid sequencer hides the app's whole
 		// Play/Stop/hamburger row to get its full height, so its own bar-navigation menu
 		// button becomes the only way back to it.
@@ -241,10 +247,14 @@ public:
 		// completely unrelated, which is exactly the confusion Alan reported.
 		const bool inGridSequencer = showingSequencer && !processor.getSequencerRetroMode();
 		const bool inRetroSequencer = showingSequencer && processor.getSequencerRetroMode();
-		playButton.setVisible(!inGridSequencer && !inRetroSequencer);
-		stopButton.setVisible(!inGridSequencer && !inRetroSequencer);
+		// Soundbanks keeps the hamburger (its only way back to Panel view, same reasoning as
+		// retro sequencer above) but hides Play/Stop/status like both sequencer views do - that
+		// row is for the app's own "Load MIDI file..." playback feature, unrelated to browsing
+		// a patch library, and this view wants all the height it can get.
+		playButton.setVisible(!inGridSequencer && !inRetroSequencer && !showingSoundbanks);
+		stopButton.setVisible(!inGridSequencer && !inRetroSequencer && !showingSoundbanks);
 		menuButton.setVisible(!inGridSequencer);
-		statusLabel.setVisible(!inGridSequencer && !inRetroSequencer);
+		statusLabel.setVisible(!inGridSequencer && !inRetroSequencer && !showingSoundbanks);
 		if (!inGridSequencer) {
 			// Retro landscape's top strip only ever holds the hamburger (Play/Stop/status
 			// stay hidden there - see this function's own comment above on why) - the full
@@ -258,7 +268,7 @@ public:
 			const int menuButtonW = shrinkHamburger ? 36 : 72;
 			auto transport = area.removeFromTop(transportH);
 			menuButton.setBounds(transport.removeFromRight(menuButtonW).reduced(shrinkHamburger ? 3 : 6));
-			if (!inRetroSequencer) {
+			if (!inRetroSequencer && !showingSoundbanks) {
 				// Alan's request, 2026-08-28: Play/Stop used to split the WHOLE transport row
 				// width between them (very wide, worst in landscape where that row is widest),
 				// and Ready/status sat in its own dedicated 40px strip right below, stealing
@@ -296,8 +306,18 @@ public:
 		// default - retro is one Options tap away (processor.getSequencerRetroMode(), the exact
 		// same flag). Both sequencer views self-scale from real pixel bounds exactly like
 		// D110Keyboard, unlike D110Panel's fixed-reference-space+transform below.
-		if (showingSequencer) {
+		if (showingSoundbanks) {
+			// Full remaining area, no keyboard underneath (unlike the sequencer views below) -
+			// browsing/injecting a patch library doesn't need play-testing alongside it, and a
+			// small phone screen has more use for the extra list height.
 			panel.setVisible(false);
+			gridSeq.setVisible(false);
+			retroSeq.setVisible(false);
+			keyboard.setVisible(false);
+			soundbankBrowser.setBounds(area);
+		} else if (showingSequencer) {
+			panel.setVisible(false);
+			soundbankBrowser.setVisible(false);
 			const bool retro = processor.getSequencerRetroMode();
 			gridSeq.setVisible(!retro);
 			retroSeq.setVisible(retro);
@@ -336,10 +356,13 @@ public:
 			seqBounds.removeFromBottom(keyboardHeight);
 			gridSeq.setBounds(seqBounds);
 			retroSeq.setBounds(seqBounds);
+			keyboard.setVisible(true);
 			keyboard.setBounds(area.removeFromBottom(keyboardHeight));
 		} else {
 			gridSeq.setVisible(false);
 			retroSeq.setVisible(false);
+			soundbankBrowser.setVisible(false);
+			keyboard.setVisible(true);
 			panel.setVisible(true);
 			const int panelY = area.getY();
 			panel.setBounds(0, 0, D110Panel::currentRefW(true), D110Panel::kRefH);
@@ -391,6 +414,8 @@ private:
 		m.addItem("Load MIDI file...", [this] { chooseMidiFile(); });
 		m.addItem("Import SysEx/MIDI Bank...", [this] { chooseSysexFile(); });
 		m.addItem(showingSequencer ? "Front Panel" : "Sequencer", [this] { toggleSequencerView(); });
+		m.addItem(showingSoundbanks ? "Front Panel" : "Soundbanks...", [this] { toggleSoundbanksView(); });
+		m.addItem("Choose soundbank files...", [this] { chooseSoundbankFiles(); });
 		// D110Keyboard::showContextMenu() is the exact same channel/remap/PC-keyboard menu the
 		// desktop keyboard's right-click shows - reached here directly instead of reimplementing
 		// it, since there's no right mouse button (or safe long-press substitute - see
@@ -494,6 +519,16 @@ private:
 
 	void toggleSequencerView() {
 		showingSequencer = !showingSequencer;
+		if (showingSequencer) showingSoundbanks = false;
+		resized();
+	}
+
+	void toggleSoundbanksView() {
+		showingSoundbanks = !showingSoundbanks;
+		if (showingSoundbanks) {
+			showingSequencer = false;
+			soundbankBrowser.refresh(); // pick up anything scanned since this was last shown
+		}
 		resized();
 	}
 
@@ -646,6 +681,55 @@ private:
 		D110AudioProcessor::setCustomRomFolder(dest.getFullPathName());
 		processor.reloadRomsAndPowerOn();
 		statusLabel.setText(processor.isSynthReady() ? "Ready" : processor.getLastError(),
+		                     juce::dontSendNotification);
+	}
+
+	// Same reasoning as chooseRomFolder() above (see its own comment): Android has no working
+	// way to list a picked SAF folder's contents, so this asks for the SysEx/MIDI files
+	// themselves (multi-select) and copies them into a real, plain-filesystem staging folder -
+	// d110bank::Database::rescan() (SoundbankDatabase.h) then walks THAT, not whatever the user
+	// originally picked from. Repeatable: picking again adds more files into the same staging
+	// folder rather than replacing it, so a library can be built up over several picks.
+	void chooseSoundbankFiles() {
+		fileChooser = std::make_unique<juce::FileChooser>(
+			"Choose SysEx patch library files (select as many as you like)", juce::File());
+		fileChooser->launchAsync(
+			juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+				| juce::FileBrowserComponent::canSelectMultipleItems,
+			[this](const juce::FileChooser &fc) { copySoundbankFiles(fc.getURLResults()); });
+	}
+
+	void copySoundbankFiles(const juce::Array<juce::URL> &urls) {
+		const auto dest = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+			.getChildFile("D-110 Emulator")
+			.getChildFile("soundbank_source");
+		dest.createDirectory();
+
+		int copied = 0;
+		for (const auto &url : urls) {
+			auto doc = juce::AndroidDocument::fromDocument(url);
+			auto in = doc.hasValue() ? doc.createInputStream() : nullptr;
+			if (in == nullptr) continue;
+
+			auto outFile = dest.getChildFile(url.getFileName());
+			outFile.deleteFile();
+			auto out = outFile.createOutputStream();
+			if (out == nullptr || out->writeFromInputStream(*in, -1) <= 0) {
+				outFile.deleteFile();
+				continue;
+			}
+			out.reset();
+			++copied;
+		}
+
+		if (copied == 0) {
+			statusLabel.setText("Could not read any of those files", juce::dontSendNotification);
+			return;
+		}
+
+		D110AudioProcessor::setSoundbankSourceFolder(dest.getFullPathName());
+		statusLabel.setText(juce::String(copied) + " file(s) added - open Soundbanks and hit "
+		                     "RESCAN to add them to the database",
 		                     juce::dontSendNotification);
 	}
 
@@ -824,7 +908,9 @@ private:
 	D110Keyboard keyboard;
 	D110SequencerPanel gridSeq;
 	D110SequencerRetroPanel retroSeq;
+	SoundbankBrowser soundbankBrowser;
 	bool showingSequencer = false;
+	bool showingSoundbanks = false;
 	// Manual per-side margin overrides - see resized()'s own comment and the "Options" menu's
 	// four checkboxes above. All false = Auto.
 	bool navTop = false, navBottom = false, navLeft = false, navRight = false;

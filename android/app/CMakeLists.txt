@@ -67,6 +67,8 @@ target_sources(D110Android PRIVATE
     ${D110_PLUGIN_SOURCE_DIR}/Source/sequencer/D110SequencerEngine.cpp
     ${D110_PLUGIN_SOURCE_DIR}/Source/sequencer/D110SequencerSongsFile.cpp
     ${D110_PLUGIN_SOURCE_DIR}/Source/UiTheme.cpp
+    ${D110_PLUGIN_SOURCE_DIR}/Source/SoundbankDatabase.cpp
+    ${D110_PLUGIN_SOURCE_DIR}/Source/SoundbankBrowser.cpp
     ${D110_PLUGIN_SOURCE_DIR}/Source/sequencer/D110SequencerPanel.cpp
     ${D110_PLUGIN_SOURCE_DIR}/Source/sequencer/D110SequencerRetroPanel.cpp
 )

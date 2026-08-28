@@ -51,12 +51,12 @@ D110Keyboard::D110Keyboard(D110KeyboardHost &h) : host(h) {
 	// remote activity (external MIDI In, sequencer playback, a DAW host's own track) is
 	// asynchronous, so nothing else would otherwise trigger a repaint when it starts or stops.
 	// Mouse/PC-keyboard input on this component stays instant either way - those already
-	// repaint() on their own the moment the state actually changes, see setHeldNote()/
-	// keyStateChanged().
+	// repaint() on their own the moment the state actually changes, see
+	// setHeldNoteForSource()/keyStateChanged().
 	startTimerHz(30);
 }
 
-D110Keyboard::~D110Keyboard() { stopTimer(); setHeldNote(-1); releaseAllPcNotes(); }
+D110Keyboard::~D110Keyboard() { stopTimer(); releaseAllTouchNotes(); releaseAllPcNotes(); }
 
 void D110Keyboard::sendNote(int note, float velocity, bool on) {
 	if (midiRemap) {
@@ -162,7 +162,7 @@ void D110Keyboard::focusLost(juce::Component::FocusChangeType) { releaseAllPcNot
 void D110Keyboard::changeOctave(int delta) {
 	const int shifted = juce::jlimit(-2, 3, octaveShift + delta);
 	if (shifted == octaveShift) return;
-	if (heldNote >= 0) setHeldNote(-1);
+	releaseAllTouchNotes();
 	releaseAllPcNotes(); // held notes are note NUMBERS already sent - shifting octave first
 	                     // would leave them stuck on, since the physical key never "changed"
 	octaveShift = shifted;
@@ -217,11 +217,20 @@ int D110Keyboard::keyAt(juce::Point<float> p) const {
 	return -1;
 }
 
-void D110Keyboard::setHeldNote(int note) {
-	if (note == heldNote) return;
-	if (heldNote >= 0) sendNote(heldNote, 0.0f, false);
-	heldNote = note;
-	if (heldNote >= 0) sendNote(heldNote, 0.85f, true);
+void D110Keyboard::setHeldNoteForSource(int sourceIndex, int note) {
+	const auto it = heldNoteBySource.find(sourceIndex);
+	const int previous = (it != heldNoteBySource.end()) ? it->second : -1;
+	if (note == previous) return;
+	if (previous >= 0) sendNote(previous, 0.0f, false);
+	if (note >= 0) heldNoteBySource[sourceIndex] = note;
+	else if (it != heldNoteBySource.end()) heldNoteBySource.erase(it);
+	if (note >= 0) sendNote(note, 0.85f, true);
+	repaint();
+}
+
+void D110Keyboard::releaseAllTouchNotes() {
+	for (const auto &kv : heldNoteBySource) sendNote(kv.second, 0.0f, false);
+	heldNoteBySource.clear();
 	repaint();
 }
 
@@ -241,12 +250,17 @@ void D110Keyboard::paint(juce::Graphics &g) {
 	paintButton(octaveDownBounds, "-");
 	paintButton(octaveUpBounds, "+");
 
-	// Lit for three reasons, checked cheapest-first: held by the mouse, held by a PC-tracker
-	// key, or currently sounding somewhere else in the app (external MIDI In, sequencer
-	// playback, a DAW host track - see D110KeyboardHost::isNoteActive()). All three just mean
-	// "this note is on right now" as far as the key's colour is concerned.
-	auto isLit = [this](int note) {
-		return note == heldNote || isPcKeyDownForNote(note) || host.isNoteActive(note);
+	// Lit for three reasons, checked cheapest-first: held by the mouse/a touch, held by a
+	// PC-tracker key, or currently sounding somewhere else in the app (external MIDI In,
+	// sequencer playback, a DAW host track - see D110KeyboardHost::isNoteActive()). All three
+	// just mean "this note is on right now" as far as the key's colour is concerned.
+	auto isTouchHeld = [this](int note) {
+		for (const auto &kv : heldNoteBySource)
+			if (kv.second == note) return true;
+		return false;
+	};
+	auto isLit = [this, isTouchHeld](int note) {
+		return isTouchHeld(note) || isPcKeyDownForNote(note) || host.isNoteActive(note);
 	};
 	for (const auto &k : whiteKeys) {
 		g.setColour(isLit(k.note) ? pal.keyWhiteHeld : pal.keyWhite);
@@ -280,24 +294,17 @@ void D110Keyboard::mouseDown(const juce::MouseEvent &e) {
 	if (octaveUpBounds.contains(e.position)) { changeOctave(1); return; }
 	const int note = keyAt(e.position);
 	if (note < 0) return;
-	draggingKey = true;
-	setHeldNote(note);
+	setHeldNoteForSource(e.source.getIndex(), note);
 }
 
 void D110Keyboard::mouseDrag(const juce::MouseEvent &e) {
-	if (!draggingKey) return;
+	const int sourceIndex = e.source.getIndex();
+	if (heldNoteBySource.find(sourceIndex) == heldNoteBySource.end())
+		return; // this source's own mouseDown didn't start on a key (e.g. an OCT button)
 	const int note = keyAt(e.position);
-	setHeldNote(note); // -1 when the mouse drags off every key, which releases cleanly
+	setHeldNoteForSource(sourceIndex, note); // -1 when dragged off every key, releases cleanly
 }
 
-void D110Keyboard::mouseUp(const juce::MouseEvent &) {
-	if (!draggingKey) return;
-	draggingKey = false;
-	setHeldNote(-1);
-}
+void D110Keyboard::mouseUp(const juce::MouseEvent &e) { setHeldNoteForSource(e.source.getIndex(), -1); }
 
-void D110Keyboard::mouseExit(const juce::MouseEvent &) {
-	if (!draggingKey) return;
-	draggingKey = false;
-	setHeldNote(-1);
-}
+void D110Keyboard::mouseExit(const juce::MouseEvent &e) { setHeldNoteForSource(e.source.getIndex(), -1); }

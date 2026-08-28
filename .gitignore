@@ -44,3 +44,5 @@ android/.cxx/
 android/app/build/
 android/app/.cxx/
 
+# claude
+.claude

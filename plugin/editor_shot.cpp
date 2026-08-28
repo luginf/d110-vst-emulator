@@ -96,7 +96,7 @@ int main(int argc, char **argv) {
 	}
 
 	static const char *kTabs[] = { "parts", "tone", "rhythm", "patches", "timbres",
-	                               "tones", "system", "monitor", "utility" };
+	                               "tones", "system", "monitor", "soundbanks", "utility" };
 	constexpr int kNumTabs = int(sizeof(kTabs) / sizeof(kTabs[0]));
 
 	D110EditorPane pane(proc);

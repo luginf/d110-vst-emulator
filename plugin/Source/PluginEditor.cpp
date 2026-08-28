@@ -1061,9 +1061,13 @@ const char *const kPcmBank2Names[128] = {
 
 } // namespace
 
-D110EditorPane::D110EditorPane(D110AudioProcessor &p) : processor(p) {
+D110EditorPane::D110EditorPane(D110AudioProcessor &p) : processor(p), soundbankBrowser(p) {
 	setOpaque(true);
 	ram.assign(D110CoreType::kRamSize, 0);
+
+	// Hidden until the SOUNDBANKS tab is selected (layout()'s own Tab::Soundbanks case) - a
+	// real child Component, unlike every other tab.
+	addChildComponent(soundbankBrowser);
 
 	// Поле ввода одно на весь редактор: любое имя набирается им же, просто в разных местах.
 	// Прибор принимает только печатные ASCII, поэтому набрать что-то другое здесь нельзя -
@@ -1120,7 +1124,8 @@ void D110EditorPane::selectTab(int index) {
 	case 5:  tab = Tab::Tones; break;
 	case 6:  tab = Tab::System; break;
 	case 7:  tab = Tab::Monitor; break;
-	case 8:  tab = Tab::Utility; break;
+	case 8:  tab = Tab::Soundbanks; soundbankBrowser.refresh(); break;
+	case 9:  tab = Tab::Utility; break;
 	default: tab = Tab::Parts; break;
 	}
 	layout();
@@ -1177,6 +1182,9 @@ void D110EditorPane::layout() {
 	cells.clear();
 	labels.clear();
 	buttons.clear();
+	// Unlike every other tab (drawn entirely from the cells/labels/buttons vectors above),
+	// SOUNDBANKS hosts one real child Component - see the Tab::Soundbanks case below for why.
+	soundbankBrowser.setVisible(tab == Tab::Soundbanks);
 	auto area = getLocalBounds().toFloat().reduced(14.0f, 10.0f);
 	if (area.getWidth() < 40.0f || area.getHeight() < 40.0f) return;
 
@@ -1202,6 +1210,10 @@ void D110EditorPane::layout() {
 	case Tab::Timbres: layoutTimbres(area); break;
 	case Tab::Tones:   layoutTones(area); break;
 	case Tab::System:  layoutSystem(area); break;
+	case Tab::Soundbanks:
+		contentArea = area;
+		soundbankBrowser.setBounds(area.toNearestInt());
+		break;
 	case Tab::Utility: contentArea = area; layoutUtility(area); break;
 	default:           contentArea = area; break;   // монитор рисуется целиком
 	}
@@ -1890,6 +1902,19 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 	}
 	area.removeFromTop(18.0f);
 
+	labels.push_back({ area.removeFromTop(15.0f), "SOUNDBANKS FOLDER", true });
+	{
+		auto row = area.removeFromTop(28.0f);
+		const auto custom = D110AudioProcessor::getSoundbankSourceFolder();
+		soundbankFolderBounds = row.removeFromLeft(220.0f);
+		buttons.push_back({ soundbankFolderBounds,
+		                     custom.isEmpty() ? juce::String("NOT SET") : custom, 25 });
+		labels.push_back({ row.reduced(12.0f, 0.0f),
+		                   "click to pick the folder of SysEx patch libraries the SOUNDBANKS "
+		                   "tab's RESCAN button scans - right-click to clear", false });
+	}
+	area.removeFromTop(18.0f);
+
 	labels.push_back({ area.removeFromTop(15.0f), "MESSAGE ON THE INSTRUMENT'S OWN DISPLAY",
 	                   true });
 	{
@@ -2437,7 +2462,7 @@ void D110EditorPane::paint(juce::Graphics &g) {
 	                                             12.0f * scale, juce::Font::plain));
 
 	const char *kTabs[] = { "PARTS", "TONE", "RHYTHM", "PATCHES", "TIMBRES", "TONES",
-	                        "SYSTEM", "MONITOR", "UTILITY" };
+	                        "SYSTEM", "MONITOR", "SOUNDBANKS", "UTILITY" };
 	for (int i = 0; i < kNumTabs; ++i) {
 		const bool active = (int(tab) == i);
 		g.setColour(active ? kEdBox().brighter(0.25f) : kEdBox());
@@ -2846,6 +2871,23 @@ void D110EditorPane::buttonPressed(int id) {
 		                     });
 		return;
 	}
+	if (id == 25) {
+		const auto startDir = D110AudioProcessor::getSoundbankSourceFolder().isNotEmpty()
+		                           ? juce::File(D110AudioProcessor::getSoundbankSourceFolder())
+		                           : juce::File::getSpecialLocation(juce::File::userHomeDirectory);
+		auto *chooser =
+			new juce::FileChooser("Choose the folder of SysEx patch libraries to scan", startDir);
+		chooser->launchAsync(
+			juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+			[this, chooser](const juce::FileChooser &fc) {
+				const auto dir = fc.getResult();
+				if (dir != juce::File()) D110AudioProcessor::setSoundbankSourceFolder(dir.getFullPathName());
+				layout();
+				repaint();
+				delete chooser;
+			});
+		return;
+	}
 	if (id == 10) {
 		static constexpr int kZoomPresets[] = { 50, 75, 100, 125, 150 };
 		const int current = juce::roundToInt(float(getWidth()) / float(D110Panel::currentRefW(processor.getCompactPanelMode())) * 100.0f);
@@ -3217,6 +3259,12 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 	if (e.mods.isPopupMenu()) {
 		if (tab == Tab::Utility && romFolderBounds.contains(p)) {
 			D110AudioProcessor::setCustomRomFolder({});
+			layout();
+			repaint();
+			return;
+		}
+		if (tab == Tab::Utility && soundbankFolderBounds.contains(p)) {
+			D110AudioProcessor::setSoundbankSourceFolder({});
 			layout();
 			repaint();
 			return;

@@ -2,6 +2,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <map>
 #include <vector>
 
 #include "D110KeyboardHost.h"
@@ -77,7 +78,14 @@ private:
 
 	void rebuildKeys();
 	int keyAt(juce::Point<float>) const;
-	void setHeldNote(int note); // -1 releases (mouse/touch - only one held note at a time)
+	// -1 releases. Keyed by MouseInputSource::getIndex() (0 for the mouse; each simultaneous
+	// touch gets its own distinct index on a multi-touch platform) rather than one shared note,
+	// so several fingers can each hold their own key at once - Alan's request, 2026-08-28: on
+	// Android, a single shared "heldNote" made the on-screen keyboard monophonic, since a
+	// second finger's mouseDown silently stole/replaced the first finger's note instead of
+	// adding a second one (a chord was never actually possible there before this).
+	void setHeldNoteForSource(int sourceIndex, int note);
+	void releaseAllTouchNotes(); // every source at once - octave change, losing the component, ...
 	void changeOctave(int delta);
 	void sendNote(int note, float velocity, bool on); // honours channel/midiRemap
 	void releaseAllPcNotes();
@@ -86,8 +94,7 @@ private:
 
 	D110KeyboardHost &host;
 	int octaveShift = 0;
-	int heldNote = -1;
-	bool draggingKey = false; // mouse went down on a key, not on OCT-/OCT+
+	std::map<int, int> heldNoteBySource; // touch/mouse source index -> the note it's holding
 
 	int midiChannel = 1;        // 1..16 - which channel injectTestNote() targets
 	// When on, every note is forced onto midiChannel; when off, it broadcasts to all 16 at

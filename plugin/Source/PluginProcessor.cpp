@@ -599,6 +599,57 @@ void D110AudioProcessor::setCustomSampleFolder(const juce::String &path) {
 	file.replaceWithText(path.trim());
 }
 
+juce::String D110AudioProcessor::getSoundbankSourceFolder() {
+	const auto file = getSoundbankSourcePathFile();
+	if (!file.existsAsFile()) return {};
+	return file.loadFileAsString().trim();
+}
+
+void D110AudioProcessor::setSoundbankSourceFolder(const juce::String &path) {
+	const auto file = getSoundbankSourcePathFile();
+	if (path.trim().isEmpty()) {
+		file.deleteFile();
+		return;
+	}
+	file.getParentDirectory().createDirectory();
+	file.replaceWithText(path.trim());
+}
+
+void D110AudioProcessor::injectSoundbankPatch(int slot, const juce::uint8 *data128) {
+	if (slot < 0 || slot >= D110CoreType::kNumPatches) return;
+	sendAreaData(D110CoreType::kSysexPatches, slot * D110CoreType::kPatchRecord, data128,
+	             D110CoreType::kPatchRecord);
+}
+
+// Name (10 bytes) then body (246 bytes, chunked - see storeToneFromPart()'s own sendToneBlock()
+// a few hundred lines below, same 123-byte chunk size, "exactly like an external librarian
+// would send it" per its own comment) - together the full 256-byte Tone Memory record shape.
+void D110AudioProcessor::injectSoundbankTone(int slot, const juce::uint8 *data256) {
+	if (slot < 0 || slot >= D110CoreType::kNumTones) return;
+	const int base = slot * D110CoreType::kToneMemRecord;
+	sendAreaData(D110CoreType::kSysexTones, base, data256, D110CoreType::kNameChars);
+
+	constexpr int kChunk = 123;
+	const juce::uint8 *body = data256 + D110CoreType::kNameChars;
+	for (int off = 0; off < D110CoreType::kToneRecord; off += kChunk) {
+		const int len = juce::jmin(kChunk, D110CoreType::kToneRecord - off);
+		sendAreaData(D110CoreType::kSysexTones, base + D110CoreType::kNameChars + off, body + off, len);
+	}
+}
+
+// Straight into Tone Temporary (kSysexToneTemp) for `part`, no Tone Memory slot spent - the
+// non-destructive, instant-audition counterpart to auditionTone(part, slot) below, for bytes
+// that aren't (or aren't yet) stored anywhere.
+void D110AudioProcessor::auditionToneBytes(int part, const juce::uint8 *body246) {
+	if (part < 0 || part > 7) return;
+	constexpr int kChunk = 123;
+	for (int off = 0; off < D110CoreType::kToneRecord; off += kChunk) {
+		const int len = juce::jmin(kChunk, D110CoreType::kToneRecord - off);
+		sendAreaData(D110CoreType::kSysexToneTemp, part * D110CoreType::kToneRecord + off,
+		             body246 + off, len);
+	}
+}
+
 bool D110AudioProcessor::identifyRomData(const juce::MemoryBlock &data,
                                          MT32Emu::ROMInfo::Type &typeOut) {
 	if (data.getSize() == 0) return false;

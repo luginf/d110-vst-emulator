@@ -19,6 +19,7 @@ using D110CoreType = D110CoreNative;
 using D110CoreType = D110Core;
 #endif
 #include "D110KeyboardHost.h"
+#include "SoundbankDatabase.h"
 #include "sequencer/D110SequencerEngine.h"
 #include "sequencer/D110SequencerHost.h"
 #ifdef D110_HAVE_JACK_MIDI
@@ -182,6 +183,50 @@ public:
 	// and storage pattern as getCustomRomFolder() above. Empty = not configured yet.
 	static juce::String getCustomSampleFolder();
 	static void setCustomSampleFolder(const juce::String &path);
+
+	// The Soundbanks tab/browser's own patch database - see SoundbankDatabase.h. One instance
+	// per processor, shared between the desktop tab and (Android) the swapped-in browser
+	// panel, so it's never loaded twice. load() is cheap (see its own comment) and safe to
+	// call every time the browser opens; rescan() is not and only ever runs from an explicit
+	// button press.
+	d110bank::Database &getSoundbankDatabase() { return soundbankDb; }
+
+	// Favourited tones - see SoundbankDatabase.h's own Favorites class comment. Separate from
+	// soundbankDb above on purpose (Alan's request, 2026-08-28): its own file, untouched by a
+	// database rescan.
+	d110bank::Favorites &getSoundbankFavorites() { return soundbankFavorites; }
+
+	// Where the user's own SysEx patch-library folder is - the SOURCE Soundbanks rescan()
+	// reads from, as opposed to the database itself (SoundbankDatabase::defaultRoot(), fixed,
+	// not user-configurable). Same plain-text-file, machine-wide storage pattern as
+	// getCustomRomFolder()/getCustomSampleFolder() above - this is a fact about this
+	// machine/install, not project state.
+	static juce::String getSoundbankSourceFolder();
+	static void setSoundbankSourceFolder(const juce::String &path);
+
+	// ON HOLD, 2026-08-28 - see SoundbankDatabase.h's own comment: the Soundbanks feature
+	// scanned Patches first, Alan corrected it to Tones, and asked to keep the Patch-side code
+	// (this included) for later rather than delete it. Not called anywhere right now.
+	// Writes one already-decoded 128-byte Patch record into a specific Bank I slot (0-63) via
+	// a real SysEx DT1 write. Wraps sendAreaData() with the Patch area's own address/stride
+	// (D110CoreType::kSysexPatches/kPatchRecord) so callers don't need to know them.
+	void injectSoundbankPatch(int slot, const juce::uint8 *data128);
+
+	// Writes one already-decoded 256-byte Tone Memory record (10-byte name at offset 0, then
+	// the 246-byte tone body - D110Core.h's kToneMemRecord/kToneRecord) into a specific
+	// internal Tone slot (0-63, Roland's Tone Group "i") - what the Soundbanks browser's
+	// "Inject to slot..." does. Name and body are two separate DT1 writes (sendName() plus a
+	// chunked body send, mirroring the existing storeToneFromPart()/sendToneBlock() pattern -
+	// PluginProcessor.cpp - since one DT1 message can't carry all 246 body bytes at once).
+	void injectSoundbankTone(int slot, const juce::uint8 *data256);
+
+	// Writes a 246-byte tone BODY (no name - Tone Temporary has none of its own, see
+	// D110Core.h's kToneRecord vs kToneMemRecord) straight into a part's live/working tone,
+	// immediately audible - what the Soundbanks browser's double-click "quick audition" does.
+	// Same mechanism as auditionTone(part, slot) elsewhere in this class, except the bytes come straight from
+	// the caller instead of an existing Tone Memory slot - lets a browsed-but-not-yet-injected
+	// tone be heard without first spending one of the 64 internal slots on it.
+	void auditionToneBytes(int part, const juce::uint8 *body246);
 
 	// Snapshot of everything the virtual front panel needs to redraw itself each frame.
 	// Built entirely from stable, always-current getters (not mt32emu's own getDisplayState() text,
@@ -458,6 +503,14 @@ public:
 		return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
 			.getChildFile("D-110 Emulator")
 			.getChildFile("custom_sample_path.txt");
+	}
+
+	// Same pattern again, for the Soundbanks source-folder setting - see
+	// getSoundbankSourceFolder().
+	static juce::File getSoundbankSourcePathFile() {
+		return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+			.getChildFile("D-110 Emulator")
+			.getChildFile("soundbank_source_path.txt");
 	}
 
 	// The panel draws its own VOLUME knob out of the reference photograph, so it talks to the
@@ -834,6 +887,11 @@ private:
 	bool uiThemeLight = false;
 	// See getUiThemeFollowSystem()/setUiThemeFollowSystem() above.
 	bool uiThemeFollowSystem = false;
+
+	// See getSoundbankDatabase() above.
+	d110bank::Database soundbankDb;
+	// See getSoundbankFavorites() above.
+	d110bank::Favorites soundbankFavorites;
 	// See getSequencerRetroMode()/setSequencerRetroMode() above.
 	bool sequencerRetroMode = false;
 	bool compactPanelMode = false;
