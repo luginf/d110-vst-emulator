@@ -31,8 +31,8 @@ behaviour. Don't duplicate that here; this file is about how to work in the repo
   Also owns `sequencerEngine` (see below) and drives it from `processBlock`.
 - `plugin/Source/PluginEditor.*` - the whole UI. `D110Panel` = the photographed panel
   with invisible hit-regions + the offscreen-rendered dot-matrix LCD. `D110EditorPane` =
-  the nine-tab extended editor drawer (`Tab` enum: Parts, Tone, Rhythm, Patches,
-  Timbres, Tones, System, Monitor, Utility), opens downward, independently foldable.
+  the ten-tab extended editor drawer (`Tab` enum: Parts, Tone, Rhythm, Patches,
+  Timbres, Tones, System, Monitor, Soundbanks, Utility), opens downward, independently foldable.
   `D110SequencerPanel` (see below) is a third such drawer, closed by default.
   `D110MemoryCard` = the memory card slot widget.
 - `plugin/Source/D110Keyboard.h/.cpp` - the on-screen test keyboard drawer (mouse piano +
@@ -89,6 +89,27 @@ behaviour. Don't duplicate that here; this file is about how to work in the repo
   `plugin/sequencer_probe.cpp` and `plugin/sequencer_state_probe.cpp` are its headless tests
   (engine timing/quantize/step-recording/undo/file-I/O, and the state-save round trip,
   respectively) - both native-core-only, no MAME dependency.
+- `plugin/Source/SoundbankDatabase.h/.cpp` + `SoundbankBrowser.h/.cpp` - the SOUNDBANKS tab
+  (desktop) / hamburger-menu view (Android), added 2026-08-28 - see `docs/soundbanks.md` for
+  the full feature list. `Database` is the model: scans a folder/`.zip` of Roland SysEx dumps
+  for DT1 messages addressed inside the internal Tone area (SysEx `08 00 00`, 256-byte
+  records - **Tones**, the actual sounds, not Patches, which only arrange existing Tones across
+  parts; an earlier Patch-based cut was corrected to Tones, and that decoder kept dormant
+  rather than deleted, for reuse later), dedupes, and persists one small file per tone plus an
+  `index.json` under a fixed app-data root - `load()` only ever reads that index (instant tab
+  open regardless of library size), `rescan()` (explicit only) does the real folder walk.
+  `Favorites` is a second, independent persisted list (own file, never touched by `rescan()`),
+  exportable as standalone SysEx bank file(s) (`exportTonesAsSysex()`, split one file per 64
+  tones). `SoundbankBrowser` is the shared JUCE UI (talks straight to `D110AudioProcessor&`, no
+  Host interface, since both apps use that same class) - double-click/PART-row auditions a tone
+  into a part's live Tone Temporary; right-click (desktop) / long-press (Android, via
+  `juce::Timer::callAfterDelay` since touch has no second button) opens Favorites/Send-to-Part/
+  Inject-to-slot/**Send to real D-110** (writes to an actual connected unit's Part or Tone
+  Memory slot over the existing external MIDI Out device,
+  `D110AudioProcessor::sendSoundbankToneToExternalMidi[Part]()` - separate from the emulator's
+  own `injectSoundbankTone()`/`auditionToneBytes()`, which only ever reach `core.pushMidi()`).
+  `plugin/soundbank_probe.cpp` is the headless test (scan/dedup/recursion/`.zip`/Favorites/
+  export round-trips, no firmware/ROMs needed, same reasoning as the sequencer's own probes).
 - `plugin/CMakeLists.txt` - two plugin targets (native always, MAME opt-in) plus a long
   list of headless test/probe executables (`plugin/*.cpp` at the top level, ~60 of
   them) used to measure firmware RAM layout and verify behaviour empirically rather

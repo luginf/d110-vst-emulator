@@ -228,6 +228,37 @@ public:
 	// tone be heard without first spending one of the 64 internal slots on it.
 	void auditionToneBytes(int part, const juce::uint8 *body246);
 
+	// Whether a real external MIDI Out device is currently open (setMidiOutputDevice) - lets
+	// the Soundbanks browser's "Send to real D-110..." context-menu item give useful feedback
+	// ("pick a MIDI Out device first") instead of silently doing nothing.
+	bool hasExternalMidiOutput() const {
+		const juce::ScopedLock lock(osMidiLock);
+		return osMidiOut != nullptr;
+	}
+
+	// Same 256-byte Tone record, same slot-addressed DT1 writes as injectSoundbankTone() above,
+	// but sent straight out the external MIDI Out device (setMidiOutputDevice) instead of into
+	// this emulator's own firmware (core.pushMidi) - Alan's request, 2026-08-28: right-click a
+	// Soundbanks tone and write it into a slot on a REAL connected D-110, for building/testing
+	// a library against actual hardware rather than only this emulator. sendAreaData() can't be
+	// reused here since it always targets the firmware (core.pushMidi); this is the same
+	// buildDt1Message()-based chunking, routed to osMidiOut instead. No-op (false) if no MIDI
+	// Out device is open - callers should check hasExternalMidiOutput() first for a clean UI
+	// message rather than a silent failure. NOTE: like every DT1 write this emulator sends, the
+	// device ID is fixed at the Roland factory default (17/0x10) - if the real unit's own
+	// Exclusive Unit# was changed from that, it won't respond; there's no way for this emulator
+	// to know a real remote unit's setting to match it automatically.
+	bool sendSoundbankToneToExternalMidi(int slot, const juce::uint8 *data256);
+
+	// Same idea as sendSoundbankToneToExternalMidi() above, but the external-hardware
+	// equivalent of auditionToneBytes(): writes straight into a Part's TONE TEMPORARY on the
+	// real connected unit (kSysexToneTemp, not kSysexTones - different area, different address
+	// stride) rather than a stored Tone Memory slot - instant, non-destructive audition on
+	// actual hardware, no slot spent, "comme le font la plupart des éditeurs" (Alan's own
+	// words, 2026-08-28 follow-up ask). `body246` is the tone record's own first 246 bytes,
+	// name included - same convention auditionToneBytes() already uses (see its own comment).
+	bool sendSoundbankToneToExternalMidiPart(int part, const juce::uint8 *body246);
+
 	// Snapshot of everything the virtual front panel needs to redraw itself each frame.
 	// Built entirely from stable, always-current getters (not mt32emu's own getDisplayState() text,
 	// which is designed to flash transient messages and revert after a couple of seconds, and whose
@@ -513,6 +544,22 @@ public:
 			.getChildFile("soundbank_source_path.txt");
 	}
 
+	// A fixed, plain-filesystem staging folder for individually-picked SysEx/MIDI/.zip files -
+	// as opposed to getSoundbankSourceFolder() above, which is ONE user-chosen folder path
+	// (typically an existing personal library, scanned in place). Originally Android-only
+	// (Main.cpp's copySoundbankFiles() - Android can't reliably list a picked SAF folder's
+	// contents, so individual files are copied here instead and this folder is pointed at as
+	// THE source); reused by the desktop SoundbankBrowser's own "CHOOSE FILES/FOLDER..." button
+	// (Alan's request, 2026-08-28: importing a loose file or a .zip directly, without disturbing
+	// whatever folder-based source is already configured) - see
+	// SoundbankBrowser::startRescan()'s own comment for why RESCAN always scans this folder in
+	// ADDITION to getSoundbankSourceFolder(), never replacing it.
+	static juce::File getSoundbankImportsFolder() {
+		return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+			.getChildFile("D-110 Emulator")
+			.getChildFile("soundbank_source");
+	}
+
 	// The panel draws its own VOLUME knob out of the reference photograph, so it talks to the
 	// parameter directly rather than through a SliderAttachment.
 	float getMasterVolume() const;
@@ -592,12 +639,16 @@ public:
 	void sendTimbreMemoryParam(int slot, int field, juce::uint8 value);
 	void sendPatchMemoryParam(int patch, int field, juce::uint8 value);
 	// Wired to sequencerEngine's setSysExPreambleSource() in the constructor - see
-	// sequencerLiveInternalTone/sequencerLiveToneMemory's own comment for what it reads. Empty
-	// if the track isn't currently on an Internal tone (the common case). Each returned element
-	// is one DT1 message's own payload bytes (Roland header through checksum, no F0/F7 - see
-	// buildDt1Message()), ready for juce::MidiMessage::createSysExMessage(), which adds the
-	// wrapper itself.
-	std::vector<std::vector<juce::uint8>> buildInternalToneSysEx(int track) const;
+	// sequencerLiveInternalTone/sequencerLiveToneMemory's own comment for what the Tone part of
+	// it reads. Always includes one channel-assign message for a melodic track (Alan's report,
+	// 2026-08-29: a song exported with a customised channel map played on the wrong Part when
+	// loaded into a real D-110 whose own SYSTEM page still had a different map - nothing was
+	// tying the file's channel numbers to the receiving unit's own) - the Tone Memory dump +
+	// TimbreTemp pointer are the rest, and stay conditional on the track actually being on an
+	// Internal tone (the common case has neither). Each returned element is one DT1 message's
+	// own payload bytes (Roland header through checksum, no F0/F7 - see buildDt1Message()),
+	// ready for juce::MidiMessage::createSysExMessage(), which adds the wrapper itself.
+	std::vector<std::vector<juce::uint8>> buildTrackSysExPreamble(int track) const;
 	// The load-side mirror: wired to sequencerEngine's setLoadedTrackSetupSink() in the
 	// constructor. loadMidiFile() hands back whatever SysEx/Program Change/Volume/Pan it found
 	// in a track (see that setter's own comment for why - Alan noticed reimporting a track could
@@ -932,7 +983,7 @@ private:
 	// (Internal - see sequencerLivePrograms' own comment on why group 2/3 report no Program
 	// Change hint), in which case this holds the Tone Memory slot (0-63, field 1) instead, and
 	// sequencerLiveToneMemory below holds that slot's own 256 raw bytes, snapshotted the same
-	// block. Both exist for exactly one reason - buildInternalToneSysEx(), which
+	// block. Both exist for exactly one reason - buildTrackSysExPreamble(), which
 	// setSysExPreambleSource() reads at MIDI-export time to embed a DT1 dump of the custom tone
 	// into the file, since a plain Program Change can never reach group 2 on a real unit either.
 	std::array<int, d110seq::D110SequencerEngine::kNumTracks> sequencerLiveInternalTone{};

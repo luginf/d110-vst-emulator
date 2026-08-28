@@ -53,6 +53,9 @@ build details, see [`docs/building.md`](docs/building.md).
 - [`docs/sequencer.md`](docs/sequencer.md) - the D-20-style multitrack sequencer: tracks and
   channels, transport, real-time and step recording, quantize, bar editing, undo, song slots,
   MIDI Out, and the independent sequencer app (no firmware/ROMs needed at all).
+- [`docs/soundbanks.md`](docs/soundbanks.md) - the Soundbanks tone browser: building the
+  database from a folder or files/`.zip`, browsing, injecting/auditioning a tone (on this
+  emulator or a real connected D-110), and exporting Favorites as SysEx.
 - [`docs/roms.md`](docs/roms.md) - full ROM requirements, checksums, factory defaults, and
   re-initializing the firmware.
 - [`docs/building.md`](docs/building.md) - full build details, including the opt-in MAME-backed

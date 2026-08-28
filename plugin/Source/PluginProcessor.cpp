@@ -145,7 +145,7 @@ D110AudioProcessor::D110AudioProcessor()
 		[this](int track) { return sequencerLiveVolumes[static_cast<size_t>(track)]; });
 	sequencerEngine.setPanSource(
 		[this](int track) { return sequencerLivePans[static_cast<size_t>(track)]; });
-	sequencerEngine.setSysExPreambleSource([this](int track) { return buildInternalToneSysEx(track); });
+	sequencerEngine.setSysExPreambleSource([this](int track) { return buildTrackSysExPreamble(track); });
 	sequencerEngine.setLoadedTrackSetupSink(
 		[this](int track, std::vector<juce::MidiMessage> setup) { applyLoadedTrackSetup(track, std::move(setup)); });
 	// The D-110 itself has no Bank Select concept - A/B is folded straight into the Program
@@ -650,6 +650,52 @@ void D110AudioProcessor::auditionToneBytes(int part, const juce::uint8 *body246)
 	}
 }
 
+// Same DT1 shape/chunking as injectSoundbankTone() just above, sent out the external MIDI Out
+// device instead of into this emulator's own firmware - see this method's own header comment
+// (PluginProcessor.h) for why sendAreaData() (core.pushMidi-only) can't be reused here.
+bool D110AudioProcessor::sendSoundbankToneToExternalMidi(int slot, const juce::uint8 *data256) {
+	if (slot < 0 || slot >= D110CoreType::kNumTones || data256 == nullptr) return false;
+
+	const juce::ScopedLock lock(osMidiLock);
+	if (osMidiOut == nullptr) return false;
+
+	const int base = slot * D110CoreType::kToneMemRecord;
+	auto sendChunk = [&](int offset, const juce::uint8 *bytes, int length) {
+		juce::uint8 msg[D110CoreType::kMaxSysexBytes];
+		const int n = D110CoreType::buildDt1Message(D110CoreType::kSysexTones, base + offset, bytes, length, msg);
+		if (n > 0) osMidiOut->sendMessageNow(juce::MidiMessage(msg, n));
+	};
+
+	sendChunk(0, data256, D110CoreType::kNameChars);
+	constexpr int kChunk = 123;
+	const juce::uint8 *body = data256 + D110CoreType::kNameChars;
+	for (int off = 0; off < D110CoreType::kToneRecord; off += kChunk) {
+		const int len = juce::jmin(kChunk, D110CoreType::kToneRecord - off);
+		sendChunk(D110CoreType::kNameChars + off, body + off, len);
+	}
+	return true;
+}
+
+// External-hardware equivalent of auditionToneBytes() - see this method's own header comment
+// (PluginProcessor.h) for why it targets Tone Temporary (kSysexToneTemp), not Tone Memory.
+bool D110AudioProcessor::sendSoundbankToneToExternalMidiPart(int part, const juce::uint8 *body246) {
+	if (part < 0 || part > 7 || body246 == nullptr) return false;
+
+	const juce::ScopedLock lock(osMidiLock);
+	if (osMidiOut == nullptr) return false;
+
+	const int base = part * D110CoreType::kToneRecord;
+	constexpr int kChunk = 123;
+	for (int off = 0; off < D110CoreType::kToneRecord; off += kChunk) {
+		const int len = juce::jmin(kChunk, D110CoreType::kToneRecord - off);
+		juce::uint8 msg[D110CoreType::kMaxSysexBytes];
+		const int n =
+			D110CoreType::buildDt1Message(D110CoreType::kSysexToneTemp, base + off, body246 + off, len, msg);
+		if (n > 0) osMidiOut->sendMessageNow(juce::MidiMessage(msg, n));
+	}
+	return true;
+}
+
 bool D110AudioProcessor::identifyRomData(const juce::MemoryBlock &data,
                                          MT32Emu::ROMInfo::Type &typeOut) {
 	if (data.getSize() == 0) return false;
@@ -1104,7 +1150,7 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 
 					// group 2 (Internal) is exactly the case sequencerLivePrograms above can't
 					// give a Program Change hint for - snapshot the Tone Memory slot it's
-					// actually using instead, for buildInternalToneSysEx() to embed into a MIDI
+					// actually using instead, for buildTrackSysExPreamble() to embed into a MIDI
 					// export in place of a Program Change a real unit could never reach either.
 					const size_t toneAddr = static_cast<size_t>(D110CoreType::kRamTones)
 					                       + static_cast<size_t>(tone) * D110CoreType::kToneMemRecord;
@@ -2260,13 +2306,36 @@ void D110AudioProcessor::sendPatchMemoryParam(int patch, int field, juce::uint8 
 // group 0/1, just done by hand here since there's no shortcut number for group 2. See
 // sequencerLiveInternalTone/sequencerLiveToneMemory's own comment for where the two inputs
 // come from (a block-refresh snapshot, same one sequencerLivePrograms already relies on).
-std::vector<std::vector<juce::uint8>> D110AudioProcessor::buildInternalToneSysEx(int track) const {
+//
+// Also always writes a channel-assign message for a melodic track (Alan's report, 2026-08-29):
+// the note events themselves are written on whatever channel channelForTrack() resolves for
+// this track (the exporting instrument's OWN current SYSTEM-page channel map, or its factory-
+// default fallback) - a receiving unit with a DIFFERENT channel map on its own SYSTEM page
+// would have those notes land on the wrong Part, exactly what he hit loading an export with a
+// customised map onto real hardware still on factory defaults. Writing this unconditionally,
+// not just alongside an Internal-tone dump, is what actually fixes it - the common case (no
+// custom tone at all) still needs its channel asserted just as much.
+std::vector<std::vector<juce::uint8>> D110AudioProcessor::buildTrackSysExPreamble(int track) const {
 	std::vector<std::vector<juce::uint8>> out;
 	if (track < 0 || track >= static_cast<int>(sequencerLiveInternalTone.size())) return out;
+
+	juce::uint8 msg[D110CoreType::kMaxSysexBytes];
+
+	if (track != d110seq::D110SequencerEngine::kRhythmTrack) {
+		// SYSTEM area, offset 13+track, one byte - same field sequencerLiveChannels is refreshed
+		// from (kRamSystem+13+t): 0-15 = channel 1-16. Rhythm has no such byte - its channel is
+		// fixed at 10 by convention, never part of this map (see sequencerLiveChannels' own
+		// comment) - see channelForTrack()'s own comment for why the fallback below never
+		// throws away part of the encoding
+		const int channel = juce::jlimit(1, 16, sequencerEngine.channelForTrack(track));
+		const juce::uint8 channelByte = static_cast<juce::uint8>(channel - 1);
+		const int n = D110CoreType::buildDt1Message(D110CoreType::kSysexSystem, 13 + track, &channelByte, 1, msg);
+		if (n > 2) out.emplace_back(msg + 1, msg + n - 1); // drop the F0/F7 createSysExMessage() re-adds
+	}
+
 	const int tone = sequencerLiveInternalTone[static_cast<size_t>(track)];
 	if (tone < 0 || tone > 63) return out;
 
-	juce::uint8 msg[D110CoreType::kMaxSysexBytes];
 	const auto &bytes = sequencerLiveToneMemory[static_cast<size_t>(track)];
 	// Same 244-byte-per-message ceiling sendToneBlock() already works around for the (bigger)
 	// Tone Temporary Area, same chunk size too, for one less magic number in the codebase.
@@ -2276,7 +2345,7 @@ std::vector<std::vector<juce::uint8>> D110AudioProcessor::buildInternalToneSysEx
 		const int n = D110CoreType::buildDt1Message(D110CoreType::kSysexTones,
 		                                            tone * D110CoreType::kToneMemRecord + off,
 		                                            bytes.data() + off, len, msg);
-		if (n > 2) out.emplace_back(msg + 1, msg + n - 1); // drop the F0/F7 createSysExMessage() re-adds
+		if (n > 2) out.emplace_back(msg + 1, msg + n - 1);
 	}
 
 	const juce::uint8 groupTone[2] = { 2, static_cast<juce::uint8>(tone) };

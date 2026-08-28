@@ -172,7 +172,74 @@ std::vector<DecodedPatch> decodePatchesFromMessage(const juce::uint8 *msg, size_
 	return result;
 }
 
+// Same address-packing formula as D110Core::buildDt1Message() (D110Core.cpp), duplicated here
+// deliberately (see this file's own header comment on why SoundbankDatabase stays decoupled
+// from D110Core) - UNLIKE buildDt1Message() itself, this has no 244-byte payload cap. That cap
+// exists only for LIVE transmission into the firmware's own receive buffer
+// (D110Core::kMaxSysexBytes - a real-time constraint), which doesn't apply to a plain .syx
+// FILE: a real Roland bulk dump routinely carries a whole 256-byte Tone record in one message,
+// exactly what decodeTonesFromMessage() above (and any real librarian/hardware reimporting
+// this file) expects to find - chunking it the way live injection has to would produce a file
+// nothing, including this app's own scanner, could read back as whole tones.
+int buildToneDt1(int slot, const juce::uint8 *data256, juce::uint8 *out) {
+	int n = 0;
+	out[n++] = 0xF0;
+	out[n++] = 0x41; // Roland
+	out[n++] = 0x10; // device ID (factory default, Exclusive Unit# 17)
+	out[n++] = 0x16; // model: MT-32 family, which the D-110 answers to
+	out[n++] = 0x12; // DT1
+
+	const juce::uint32 areaBase = (((kToneSysexAddress >> 16) & 0x7f) << 14)
+	                             | (((kToneSysexAddress >> 8) & 0x7f) << 7) | (kToneSysexAddress & 0x7f);
+	const juce::uint32 target = areaBase + juce::uint32(slot) * juce::uint32(kToneRecordSize);
+	const juce::uint8 a1 = juce::uint8((target >> 14) & 0x7f);
+	const juce::uint8 a2 = juce::uint8((target >> 7) & 0x7f);
+	const juce::uint8 a3 = juce::uint8(target & 0x7f);
+	out[n++] = a1;
+	out[n++] = a2;
+	out[n++] = a3;
+
+	juce::uint32 sum = juce::uint32(a1) + a2 + a3;
+	for (int i = 0; i < kToneRecordSize; ++i) {
+		const juce::uint8 v = data256[i] & 0x7f;
+		out[n++] = v;
+		sum += v;
+	}
+	out[n++] = juce::uint8((128 - (sum & 0x7f)) & 0x7f);
+	out[n++] = 0xF7;
+	return n;
+}
+
 } // namespace
+
+int exportTonesAsSysex(const std::vector<Entry> &tones, const juce::File &baseFile) {
+	if (tones.empty()) return 0;
+
+	const int numFiles = (int(tones.size()) + kNumToneSlots - 1) / kNumToneSlots;
+	const auto dir = baseFile.getParentDirectory();
+	const auto stem = baseFile.getFileNameWithoutExtension();
+	const auto ext = baseFile.getFileExtension(); // includes the leading '.', or empty
+
+	for (int chunk = 0; chunk < numFiles; ++chunk) {
+		const auto target = numFiles == 1 ? baseFile
+		                                   : dir.getChildFile(stem + "_"
+		                                                       + juce::String(chunk + 1).paddedLeft('0', 2)
+		                                                       + ext);
+
+		juce::MemoryBlock out;
+		for (int slot = 0; slot < kNumToneSlots; ++slot) {
+			const size_t idx = size_t(chunk) * size_t(kNumToneSlots) + size_t(slot);
+			if (idx >= tones.size()) break;
+			juce::uint8 data[kToneRecordSize];
+			if (!Database::readToneBytes(tones[idx], data)) continue; // file missing - skip, don't abort the export
+			juce::uint8 msg[kToneRecordSize + 16];
+			const int n = buildToneDt1(slot, data, msg);
+			out.append(msg, size_t(n));
+		}
+		target.replaceWithData(out.getData(), out.getSize());
+	}
+	return numFiles;
+}
 
 juce::String letterGroupFor(const juce::String &name) {
 	const auto trimmed = name.trim();
@@ -274,42 +341,81 @@ int Database::rescan(const juce::File &sourceFolder) {
 	// FollowSymlinks::no: nothing about a tone library needs a symlink followed, and a
 	// symlink loop under an unbounded recursive walk is a real (if unlikely) way to never
 	// return / exhaust memory - not worth the risk for a feature that has no reason to need it.
+	// Alan's request, 2026-08-28 (also for Android, where picking a whole folder isn't
+	// reliable - see chooseSoundbankFiles()'s own comment in Main.cpp - so a single .zip is the
+	// practical stand-in for "a folder"): a .zip's own *.syx/*.mid/*.smf entries are scanned
+	// too, one level deep (a zip nested inside a zip is not).
 	juce::Array<juce::File> files;
 	for (const auto &entry : juce::RangedDirectoryIterator(sourceFolder, true, "*", juce::File::findFiles,
 	                                                        juce::File::FollowSymlinks::no))
-		if (entry.getFile().hasFileExtension("syx;mid;midi;smf")) files.add(entry.getFile());
+		if (entry.getFile().hasFileExtension("syx;mid;midi;smf;zip")) files.add(entry.getFile());
 
 	int added = 0;
-	for (const auto &f : files) {
-		for (const auto &t : decodeTonesFromFile(f)) {
-			const juce::String rawName = t.name.isEmpty() ? juce::String("(Unnamed)") : t.name;
 
-			bool alreadyPresent = false;
-			for (const auto &e : entries) {
-				if (e.rawName != rawName) continue;
-				juce::uint8 existing[kToneRecordSize];
-				if (readToneBytes(e, existing) && std::memcmp(existing, t.data, kToneRecordSize) == 0) {
-					alreadyPresent = true;
-					break;
+	// Shared by both the plain-file loop and the zip-entry loop below - dedup/name/write logic
+	// is otherwise identical either way, only the provenance label (`sourceLabel`) differs.
+	auto addDecodedTone = [&](const DecodedTone &t, const juce::String &sourceLabel) {
+		const juce::String rawName = t.name.isEmpty() ? juce::String("(Unnamed)") : t.name;
+
+		for (const auto &e : entries) {
+			if (e.rawName != rawName) continue;
+			juce::uint8 existing[kToneRecordSize];
+			if (readToneBytes(e, existing) && std::memcmp(existing, t.data, kToneRecordSize) == 0)
+				return; // already have this exact tone
+		}
+
+		const int n = countPerName[rawName]++;
+		const juce::String displayName = n == 0 ? rawName : rawName + " (" + juce::String(n) + ")";
+
+		const auto letterDir = root.getChildFile(letterGroupFor(rawName));
+		letterDir.createDirectory();
+		// Just needs to be unique, not derived from content - juce::Uuid avoids pulling in the
+		// whole juce_cryptography module (unused elsewhere in this project) for a hash.
+		const auto uniqueName = juce::Uuid().toString().substring(0, 12);
+		const auto file = letterDir.getChildFile(uniqueName + ".d110tone");
+		file.replaceWithData(t.data, size_t(kToneRecordSize));
+
+		entries.push_back({ displayName, rawName, file, sourceLabel });
+		++added;
+	};
+
+	for (const auto &f : files) {
+		if (!f.hasFileExtension("zip")) {
+			for (const auto &t : decodeTonesFromFile(f)) addDecodedTone(t, f.getFullPathName());
+			continue;
+		}
+
+		// A zip entry isn't a real file on disk - decodeTonesFromFile() needs one (it opens a
+		// FileInputStream/reads raw bytes by path), so each matching entry is extracted to a
+		// throwaway temp file, decoded through the exact same path as everything else, then
+		// deleted - simpler than a second, memory-based decode path for what's a one-off,
+		// not-perf-critical import.
+		juce::ZipFile zip(f);
+		const auto tempDir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+			                      .getChildFile("d110_soundbank_zip_" + juce::Uuid().toString().substring(0, 8));
+		tempDir.createDirectory();
+		for (int i = 0; i < zip.getNumEntries(); ++i) {
+			const auto *zipEntry = zip.getEntry(i);
+			if (zipEntry == nullptr) continue;
+			const juce::File asFile(zipEntry->filename); // just to read its own extension
+			if (!asFile.hasFileExtension("syx;mid;midi;smf")) continue;
+
+			std::unique_ptr<juce::InputStream> in(zip.createStreamForEntry(i));
+			if (in == nullptr) continue;
+			const auto tempFile =
+				tempDir.getChildFile(juce::Uuid().toString().substring(0, 8) + "_" + asFile.getFileName());
+			{
+				auto out = tempFile.createOutputStream();
+				if (out == nullptr || out->writeFromInputStream(*in, -1) <= 0) {
+					tempFile.deleteFile();
+					continue;
 				}
 			}
-			if (alreadyPresent) continue;
-
-			const int n = countPerName[rawName]++;
-			const juce::String displayName =
-				n == 0 ? rawName : rawName + " (" + juce::String(n) + ")";
-
-			const auto letterDir = root.getChildFile(letterGroupFor(rawName));
-			letterDir.createDirectory();
-			// Just needs to be unique, not derived from content - juce::Uuid avoids pulling in
-			// the whole juce_cryptography module (unused elsewhere in this project) for a hash.
-			const auto uniqueName = juce::Uuid().toString().substring(0, 12);
-			const auto file = letterDir.getChildFile(uniqueName + ".d110tone");
-			file.replaceWithData(t.data, size_t(kToneRecordSize));
-
-			entries.push_back({ displayName, rawName, file, f.getFullPathName() });
-			++added;
+			const auto label = f.getFileName() + " -> " + zipEntry->filename;
+			for (const auto &t : decodeTonesFromFile(tempFile)) addDecodedTone(t, label);
+			tempFile.deleteFile();
 		}
+		tempDir.deleteRecursively();
 	}
 
 	if (added > 0) saveIndex();

@@ -30,8 +30,11 @@ public:
 	void paint(juce::Graphics &g) override;
 	void resized() override;
 	void mouseDown(const juce::MouseEvent &e) override;
+	void mouseDrag(const juce::MouseEvent &e) override;
+	void mouseUp(const juce::MouseEvent &e) override;
 	void mouseDoubleClick(const juce::MouseEvent &e) override;
 	void mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &wheel) override;
+	bool keyPressed(const juce::KeyPress &key) override;
 
 private:
 	void rebuildFilteredList();
@@ -50,11 +53,52 @@ private:
 	void auditionEntryToPart(const d110bank::Entry &entry, int part);
 	// Right-click on a row - Alan's request, 2026-08-28: Favorites toggle, "Send to Part N"
 	// (1-8, quick-audition without changing the PART selector), "Inject to slot..." (same as
-	// the button).
+	// the button), "Send to real D-110..." (2026-08-28 follow-up - see
+	// showExternalInjectMenuFor()'s own comment). On Android, the same menu opens from a
+	// long-press instead (no right mouse button to hold there) - see handleLongPress().
 	void showContextMenuFor(const d110bank::Entry &entry);
+	// Long-press-to-context-menu, Android's equivalent of a desktop right-click (touch has no
+	// second button). Scheduled from mouseDown() (touch sources only - see its own comment) via
+	// juce::Timer::callAfterDelay(); `gestureId` is compared against `longPressGestureId` so a
+	// callback from an earlier, already-finished gesture can't fire late and act on stale state.
+	void handleLongPress(int gestureId, d110bank::Entry entry);
+	// "Send to real D-110..." on the row context menu - Alan's request, 2026-08-28: write a
+	// browsed tone into a slot on an ACTUAL connected D-110 over a real MIDI Out port
+	// (D110AudioProcessor::sendSoundbankToneToExternalMidi()), not just this emulator's own
+	// Tone Memory. Deliberately a separate menu from showInjectMenuFor() rather than a shared
+	// one: that one can show each slot's CURRENT name (read from this emulator's own RAM) next
+	// to its number, which is impossible for a real remote unit this app has no read access
+	// to - the two menus look almost the same but that's the reason they're not one function.
+	void showExternalInjectMenuFor(const d110bank::Entry &entry);
+	// "Send to real D-110" > "Part N" - Alan's request, 2026-08-28 follow-up: also reach a
+	// Part on the real unit directly, the external-hardware equivalent of auditionEntryToPart()
+	// ("comme le font la plupart des éditeurs" - his own words), not just a Tone Memory slot.
+	void sendToExternalPart(const d110bank::Entry &entry, int part);
 	void pickGroup(const juce::String &group);
 	void pickPart(int part);
 	void clearSearch();
+	// "EXPORT FAVORITES..." button - Alan's request, 2026-08-28. Sorts the current favourites
+	// alphabetically (his own request) and hands them to d110bank::exportTonesAsSysex() - see
+	// that function's own comment for the file-splitting/naming scheme (its own "mes
+	// favoris.syx" -> "mes favoris_01.syx"/"_02.syx"/... example is implemented there, not
+	// here, since Database/Favorites is where the on-disk tone bytes actually live).
+	void exportFavorites();
+#if !JUCE_ANDROID
+	// "CHOOSE FILES/FOLDER..." button - Alan's request, 2026-08-28: picking the SysEx source
+	// used to only be reachable from the desktop extended editor's own Utility tab, which he
+	// found unintuitive ("pas besoin de mettre ça dans l'onglet utility") - and that picker
+	// could only select a whole FOLDER, not a loose file or a .zip directly, which was his
+	// separate "je n'ai pas trouvé comment importer un zip" report. This one picker handles
+	// both: a folder picked alone sets it as getSoundbankSourceFolder() (unchanged behaviour,
+	// same as the Utility tab's own button, still there too); one or more individual files
+	// (including a bare .zip) are copied into getSoundbankImportsFolder() instead, which
+	// startRescan() now always scans in ADDITION to the configured source folder - see its own
+	// comment for why that's kept separate rather than overwriting it. Android-only excluded:
+	// it already has its own dedicated, SAF-appropriate flow (the hamburger menu's "Choose
+	// soundbank files..."), and a desktop-style combined file-or-folder juce::FileChooser isn't
+	// something Android's picker reliably supports the way native desktop dialogs do.
+	void chooseSource();
+#endif
 
 	D110AudioProcessor &processor;
 
@@ -62,6 +106,10 @@ private:
 	juce::TextButton clearSearchButton{ "X" };
 	juce::TextButton rescanButton{ "RESCAN" };
 	juce::TextButton injectButton{ "INJECT TO SLOT..." };
+	juce::TextButton exportFavoritesButton{ "EXPORT FAVORITES..." };
+#if !JUCE_ANDROID
+	juce::TextButton chooseSourceButton{ "CHOOSE FILES/FOLDER..." };
+#endif
 	juce::Label statusLabel;
 
 	// "ALL", "FAVORITES", "A".."Z", "0-9", "_" - fixed browse order. A non-empty search query
@@ -92,8 +140,33 @@ private:
 	// `rowEntries` directly rather than re-deriving a position from `listScrollRow`.
 	int listColumns = 1;
 	int listScrollRow = 0; // scroll position in GRID ROWS, not raw `filtered` indices
+	int visibleGridRows = 0; // set each paint(), reused by keyPressed()'s auto-scroll-to-selection
 	std::vector<juce::Rectangle<float>> rowBounds;
 	std::vector<const d110bank::Entry *> rowEntries;
+
+	// A real scrollbar (Alan's request, 2026-08-28: mouse wheel only wasn't discoverable/usable,
+	// and Android has no wheel at all) - narrow track to the right of the list, click-to-page or
+	// drag-the-thumb, computed each paint() since it depends on the same totalGridRows/
+	// visibleGridRows the grid layout itself does.
+	juce::Rectangle<float> scrollbarArea, scrollbarThumb;
+	bool draggingThumb = false;
+	float thumbDragGrabOffsetY = 0.0f; // where inside the thumb the drag started, so it doesn't jump
+
+	// Touch-drag-to-scroll the list itself (Alan's request, 2026-08-28: Android has no wheel and
+	// dragging the list directly, not just a thin scrollbar, is the natural touch gesture). A
+	// small movement threshold distinguishes a tap (selects a row, in mouseUp) from a drag
+	// (scrolls, no selection) - selection is deferred to mouseUp for exactly this reason.
+	bool trackingListDrag = false;
+	bool listDragIsScroll = false;
+	juce::Point<float> listDragStartPos;
+	int listDragStartScrollRow = 0;
+
+	// Long-press-to-context-menu (touch only - see mouseDown()'s own comment): scheduled via
+	// juce::Timer::callAfterDelay() rather than a juce::Timer subclass since it only ever needs
+	// one, cancellable-by-flag-check shot per gesture (see handleLongPress()'s own comment).
+	// `longPressGestureId` increments on every new touch-down in the list, so a stale callback
+	// from an already-finished (tapped, scrolled, or already-long-pressed) gesture is a no-op.
+	int longPressGestureId = 0;
 
 	// A rescan walks an arbitrary folder and can genuinely take a while for a big library -
 	// runs off the message thread so the UI stays responsive; polled by a timer rather than a

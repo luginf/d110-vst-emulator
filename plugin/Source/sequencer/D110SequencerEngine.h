@@ -139,11 +139,13 @@ public:
 	void setBankSource(std::function<int(int trackIndex)> bankForTrack);
 	void setBankLsbSource(std::function<int(int trackIndex)> bankLsbForTrack);
 
-	// Same idea once more: a track's exported SysEx "preamble", any custom-sound data that has
-	// to reach the receiving instrument's own memory before its Program Change can select it
-	// (the D-110 plugin uses this for tracks whose live Timbre is an Internal tone - Program
-	// Change alone can never reach one, on a real unit either - see
-	// D110AudioProcessor::buildInternalToneSysEx()). Each element of the returned vector is one
+	// Same idea once more: a track's exported SysEx "preamble" - any data that has to reach the
+	// receiving instrument's own memory before the Bank Select/Program Change/Volume/Pan events
+	// below mean anything. The D-110 plugin uses this both unconditionally (a channel-assign
+	// write, so the receiving unit's own SYSTEM-page channel map can't disagree with which
+	// channel this track's notes were actually written on) and for tracks whose live Timbre is
+	// an Internal tone (Program Change alone can never reach one, on a real unit either) - see
+	// D110AudioProcessor::buildTrackSysExPreamble()). Each element of the returned vector is one
 	// complete SysEx message's own payload bytes, NOT including the F0/F7 wrapper -
 	// juce::MidiMessage::createSysExMessage() adds those - written in order, all at time 0,
 	// ahead of the Bank Select/Program Change/Volume/Pan events above (a Program Change with no

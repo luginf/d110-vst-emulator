@@ -198,9 +198,12 @@ regardless of whether the toggle is on.
 ## Load / Save
 
 A plain click on **LOAD**/**SAVE** loads/saves just the current song as a standard `.mid` file,
-including Program Change/Bank and Volume/Pan where set. Reimporting into the D-110 plugin
-restores all of it (Program Change, custom internal tones, Volume/Pan); Nonet Sequencer has no
-firmware to restore this into.
+including Program Change/Bank and Volume/Pan where set. Each track's own MIDI channel is also
+asserted via a small SysEx message at the start of the file, so the exported channel numbers
+still land on the right Part even when the receiving D-110's own SYSTEM-page channel map
+doesn't happen to match the one the song was made with. Reimporting into the D-110 plugin
+restores all of it (Program Change, custom internal tones, Volume/Pan, channel map); Nonet
+Sequencer has no firmware to restore this into.
 
 **Right-click** LOAD/SAVE for all 4 song slots at once, as a single portable `.midiseq` file.
 

@@ -61,6 +61,19 @@ struct DecodedTone {
 // Patch/Timbre/Tone/System writes together and only Tone matters here.
 std::vector<DecodedTone> decodeTonesFromFile(const juce::File &file);
 
+// Writes `tones` out as one or more standalone Roland SysEx bank files - Alan's request,
+// 2026-08-28 (exporting Favorites): splits into chunks of kNumToneSlots (64) each, so every
+// resulting file is a complete, self-contained internal Tone Memory bank (slot 0..63) on its
+// own - reimports cleanly via decodeTonesFromFile()/Database::rescan(), or can be replayed
+// wholesale into a real D-110 via the existing "Import SysEx/MIDI Bank..." feature. `tones` is
+// written in the order given - the caller decides sort order (SoundbankBrowser sorts
+// favourites alphabetically before calling this, per Alan's own request). If everything fits
+// in one file, `baseFile` is written as-is with no suffix; otherwise chunk N (1-based) is
+// written alongside it as "<baseFile's name>_NN.<ext>", zero-padded to 2 digits - Alan's own
+// example ("mes favoris.syx" -> "mes favoris_01.syx", "mes favoris_02.syx", ...). Returns how
+// many files were written (0 if `tones` is empty).
+int exportTonesAsSysex(const std::vector<Entry> &tones, const juce::File &baseFile);
+
 // --- Patch-oriented decoding, ON HOLD ------------------------------------------------------
 // The feature's first cut scanned PATCHES (128-byte Patch Memory records, SysEx 06 00 00) -
 // Alan corrected this 2026-08-28 ("je veux les sons (tones), pas les patch"), but asked to
@@ -90,7 +103,10 @@ public:
 	// loading, only rescan the source folder when asked).
 	void load();
 
-	// Recursively scans `sourceFolder` for *.syx/*.mid/*.smf, decodes every tone found, and
+	// Recursively scans `sourceFolder` for *.syx/*.mid/*.smf (plus, one level deep, any of
+	// those found inside a *.zip - Alan's request, 2026-08-28, partly a convenience and partly
+	// the practical stand-in for "pick a whole folder" on Android, where that isn't reliable -
+	// see chooseSoundbankFiles()'s own comment in Main.cpp), decodes every tone found, and
 	// MERGES the result into whatever's already in the database (calls load() first) - an
 	// existing entry with the exact same name AND byte content is left alone (already have
 	// it); same name but different content becomes a new entry with a " (1)"/" (2)"/...

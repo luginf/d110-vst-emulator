@@ -14,6 +14,8 @@ constexpr int kGroupColumns = 3;
 // Minimum width for one tone-list column before another one is added - wide enough for a
 // long real name plus a " (N)" disambiguation suffix without truncating.
 constexpr float kListColumnMinWidth = 200.0f;
+// Wide enough to comfortably drag with a fingertip on Android, not just a mouse pointer.
+constexpr float kScrollbarWidth = 18.0f;
 
 // Internal Tone Memory slots are labelled plainly "SLOT 1".."SLOT 64" - the exact string the
 // TONES tab's own slot list already uses (D110EditorPane::layoutTones(), PluginEditor.cpp,
@@ -36,17 +38,26 @@ juce::String toneSlotLabel(int slot) { return "SLOT " + juce::String(slot + 1); 
 // but a separate in-memory object) - the shared instance is now only ever touched from the
 // message thread, in checkRescanProgress()'s post-scan load().
 struct SoundbankBrowser::RescanThread : public juce::Thread {
-	RescanThread(const juce::File &dbRoot, juce::File folder)
-		: juce::Thread("D-110 Soundbank Rescan"), database(dbRoot), sourceFolder(std::move(folder)) {}
+	// `folders` - Alan's request, 2026-08-28: RESCAN always walks TWO roots now, not one - the
+	// user's own configured source folder (getSoundbankSourceFolder(), optional, may be empty)
+	// AND the fixed staging folder individually-picked files/zips land in
+	// (D110AudioProcessor::getSoundbankImportsFolder(), always scanned regardless) - see
+	// startRescan()'s own comment for why they're kept separate rather than one replacing the
+	// other. Database::rescan() itself stays single-folder (unchanged, still well-tested) -
+	// this just calls it once per folder, summing the total added.
+	RescanThread(const juce::File &dbRoot, juce::Array<juce::File> folders)
+		: juce::Thread("D-110 Soundbank Rescan"), database(dbRoot), sourceFolders(std::move(folders)) {}
 
 	void run() override {
-		const int n = database.rescan(sourceFolder);
-		added.store(n, std::memory_order_release);
+		int total = 0;
+		for (const auto &folder : sourceFolders)
+			if (folder.isDirectory()) total += database.rescan(folder);
+		added.store(total, std::memory_order_release);
 		finished.store(true, std::memory_order_release);
 	}
 
 	d110bank::Database database; // this thread's own - never touched by the message thread
-	juce::File sourceFolder;
+	juce::Array<juce::File> sourceFolders;
 	std::atomic<bool> finished{ false };
 	std::atomic<int> added{ 0 };
 };
@@ -79,6 +90,15 @@ SoundbankBrowser::SoundbankBrowser(D110AudioProcessor &processorToUse) : process
 	injectButton.setEnabled(false);
 	addAndMakeVisible(injectButton);
 
+	exportFavoritesButton.onClick = [this] { exportFavorites(); };
+	exportFavoritesButton.setEnabled(false);
+	addAndMakeVisible(exportFavoritesButton);
+
+#if !JUCE_ANDROID
+	chooseSourceButton.onClick = [this] { chooseSource(); };
+	addAndMakeVisible(chooseSourceButton);
+#endif
+
 	statusLabel.setJustificationType(juce::Justification::centredLeft);
 	addAndMakeVisible(statusLabel);
 
@@ -94,12 +114,17 @@ void SoundbankBrowser::refresh() {
 	processor.getSoundbankDatabase().load();
 	selectedEntry = nullptr;
 	injectButton.setEnabled(false);
+	exportFavoritesButton.setEnabled(processor.getSoundbankFavorites().size() > 0);
 	rebuildFilteredList();
 
 	const int total = processor.getSoundbankDatabase().size();
+	// "Utility tab" doesn't exist on Android (no extended editor drawer there at all - see
+	// CLAUDE.md) - this message used to say that unconditionally and was simply wrong there,
+	// where the source folder/files are actually picked from the hamburger menu instead. Kept
+	// platform-agnostic now rather than naming either location.
 	statusLabel.setText(total == 0
-	                         ? juce::String("No soundbank scanned yet - choose a folder in the "
-	                                        "Utility tab, then RESCAN.")
+	                         ? juce::String("No soundbank scanned yet - choose your SysEx files, "
+	                                        "then RESCAN.")
 	                         : juce::String(total) + (total == 1 ? " sound" : " sounds")
 	                               + " in the database.",
 	                     juce::dontSendNotification);
@@ -162,20 +187,132 @@ void SoundbankBrowser::clearSearch() {
 	repaint();
 }
 
+// "EXPORT FAVORITES..." - Alan's request, 2026-08-28.
+void SoundbankBrowser::exportFavorites() {
+	auto &favorites = processor.getSoundbankFavorites();
+	if (favorites.size() == 0) return;
+
+	// Alphabetical, per Alan's own request - the order exportTonesAsSysex() then writes/splits
+	// into 64-tone chunks in.
+	std::vector<d110bank::Entry> sorted;
+	for (const auto &e : processor.getSoundbankDatabase().all())
+		if (favorites.contains(e)) sorted.push_back(e);
+	std::sort(sorted.begin(), sorted.end(), [](const d110bank::Entry &a, const d110bank::Entry &b) {
+		return a.displayName.compareIgnoreCase(b.displayName) < 0;
+	});
+
+	// Same raw-pointer-captured-in-its-own-callback FileChooser idiom PluginEditor.cpp already
+	// uses for its own SysEx/snapshot export dialogs (e.g. "Export SysEx bank as").
+	auto *chooser = new juce::FileChooser("Export Favorites as SysEx...",
+	                                       processor.getLastDialogDir().getChildFile("favorites.syx"),
+	                                       "*.syx");
+	chooser->launchAsync(
+		juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+			| juce::FileBrowserComponent::warnAboutOverwriting,
+		[this, chooser, sorted](const juce::FileChooser &fc) {
+			auto file = fc.getResult();
+			if (file != juce::File()) {
+				if (!file.hasFileExtension("syx")) file = file.withFileExtension("syx");
+				processor.setLastDialogDir(file.getParentDirectory());
+				const int written = d110bank::exportTonesAsSysex(sorted, file);
+				statusLabel.setText(written <= 1
+				                         ? "Exported " + juce::String(sorted.size()) + " favorite(s) to "
+				                               + file.getFileName() + "."
+				                         : "Exported " + juce::String(sorted.size())
+				                               + " favorite(s) across " + juce::String(written)
+				                               + " files (" + file.getFileNameWithoutExtension() + "_01.."
+				                               + juce::String(written).paddedLeft('0', 2) + ").",
+				                     juce::dontSendNotification);
+				repaint();
+			}
+			delete chooser;
+		});
+}
+
+#if !JUCE_ANDROID
+// "CHOOSE FILES/FOLDER..." - Alan's request, 2026-08-28 (see this method's own header comment
+// for the full context/why).
+void SoundbankBrowser::chooseSource() {
+	auto *chooser = new juce::FileChooser(
+		"Choose a folder of SysEx/MIDI files to scan, or pick individual files/.zip to add",
+		processor.getLastDialogDir(), "*.syx;*.mid;*.midi;*.smf;*.zip");
+	chooser->launchAsync(
+		juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+			| juce::FileBrowserComponent::canSelectDirectories
+			| juce::FileBrowserComponent::canSelectMultipleItems,
+		[this, chooser](const juce::FileChooser &fc) {
+			const auto results = fc.getResults();
+			if (results.isEmpty()) {
+				delete chooser;
+				return;
+			}
+			processor.setLastDialogDir(results[0].getParentDirectory());
+
+			// A single folder, picked alone - same as the Utility tab's own long-standing
+			// picker: point the configured source straight at it, no copying. (If a folder
+			// happens to be mixed in among several files in one multi-select, it's simplest and
+			// least surprising to just treat the whole result as the files case below and skip
+			// the folder entry there, rather than silently also repointing the source folder as
+			// a side effect of an ostensibly file-focused pick.)
+			if (results.size() == 1 && results[0].isDirectory()) {
+				D110AudioProcessor::setSoundbankSourceFolder(results[0].getFullPathName());
+				statusLabel.setText("Source folder set to \"" + results[0].getFullPathName()
+				                         + "\" - hit RESCAN.",
+				                     juce::dontSendNotification);
+				repaint();
+				delete chooser;
+				return;
+			}
+
+			// One or more individual files (a loose .syx, or Alan's own reported gap - a bare
+			// .zip - either alone or several at once) - copied into the same fixed staging
+			// folder Android's own picker already uses (Main.cpp's copySoundbankFiles(),
+			// D110AudioProcessor::getSoundbankImportsFolder()), which startRescan() now always
+			// scans in addition to the configured source folder - see its own comment. Never
+			// touches getSoundbankSourceFolder() itself, so this can't silently make RESCAN
+			// forget an existing big library folder that was already configured.
+			const auto dest = D110AudioProcessor::getSoundbankImportsFolder();
+			dest.createDirectory();
+			int copied = 0;
+			for (const auto &f : results) {
+				if (f.isDirectory() || !f.hasFileExtension("syx;mid;midi;smf;zip")) continue;
+				if (f.copyFileTo(dest.getChildFile(f.getFileName()))) ++copied;
+			}
+			statusLabel.setText(copied > 0
+			                         ? juce::String(copied) + " file(s) added - hit RESCAN to add "
+			                               "them to the database."
+			                         : juce::String("No SysEx/MIDI/.zip files in that selection."),
+			                     juce::dontSendNotification);
+			repaint();
+			delete chooser;
+		});
+}
+#endif
+
 void SoundbankBrowser::startRescan() {
 	if (rescanThread != nullptr) return; // already running
 
-	const auto folder = D110AudioProcessor::getSoundbankSourceFolder();
-	if (folder.isEmpty() || !juce::File(folder).isDirectory()) {
-		statusLabel.setText("Choose a Soundbanks folder first (Utility tab).",
+	// Two roots, always - Alan's request, 2026-08-28: the user's own configured source folder
+	// (an existing personal library, typically) AND the fixed staging folder individually-picked
+	// files/zips land in (chooseSource() below on desktop, Main.cpp's copySoundbankFiles() on
+	// Android) - never one replacing the other, so picking a loose file/zip can't silently make
+	// RESCAN forget a big folder-based library that was already configured, and vice versa.
+	juce::Array<juce::File> folders;
+	const auto configured = D110AudioProcessor::getSoundbankSourceFolder();
+	if (configured.isNotEmpty() && juce::File(configured).isDirectory())
+		folders.add(juce::File(configured));
+	const auto imports = D110AudioProcessor::getSoundbankImportsFolder();
+	if (imports.isDirectory()) folders.add(imports);
+
+	if (folders.isEmpty()) {
+		statusLabel.setText("Choose your SysEx files/folder first.",
 		                     juce::dontSendNotification);
 		return;
 	}
 
 	rescanButton.setEnabled(false);
 	statusLabel.setText("Scanning...", juce::dontSendNotification);
-	rescanThread =
-		std::make_unique<RescanThread>(d110bank::Database::defaultRoot(), juce::File(folder));
+	rescanThread = std::make_unique<RescanThread>(d110bank::Database::defaultRoot(), std::move(folders));
 	rescanThread->startThread();
 	pollTimer.startTimer(150);
 }
@@ -301,6 +438,7 @@ void SoundbankBrowser::showContextMenuFor(const d110bank::Entry &entryRef) {
 	juce::PopupMenu menu;
 	menu.addItem(isFav ? "Remove from Favorites" : "Add to Favorites", [this, entry] {
 		processor.getSoundbankFavorites().toggle(entry);
+		exportFavoritesButton.setEnabled(processor.getSoundbankFavorites().size() > 0);
 		// FAVORITES may be the currently shown group, or a just-removed entry may need to
 		// disappear from it immediately either way.
 		rebuildFilteredList();
@@ -315,7 +453,77 @@ void SoundbankBrowser::showContextMenuFor(const d110bank::Entry &entryRef) {
 
 	menu.addItem("Inject to slot...", [this, entry] { showInjectMenuFor(entry); });
 
+	// Alan's request, 2026-08-28, two rounds: write a browsed tone to a REAL connected D-110,
+	// not just this emulator - mirrors the LOCAL "Send to"/"Inject to slot..." split just above
+	// (a Part, for instant non-destructive audition "comme le font la plupart des éditeurs",
+	// his own words for the follow-up ask; or a Tone Memory slot, permanent) - see
+	// sendToExternalPart()/showExternalInjectMenuFor()'s own comments.
+	juce::PopupMenu externalMenu;
+	for (int p = 0; p < 8; ++p)
+		externalMenu.addItem("Part " + juce::String(p + 1),
+		                      [this, entry, p] { sendToExternalPart(entry, p); });
+	externalMenu.addSeparator();
+	externalMenu.addItem("Inject to slot...", [this, entry] { showExternalInjectMenuFor(entry); });
+	menu.addSubMenu("Send to real D-110", externalMenu);
+
 	menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition());
+}
+
+// "Send to real D-110" > "Part N" - Alan's request, 2026-08-28: the external-hardware
+// equivalent of auditionEntryToPart() (double-click, or the LOCAL "Send to" submenu) - writes
+// straight into that Part's Tone Temporary on the real unit over MIDI Out, instantly audible,
+// no Tone Memory slot spent, exactly like the local audition path. See
+// D110AudioProcessor::sendSoundbankToneToExternalMidiPart()'s own comment for why this can't
+// reuse sendSoundbankToneToExternalMidi() (that one targets Tone MEMORY, address/stride apart).
+void SoundbankBrowser::sendToExternalPart(const d110bank::Entry &entry, int part) {
+	juce::uint8 data[256];
+	if (!d110bank::Database::readToneBytes(entry, data)) {
+		statusLabel.setText("Could not read \"" + entry.displayName + "\" - its file may be missing.",
+		                     juce::dontSendNotification);
+		repaint();
+		return;
+	}
+	const bool ok = processor.sendSoundbankToneToExternalMidiPart(part, data);
+	statusLabel.setText(ok ? "Sent \"" + entry.displayName + "\" to Part " + juce::String(part + 1)
+	                              + " on the real D-110."
+	                        : "No MIDI Out device selected - pick one first, then try again.",
+	                     juce::dontSendNotification);
+	repaint();
+}
+
+void SoundbankBrowser::showExternalInjectMenuFor(const d110bank::Entry &entryRef) {
+	const d110bank::Entry entry = entryRef; // see showContextMenuFor()'s own comment - same fix
+
+	if (!processor.hasExternalMidiOutput()) {
+		statusLabel.setText("No MIDI Out device selected - pick one first (MIDI Output menu), "
+		                     "then try again.",
+		                     juce::dontSendNotification);
+		repaint();
+		return;
+	}
+
+	// No name lookup here, unlike showInjectMenuFor()'s own slot menu - there's no RAM to read
+	// a real remote unit's current slot contents from, only this emulator's own.
+	juce::PopupMenu menu;
+	for (int slot = 0; slot < D110CoreType::kNumTones; ++slot) menu.addItem(slot + 1, toneSlotLabel(slot));
+
+	menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this), [this, entry](int result) {
+		if (result <= 0) return;
+		const int slot = result - 1;
+		juce::uint8 data[256];
+		if (!d110bank::Database::readToneBytes(entry, data)) {
+			statusLabel.setText("Could not read \"" + entry.displayName + "\" - its file may be missing.",
+			                     juce::dontSendNotification);
+			repaint();
+			return;
+		}
+		const bool ok = processor.sendSoundbankToneToExternalMidi(slot, data);
+		statusLabel.setText(ok ? "Sent \"" + entry.displayName + "\" to " + toneSlotLabel(slot)
+		                              + " on the real D-110."
+		                        : "No MIDI Out device selected - pick one first, then try again.",
+		                     juce::dontSendNotification);
+		repaint();
+	});
 }
 
 void SoundbankBrowser::resized() {
@@ -329,7 +537,14 @@ void SoundbankBrowser::resized() {
 
 	// Which Part a double-click auditions into - see the `selectedPart` member's own comment.
 	auto partRow = area.removeFromTop(24.0f);
-	area.removeFromTop(4.0f);
+	// Widened from 4 to 14, Alan's report, 2026-08-28 ("pourquoi Part 5 et pas 1?") - reproduced
+	// live on his own build: a touch aimed at the FIRST row of the tone list, just a few px too
+	// high, silently landed in this PART row instead (pickPart() acts immediately on
+	// mouseDown, unlike a list row's own tap-vs-drag deferral) with no visible error - the
+	// selection just quietly changed and nothing else looked wrong. A 4px gap is well inside
+	// normal fingertip imprecision; this trades a little vertical space for a safety margin a
+	// touch is unlikely to overshoot by accident.
+	area.removeFromTop(14.0f);
 	partStripArea = partRow;
 	partRow.removeFromLeft(50.0f); // room for the "PART" label, painted separately
 	partBounds.clear();
@@ -340,12 +555,18 @@ void SoundbankBrowser::resized() {
 
 	auto bottom = area.removeFromBottom(28.0f);
 	injectButton.setBounds(bottom.removeFromRight(150.0f).reduced(2.0f).toNearestInt());
+	exportFavoritesButton.setBounds(bottom.removeFromRight(150.0f).reduced(2.0f).toNearestInt());
 	rescanButton.setBounds(bottom.removeFromRight(90.0f).reduced(2.0f).toNearestInt());
+#if !JUCE_ANDROID
+	chooseSourceButton.setBounds(bottom.removeFromRight(170.0f).reduced(2.0f).toNearestInt());
+#endif
 	statusLabel.setBounds(bottom.toNearestInt());
 	area.removeFromBottom(4.0f);
 
 	groupStripArea = area.removeFromLeft(kGroupStripWidth);
 	area.removeFromLeft(4.0f);
+	scrollbarArea = area.removeFromRight(kScrollbarWidth);
+	area.removeFromRight(2.0f);
 	listArea = area;
 
 	// Alan's request, 2026-08-28: 29 entries (ALL/A-Z/0-9/_) in one narrow column read too
@@ -376,6 +597,20 @@ void SoundbankBrowser::resized() {
 void SoundbankBrowser::paint(juce::Graphics &g) {
 	const auto &pal = d110ui::palette();
 	g.fillAll(pal.panelBg);
+
+	// Alan's report, 2026-08-28: statusLabel (bottom-left - "No soundbank scanned yet...", scan
+	// results, etc.) relied on the shared LookAndFeel's default Label colour (pal.value, the
+	// accent green) like every other Label in the app - fine for a short bold VALUE next to its
+	// own label, but a whole sentence of small body text in that same accent colour measured out
+	// as genuinely low-contrast against panelBg on his real device/theme combination ("presque
+	// invisible" in Light - confirmed by sampling actual on-device pixels: text ~(75,98,34) on a
+	// background around (176,163,152), a ~1.8:1 contrast ratio, well under readable). Computed
+	// fresh from the CURRENT panelBg every repaint (same live-theme-tracking pattern the rest of
+	// this file already follows) via Colour::contrasting(), which picks near-black or near-white
+	// based on panelBg's own brightness - guaranteed strong contrast by construction rather than
+	// another hand-picked hex value that might not hold up on some other display/theme
+	// combination either.
+	statusLabel.setColour(juce::Label::textColourId, pal.panelBg.contrasting(0.9f));
 
 	const auto &db = processor.getSoundbankDatabase();
 
@@ -424,7 +659,7 @@ void SoundbankBrowser::paint(juce::Graphics &g) {
 	rowEntries.clear();
 	listColumns = juce::jmax(1, int(listArea.getWidth() / kListColumnMinWidth));
 	const float colW = listArea.getWidth() / float(listColumns);
-	const int visibleGridRows = juce::jmax(0, int(listArea.getHeight() / kRowHeight));
+	visibleGridRows = juce::jmax(0, int(listArea.getHeight() / kRowHeight));
 	const int totalGridRows = (int(filtered.size()) + listColumns - 1) / listColumns;
 	listScrollRow = juce::jlimit(0, juce::jmax(0, totalGridRows - visibleGridRows), listScrollRow);
 
@@ -456,6 +691,26 @@ void SoundbankBrowser::paint(juce::Graphics &g) {
 		g.setColour(pal.dim);
 		g.drawText("No match.", listArea.reduced(6.0f), juce::Justification::centred);
 	}
+
+	// Ascenseur (Alan's request, 2026-08-28: the mouse wheel was the only way to scroll, not
+	// discoverable and not usable at all on Android, which has no wheel). Only drawn/interactive
+	// when there's actually more content than fits - an empty/short list gets no thumb, nothing
+	// to drag.
+	g.setColour(pal.box);
+	g.fillRect(scrollbarArea);
+	g.setColour(pal.boxBorder);
+	g.drawRect(scrollbarArea, 0.5f);
+	scrollbarThumb = {};
+	if (totalGridRows > visibleGridRows && visibleGridRows > 0) {
+		const float trackH = scrollbarArea.getHeight();
+		const float thumbH = juce::jmax(24.0f, trackH * float(visibleGridRows) / float(totalGridRows));
+		const int maxScroll = totalGridRows - visibleGridRows;
+		const float thumbY = scrollbarArea.getY()
+		                    + (trackH - thumbH) * (maxScroll > 0 ? float(listScrollRow) / float(maxScroll) : 0.0f);
+		scrollbarThumb = { scrollbarArea.getX() + 2.0f, thumbY, scrollbarArea.getWidth() - 4.0f, thumbH };
+		g.setColour(draggingThumb ? pal.seqActiveFill : pal.value.withAlpha(0.6f));
+		g.fillRoundedRectangle(scrollbarThumb, 3.0f);
+	}
 }
 
 void SoundbankBrowser::mouseDown(const juce::MouseEvent &e) {
@@ -471,6 +726,22 @@ void SoundbankBrowser::mouseDown(const juce::MouseEvent &e) {
 
 	const auto pos = e.position;
 
+	if (scrollbarThumb.contains(pos)) {
+		draggingThumb = true;
+		thumbDragGrabOffsetY = pos.y - scrollbarThumb.getY();
+		repaint();
+		return;
+	}
+	if (scrollbarArea.contains(pos)) {
+		// Clicked the track itself, outside the thumb - page toward the click, like any normal
+		// scrollbar track click.
+		const int page = juce::jmax(1, visibleGridRows);
+		listScrollRow += pos.y < scrollbarThumb.getY() ? -page : page;
+		listScrollRow = juce::jmax(0, listScrollRow);
+		repaint();
+		return;
+	}
+
 	for (int i = 0; i < int(groupBounds.size()); ++i)
 		if (groupBounds[size_t(i)].contains(pos)) {
 			pickGroup(groupKeys[i]);
@@ -483,12 +754,104 @@ void SoundbankBrowser::mouseDown(const juce::MouseEvent &e) {
 			return;
 		}
 
+	if (e.mods.isPopupMenu()) {
+		for (int i = 0; i < int(rowBounds.size()); ++i)
+			if (rowBounds[size_t(i)].contains(pos)) {
+				showContextMenuFor(*rowEntries[size_t(i)]);
+				return;
+			}
+		return;
+	}
+
+	// Row selection itself is deferred to mouseUp (see trackingListDrag's own comment below) -
+	// picking it up here unconditionally would select a row the instant a touch-drag-to-scroll
+	// gesture merely started on top of one.
+	if (listArea.contains(pos)) {
+		trackingListDrag = true;
+		listDragIsScroll = false;
+		listDragStartPos = pos;
+		listDragStartScrollRow = listScrollRow;
+
+		// Long-press-to-context-menu - Alan's report, 2026-08-28: Android has no right mouse
+		// button, so the row context menu (Favorites/Send to/Inject to slot/Send to real
+		// D-110) was unreachable there entirely. Touch-only (`e.source.isTouch()`): a real
+		// mouse already has right-click, and holding the left button for half a second there
+		// would be a surprising way to also get a menu.
+		if (e.source.isTouch()) {
+			for (int i = 0; i < int(rowBounds.size()); ++i) {
+				if (!rowBounds[size_t(i)].contains(pos)) continue;
+				const int gestureId = ++longPressGestureId;
+				const d110bank::Entry entry = *rowEntries[size_t(i)]; // copy - see handleLongPress()
+				juce::Component::SafePointer<SoundbankBrowser> safeThis(this);
+				juce::Timer::callAfterDelay(500, [safeThis, gestureId, entry] {
+					if (safeThis != nullptr) safeThis->handleLongPress(gestureId, entry);
+				});
+				break;
+			}
+		}
+	}
+}
+
+// Fires ~500ms after a touch-down inside the list, unless the gesture already resolved into
+// something else first (a scroll, a release/tap, or a second gesture starting) - each of those
+// either bumps `longPressGestureId` (invalidating this call) or clears `trackingListDrag`
+// (mouseUp already handled it), both checked here. `entry` is a value copy taken at the moment
+// the touch started, same dangling-pointer-avoidance reason showContextMenuFor()/
+// showInjectMenuFor() already copy for their own async menus.
+void SoundbankBrowser::handleLongPress(int gestureId, d110bank::Entry entry) {
+	if (gestureId != longPressGestureId) return; // a newer gesture started since
+	if (!trackingListDrag || listDragIsScroll) return; // already released, or turned into a scroll
+	trackingListDrag = false; // consumed - mouseUp must not also treat this as a tap-select
+	showContextMenuFor(entry);
+}
+
+void SoundbankBrowser::mouseDrag(const juce::MouseEvent &e) {
+	const auto pos = e.position;
+
+	if (draggingThumb) {
+		const int totalGridRows = (int(filtered.size()) + listColumns - 1) / listColumns;
+		const int maxScroll = juce::jmax(0, totalGridRows - visibleGridRows);
+		const float usableTrack = juce::jmax(1.0f, scrollbarArea.getHeight() - scrollbarThumb.getHeight());
+		const float thumbY = pos.y - thumbDragGrabOffsetY - scrollbarArea.getY();
+		const float fraction = juce::jlimit(0.0f, 1.0f, thumbY / usableTrack);
+		listScrollRow = juce::roundToInt(fraction * float(maxScroll));
+		repaint();
+		return;
+	}
+
+	if (!trackingListDrag) return;
+
+	// A few pixels of wobble before a touch/click counts as a scroll drag rather than a tap -
+	// touch input is never perfectly still (Alan's request, 2026-08-28: Android has no mouse
+	// wheel, dragging the list is the natural touch gesture to scroll it).
+	const float deltaY = pos.y - listDragStartPos.y;
+	if (!listDragIsScroll && std::abs(deltaY) > 6.0f) listDragIsScroll = true;
+	if (listDragIsScroll) {
+		listScrollRow = juce::jmax(0, listDragStartScrollRow - juce::roundToInt(deltaY / kRowHeight));
+		repaint();
+	}
+}
+
+void SoundbankBrowser::mouseUp(const juce::MouseEvent &e) {
+	if (draggingThumb) {
+		draggingThumb = false;
+		repaint();
+	}
+
+	if (!trackingListDrag) return;
+	const bool wasScroll = listDragIsScroll;
+	trackingListDrag = false;
+	listDragIsScroll = false;
+	if (wasScroll) {
+		repaint();
+		return;
+	}
+
+	// A genuine tap, not a drag - select the row under it (the behaviour mouseDown used to
+	// provide directly, before it had to start deferring to tell a tap from a scroll gesture).
+	const auto pos = e.position;
 	for (int i = 0; i < int(rowBounds.size()); ++i) {
 		if (!rowBounds[size_t(i)].contains(pos)) continue;
-		if (e.mods.isPopupMenu()) {
-			showContextMenuFor(*rowEntries[size_t(i)]);
-			return;
-		}
 		selectedEntry = rowEntries[size_t(i)];
 		injectButton.setEnabled(true);
 		repaint();
@@ -539,4 +902,41 @@ void SoundbankBrowser::mouseWheelMove(const juce::MouseEvent &, const juce::Mous
 	listScrollRow -= juce::roundToInt(wheel.deltaY * 4.0f);
 	listScrollRow = juce::jmax(0, listScrollRow);
 	repaint();
+}
+
+// Arrow-key navigation (Alan's request, 2026-08-28: the mouse wheel was the only way to move
+// through the list at all - unusable on Android, and not discoverable even on desktop). Moves
+// the selection through the same row-major grid paint() lays out (Up/Down by one grid row =
+// `listColumns` entries, Left/Right by one entry, Page Up/Down by a full screen), auto-scrolling
+// to keep the new selection visible exactly the way any normal list view does.
+bool SoundbankBrowser::keyPressed(const juce::KeyPress &key) {
+	if (filtered.empty()) return false;
+
+	int index = -1;
+	if (selectedEntry != nullptr) {
+		const auto it = std::find(filtered.begin(), filtered.end(), selectedEntry);
+		if (it != filtered.end()) index = int(it - filtered.begin());
+	}
+	const int page = listColumns * juce::jmax(1, visibleGridRows);
+
+	int newIndex;
+	if (key == juce::KeyPress::downKey) newIndex = (index < 0 ? -listColumns : index) + listColumns;
+	else if (key == juce::KeyPress::upKey) newIndex = (index < 0 ? listColumns : index) - listColumns;
+	else if (key == juce::KeyPress::rightKey) newIndex = (index < 0 ? -1 : index) + 1;
+	else if (key == juce::KeyPress::leftKey) newIndex = (index < 0 ? 1 : index) - 1;
+	else if (key == juce::KeyPress::pageDownKey) newIndex = (index < 0 ? -page : index) + page;
+	else if (key == juce::KeyPress::pageUpKey) newIndex = (index < 0 ? page : index) - page;
+	else return false;
+
+	newIndex = juce::jlimit(0, int(filtered.size()) - 1, newIndex);
+	selectedEntry = filtered[size_t(newIndex)];
+	injectButton.setEnabled(true);
+
+	const int row = newIndex / listColumns;
+	if (row < listScrollRow) listScrollRow = row;
+	else if (row >= listScrollRow + juce::jmax(1, visibleGridRows)) listScrollRow = row - visibleGridRows + 1;
+	listScrollRow = juce::jmax(0, listScrollRow);
+
+	repaint();
+	return true;
 }

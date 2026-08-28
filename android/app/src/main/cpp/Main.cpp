@@ -264,10 +264,40 @@ public:
 			// (nothing else needed to explicitly "shift up" - less removed from the top of
 			// `area` here means more of it left for them further down).
 			const bool shrinkHamburger = inRetroSequencer && isLandscape;
-			const int transportH = shrinkHamburger ? 36 : 72;
-			const int menuButtonW = shrinkHamburger ? 36 : 72;
+			// Soundbanks only ever has the hamburger in this row (Play/Stop/status all hidden
+			// there, same as retro) - Alan's report, 2026-08-28: the row was still reserving the
+			// full Panel-mode 72px even though the (now 40px-tall) button left a 32px gap below
+			// it before the search box/list actually started. Reserving exactly buttonH there
+			// instead removes that gap outright, same reasoning as retro landscape's own shrink
+			// just above.
+			const int transportH = shrinkHamburger ? 36 : (showingSoundbanks ? 40 : 72);
 			auto transport = area.removeFromTop(transportH);
-			menuButton.setBounds(transport.removeFromRight(menuButtonW).reduced(shrinkHamburger ? 3 : 6));
+			if (shrinkHamburger) {
+				menuButton.setBounds(transport.removeFromRight(36).reduced(3));
+			} else if (inRetroSequencer) {
+				// Retro portrait - untouched, Alan didn't ask to shrink this one (its own strip
+				// has room the other two views don't).
+				menuButton.setBounds(transport.removeFromRight(72).reduced(6));
+			} else {
+				// Panel view and Soundbanks - Alan's request, 2026-08-28, four rounds: shrunk to
+				// ~70% width; corrected when a first attempt (a 72-tall square) came out 50%
+				// BIGGER, not smaller; then explicitly asked to match the GRID sequencer's own
+				// hamburger-equivalent button instead of an arbitrary independently-chosen size -
+				// D110SequencerPanel::layout()'s `barMenuBounds`, the small toggle at the right
+				// end of ITS OWN transport row (`colT(0.958f, 0.042f)` there). That button is
+				// always 40 tall (`jmin(40.0f, ...)` caps it there on any real screen) and
+				// `rowWidth * 0.042f - 4.0f` wide, off the SAME row-width basis - replicated
+				// directly here (not just approximated) so a wider/narrower phone keeps the exact
+				// same proportions in both places. Pinned flush to the row's TOP edge (Alan's own
+				// correction - a bottom anchor still left a gap against the status bar/screen top,
+				// which is the edge he actually meant to touch, not the panel/Soundbanks content
+				// below) - no `.reduced()` at all, so it's flush with zero gap.
+				const float rowW = transport.getWidth();
+				const int buttonW = juce::jmax(28, juce::roundToInt(rowW * 0.042f - 4.0f));
+				constexpr int buttonH = 40;
+				auto right = transport.removeFromRight(buttonW);
+				menuButton.setBounds(right.removeFromTop(buttonH));
+			}
 			if (!inRetroSequencer && !showingSoundbanks) {
 				// Alan's request, 2026-08-28: Play/Stop used to split the WHOLE transport row
 				// width between them (very wide, worst in landscape where that row is widest),
@@ -276,9 +306,18 @@ public:
 				// now get one fixed, modest width instead of stretching, and Ready shares the
 				// rest of the same row on their right rather than a strip of its own - the 40px
 				// this used to cost the keyboard in Panel mode is now reclaimed outright.
+				// Alan's follow-up request, 2026-08-28: these still read as too tall (stretching
+				// to the row's own full 72px height minus a 6px inset = 60px) - shrunk to a fixed,
+				// vertically-centred 44px instead of tracking the row height at all. He's also
+				// floated removing/relocating Play/Stop from this row entirely at some future
+				// point (its own "Load MIDI file..." playback feature reads as a duplicate of the
+				// panel's own transport to some users) - not acted on here, just noted.
 				constexpr int kTransportButtonW = 84;
-				playButton.setBounds(transport.removeFromLeft(kTransportButtonW).reduced(6));
-				stopButton.setBounds(transport.removeFromLeft(kTransportButtonW).reduced(6));
+				constexpr int kTransportButtonH = 44;
+				playButton.setBounds(transport.removeFromLeft(kTransportButtonW)
+				                          .withSizeKeepingCentre(kTransportButtonW - 12, kTransportButtonH));
+				stopButton.setBounds(transport.removeFromLeft(kTransportButtonW)
+				                          .withSizeKeepingCentre(kTransportButtonW - 12, kTransportButtonH));
 				statusLabel.setBounds(transport.reduced(10, 6));
 			}
 		}
@@ -314,6 +353,13 @@ public:
 			gridSeq.setVisible(false);
 			retroSeq.setVisible(false);
 			keyboard.setVisible(false);
+			// Bug fix (Alan's report, 2026-08-28): this was the one branch that never actually
+			// called setVisible(true) - soundbankBrowser was added via addChildComponent()
+			// (invisible by default, same as gridSeq/retroSeq), and every OTHER branch below
+			// only ever turns it back off, never on. Bounds were being set correctly the whole
+			// time, so the bug was invisible in code review - the view was just never shown,
+			// which is exactly what "no Rescan button, empty screen" looks like from outside.
+			soundbankBrowser.setVisible(true);
 			soundbankBrowser.setBounds(area);
 		} else if (showingSequencer) {
 			panel.setVisible(false);
@@ -689,10 +735,13 @@ private:
 	// themselves (multi-select) and copies them into a real, plain-filesystem staging folder -
 	// d110bank::Database::rescan() (SoundbankDatabase.h) then walks THAT, not whatever the user
 	// originally picked from. Repeatable: picking again adds more files into the same staging
-	// folder rather than replacing it, so a library can be built up over several picks.
+	// folder rather than replacing it, so a library can be built up over several picks. A
+	// single .zip is also accepted and is the practical stand-in for "pick a whole folder" -
+	// rescan() looks inside it - since a real folder pick still isn't reliable here (Alan's
+	// request, 2026-08-28).
 	void chooseSoundbankFiles() {
 		fileChooser = std::make_unique<juce::FileChooser>(
-			"Choose SysEx patch library files (select as many as you like)", juce::File());
+			"Choose SysEx patch library files, or a single .zip of them", juce::File());
 		fileChooser->launchAsync(
 			juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
 				| juce::FileBrowserComponent::canSelectMultipleItems,
@@ -700,9 +749,7 @@ private:
 	}
 
 	void copySoundbankFiles(const juce::Array<juce::URL> &urls) {
-		const auto dest = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-			.getChildFile("D-110 Emulator")
-			.getChildFile("soundbank_source");
+		const auto dest = D110AudioProcessor::getSoundbankImportsFolder();
 		dest.createDirectory();
 
 		int copied = 0;
@@ -711,7 +758,26 @@ private:
 			auto in = doc.hasValue() ? doc.createInputStream() : nullptr;
 			if (in == nullptr) continue;
 
-			auto outFile = dest.getChildFile(url.getFileName());
+			// Bug fix (Alan's report, 2026-08-28: picked files copied fine but RESCAN then found
+			// nothing). url.getFileName() is unreliable for a content:// SAF result - it's just
+			// `toString(false).fromLastOccurrenceOf("/", ...)` (juce_URL.cpp), i.e. whatever
+			// follows the URI STRING's own last literal '/', which for a SAF document URI is an
+			// opaque document-ID fragment, not the real file name - so the copy landed under a
+			// garbage name with no ".syx"/".mid" extension, and Database::rescan()'s own
+			// extension filter silently skipped every one of them. AndroidDocumentInfo::getName()
+			// is backed by SAF's real DISPLAY_NAME column instead - see
+			// .claude/dev-notes/android.md's own catalogue of these content:// gotchas for the
+			// same lesson learned twice already elsewhere in this file.
+			juce::String name = doc.getInfo().getName();
+			if (name.isEmpty()) name = url.getFileName();
+			// Belt and braces: some content providers' own display name can still omit the
+			// extension for a MIME type they don't recognise (.syx isn't a registered MIME type
+			// anywhere) - force one on rather than silently losing the file to the same filter
+			// a second way. ".zip" is a real, recognised choice here too (see this function's
+			// own comment) - never stomped, only ever added when nothing recognisable is there.
+			if (!juce::File(name).hasFileExtension("syx;mid;midi;smf;zip")) name += ".syx";
+
+			auto outFile = dest.getChildFile(name);
 			outFile.deleteFile();
 			auto out = outFile.createOutputStream();
 			if (out == nullptr || out->writeFromInputStream(*in, -1) <= 0) {
@@ -727,7 +793,10 @@ private:
 			return;
 		}
 
-		D110AudioProcessor::setSoundbankSourceFolder(dest.getFullPathName());
+		// No setSoundbankSourceFolder() call needed (removed 2026-08-28) - RESCAN now always
+		// scans getSoundbankImportsFolder() too, on top of whatever getSoundbankSourceFolder()
+		// is separately set to (see SoundbankBrowser::startRescan()'s own comment), so this copy
+		// alone is enough for the next RESCAN to pick these files up.
 		statusLabel.setText(juce::String(copied) + " file(s) added - open Soundbanks and hit "
 		                     "RESCAN to add them to the database",
 		                     juce::dontSendNotification);

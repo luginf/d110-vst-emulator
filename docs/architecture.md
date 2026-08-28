@@ -51,7 +51,8 @@ photo-composite because it depicts a thing that exists, while a D-110 has no edi
 What it has is a two-line, sixteen-character display, and reaching one of a partial's
 fifty-eight values through it takes dozens of button presses.
 
-Nine tabs, and everything on them is the instrument's own memory:
+Ten tabs. Everything on the first nine is the instrument's own memory; SOUNDBANKS is the one
+exception (see below):
 
 - **PARTS** — what it is playing right now: tone group and tone (with the tone's name), level,
   pan, key shift, fine tune, bender range, assign mode, reverb switch and key range, for all
@@ -71,6 +72,9 @@ Nine tabs, and everything on them is the instrument's own memory:
 - **SYSTEM** — master tune, reverb, partial reserve and the MIDI channel map.
 - **MONITOR** — the firmware's own LA32 voice-slot table, which parts the engine is holding,
   the bridge's message counters and a MIDI-in tape.
+- **SOUNDBANKS** — a browsable, deduplicated database of individual Tones scanned from a
+  folder/files of Roland SysEx dumps, independent of any single instrument's memory - see
+  [`soundbanks.md`](soundbanks.md) for the full picture.
 - **UTILITY** — a message for the instrument's display, and SysEx bank import.
 
 **Nothing in the drawer writes to the sound engine.** Every field sends the *instrument* a

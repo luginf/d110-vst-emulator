@@ -15,6 +15,8 @@ launcher label "d110".
 - A single hamburger menu (☰) for everything the desktop build splits across Load/Options.
 - Loading a MIDI file to play, and importing a SysEx/MIDI bank (`.syx` or SysEx events embedded
   in a `.mid`) to populate the internal Tone Memory (Bank I).
+- The Soundbanks tone browser (hamburger menu -> **Soundbanks...**) - see
+  [`docs/soundbanks.md`](soundbanks.md).
 - USB MIDI keyboard input, and MIDI Output to drive an external hardware synth.
 - Long-press (~500ms) as a right-click substitute for context menus.
 - Manual screen-margin override (Options) for devices where automatic nav-bar/status-bar
