@@ -684,6 +684,18 @@ public:
 	// silent" can be told apart from "the demo song is not playing".
 	uint64_t firmwareNoteOns() const { return noteOnCount.load(std::memory_order_acquire); }
 	uint64_t firmwareNoteOffs() const { return noteOffCount.load(std::memory_order_acquire); }
+	// MIDI Panic support - see D110CoreNative::releaseStuckNoteContexts()/resetVoiceSlotTable()'s
+	// own comments for the full story (a stuck voice's release write from the firmware's real
+	// envelope-stage pacing can simply never come). NOT implemented on this backend: the
+	// per-context m_ctxSounding/m_ctxPart/m_ctxNote state releaseStuckNoteContexts() needs lives
+	// inside D110Osd (D110Core.cpp), a class this header has no access to, and `ram` here is only
+	// a periodically-refreshed READ snapshot for getRam() (see D110Core::getRam()) -
+	// resetVoiceSlotTable() writing into it wouldn't reach the actual running MAME machine, only
+	// get overwritten by the next refresh. This backend is dormant and not being actively
+	// extended (see CLAUDE.md) - no-ops rather than a half-verified poke into MAME's live memory
+	// this sandbox has no MAME tree to build or test against.
+	void releaseStuckNoteContexts() {}
+	void resetVoiceSlotTable() {}
 	// Mean time a note was held, in milliseconds - the measurement that tells "the song is
 	// genuinely dense" apart from "every note is being cut to a click", which sounds like a
 	// runaway tempo even when the note rate is right.

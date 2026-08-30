@@ -3,6 +3,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <map>
+#include <set>
 #include <vector>
 
 #include "D110KeyboardHost.h"
@@ -60,8 +61,17 @@ public:
 	// it either - holding a key down is an ordinary sustained note, not a gesture, so timing it
 	// out into "must mean a menu" would just break holding notes. The Android app instead
 	// reaches this same menu from its own hamburger menu ("Keyboard channel..."), calling this
-	// directly rather than reimplementing channel/remap/PC-layout selection a second time.
-	void showContextMenu();
+	// directly rather than reimplementing channel/remap/PC-layout selection a second time - that
+	// call path has no specific key in mind, hence the default.
+	//
+	// `noteForHold`, when >= 0 (mouseDown()'s own right-click handler passes keyAt(e.position)),
+	// is which key the click actually landed on - Alan's request, 2026-08-30: prepends a "Hold
+	// note" item ahead of everything else, letting that one note sustain indefinitely (see
+	// toggleHoldNote()'s own comment) rather than only for as long as the mouse button stays
+	// down. Android's own call (no mouse click behind it) and a desktop right-click that misses
+	// every key both leave this at -1, which just skips that one item - everything else about
+	// the menu is unchanged either way.
+	void showContextMenu(int noteForHold = -1);
 
 private:
 	int numOctaves = 2;
@@ -90,11 +100,22 @@ private:
 	void sendNote(int note, float velocity, bool on); // honours channel/midiRemap
 	void releaseAllPcNotes();
 	bool isPcKeyDownForNote(int note) const;
+	// showContextMenu()'s own "Hold note" item - see its own comment. Independent of
+	// heldNoteBySource/pcKeyDown (a note here keeps sounding regardless of what the mouse/touch/
+	// PC keyboard are doing), so it needs no note-argument validation beyond >= 0: showContextMenu()
+	// only ever offers this for a real key.
+	void toggleHoldNote(int note);
+	void releaseAllHeldNotes(); // every menu-held note at once - component destruction
 	void timerCallback() override; // polls host.isNoteActive() for remote/incoming activity
 
 	D110KeyboardHost &host;
 	int octaveShift = 0;
 	std::map<int, int> heldNoteBySource; // touch/mouse source index -> the note it's holding
+	// Right-click menu's "Hold note" - a note in here keeps sounding until toggleHoldNote()
+	// removes it again (menu toggle) or timerCallback() notices host.isNoteActive() has already
+	// gone false on its own (MIDI PANIC, or anything else external that silenced it) and drops
+	// it to keep the menu's own checkbox honest - see both their own comments.
+	std::set<int> heldNotes;
 
 	int midiChannel = 1;        // 1..16 - which channel injectTestNote() targets
 	// When on, every note is forced onto midiChannel; when off, it broadcasts to all 16 at

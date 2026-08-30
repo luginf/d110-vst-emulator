@@ -85,6 +85,7 @@ public:
 	static constexpr uint16_t kSlotStateTable = 0x2DC0;
 	static constexpr u8 kSlotBusyValue = 0x40;
 	static constexpr u8 kSlotBusyValueAlt = 0x20;
+	static constexpr u8 kSlotIdleValue = 0x80;
 
 	// Same DT1 "Data set 1" builder as D110Core::buildDt1Message() - pure message-formatting
 	// logic, no instance state, ported verbatim.
@@ -194,6 +195,46 @@ public:
 
 	uint64_t firmwareNoteOns() const { return noteOnCount_; }
 	uint64_t firmwareNoteOffs() const { return noteOffCount_; }
+
+	// MIDI Panic support (Alan's report, 2026-08-30: notes sometimes stay audibly stuck, the
+	// Monitor tab's voice-slot grid stays lit, and the LCD's per-part "sounding" indicator
+	// stays on, all surviving a MIDI Panic that only sends CC64/CC123 as MIDI bytes). Root
+	// cause: the real firmware's own release path needs its per-voice envelope-stage counter
+	// (ROM-side, not emulated - see docs/la32_interface.md, "solved kept the panel alive, but
+	// not the polyphony") to count up to 7 before it ever writes kReleaseTable's released bit -
+	// pacing this emulation doesn't implement, so that write can simply never come, leaving a
+	// context stuck ctxSounding_==true (and its LA32 dispatch slot stuck busy) forever with no
+	// firmware action left to free it.
+	//
+	// Two separate methods, not one, because they need different CALLING patterns
+	// (PluginProcessor::midiPanic()/processBlock() decide exactly how) - measured with
+	// plugin/native_midi_panic_stuck_probe.cpp:
+	//
+	// releaseStuckNoteContexts() calls releaseContext() directly - the exact same path a real
+	// firmware release already takes - for every context still marked sounding, so the note-off
+	// genuinely reaches the sound engine through the normal noteQueue_/popNoteEvent() drain
+	// (PluginProcessor.cpp). Safe and complete as a ONE-SHOT call - confirmed by the probe,
+	// engineActivePartials() reliably reaches 0 right after.
+	//
+	// resetVoiceSlotTable() resets the LA32 voice-slot table (kSlotStateTable) to idle for
+	// every hardware voice - a raw dispatch-bookkeeping table noteWatch() never watches, so a
+	// direct write here doesn't interact with any CPU-side flow control DIRECTLY... but a
+	// SINGLE call isn't enough: the panic's own CC64/CC123 bytes are still being paced out to
+	// the firmware's own MIDI IN for ~30ms after this runs, and the firmware's response to THAT
+	// (its own note-off search/reclaim attempt for the very same voices, ROM 0x2496) writes
+	// kSlotStateTable again as it goes - overwriting a one-shot poke with a fresh busy value
+	// before settling (measured: 2 of 3 slots still read busy 200ms after a single poke, but
+	// reach idle on their own within ~2s if simply left alone - this is often a legitimately
+	// slow but WORKING release, not the permanently-stuck case, and fighting it with one poke
+	// only wins the race sometimes). The caller is expected to call this repeatedly for a short
+	// window after a panic (PluginProcessor.h's own pendingSlotTableResetSamplesRemaining) so
+	// the LAST call in that window - after the firmware's own delayed response has had time to
+	// either genuinely finish or genuinely never finish - is the one that sticks either way.
+	// Still doesn't reach the LCD's own per-part "sounding" indicator - that's real ROM display
+	// code reacting to the same stuck firmware state from the CPU side, not a value this class
+	// can just poke; a known remaining gap (see PluginProcessor::midiPanic()'s own comment).
+	void releaseStuckNoteContexts();
+	void resetVoiceSlotTable();
 
 	// --- memory card, mirrors D110Core's own accessors over D110Bus's card fields ---
 	void setCardInserted(bool in) { bus_.cardInserted = in; }

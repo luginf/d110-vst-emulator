@@ -366,6 +366,17 @@ void D110CoreNative::releaseContext(int ctx) {
 	++noteOffCount_;
 }
 
+// See the header's own comment on why this is split from resetVoiceSlotTable() and what each
+// does/doesn't reach.
+void D110CoreNative::releaseStuckNoteContexts() {
+	for (int ctx = 0; ctx < kNumVoiceContexts; ++ctx) releaseContext(ctx);
+}
+
+void D110CoreNative::resetVoiceSlotTable() {
+	for (int slot = 0; slot < kNumHardwareVoices; ++slot)
+		bus_.rams[size_t(kSlotStateTable) + size_t(slot) * 2] = kSlotIdleValue;
+}
+
 void D110CoreNative::setButton(int index, bool down) {
 	if (index < 0 || index >= kNumButtons) return;
 	const uint32_t bit = 1u << index;

@@ -696,6 +696,25 @@ bool D110AudioProcessor::sendSoundbankToneToExternalMidiPart(int part, const juc
 	return true;
 }
 
+// See this method's own header comment (PluginProcessor.h) for what it's for. Same
+// buildDt1Message()-to-osMidiOut technique as sendSoundbankToneToExternalMidi() above, but a
+// single message (128 bytes fits without chunking) targeting Patch Memory instead of Tone
+// Memory.
+bool D110AudioProcessor::sendPatchToExternalMidi(int slot, const juce::uint8 *data128) {
+	if (slot < 0 || slot >= D110CoreType::kNumPatches || data128 == nullptr) return false;
+
+	const juce::ScopedLock lock(osMidiLock);
+	if (osMidiOut == nullptr) return false;
+
+	juce::uint8 msg[D110CoreType::kMaxSysexBytes];
+	const int n = D110CoreType::buildDt1Message(D110CoreType::kSysexPatches,
+	                                             slot * D110CoreType::kPatchRecord, data128,
+	                                             D110CoreType::kPatchRecord, msg);
+	if (n <= 0) return false;
+	osMidiOut->sendMessageNow(juce::MidiMessage(msg, n));
+	return true;
+}
+
 bool D110AudioProcessor::identifyRomData(const juce::MemoryBlock &data,
                                          MT32Emu::ROMInfo::Type &typeOut) {
 	if (data.getSize() == 0) return false;
@@ -1297,14 +1316,29 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 	std::vector<std::vector<MT32Emu::Bit8u>> pendingImportsToSend;
 	std::vector<MT32Emu::Bit32u> pendingShortMessagesToSend;
 	std::vector<juce::uint8> pendingPanicBytesToSend;
+	bool forceReleaseStuckVoicesNow = false;
 	{
 		const juce::ScopedLock slEngine(engineActionLock);
 		pendingImportsToSend.swap(pendingSysexImports);
 		pendingShortMessagesToSend.swap(pendingShortMessages);
 		pendingPanicBytesToSend.swap(pendingPanicBytes);
+		forceReleaseStuckVoicesNow = pendingForceReleaseStuckVoices;
+		pendingForceReleaseStuckVoices = false;
 	}
 	if (!pendingPanicBytesToSend.empty())
 		core.pushMidi(pendingPanicBytesToSend.data(), static_cast<int>(pendingPanicBytesToSend.size()));
+	// midiPanic()'s own requests - see D110CoreNative::releaseStuckNoteContexts()/
+	// resetVoiceSlotTable()'s own comments. Only safe here, on the audio thread, same reason
+	// every other `core.` touch above is queued rather than called straight from midiPanic()
+	// itself (the message thread).
+	if (forceReleaseStuckVoicesNow) core.releaseStuckNoteContexts();
+	// resetVoiceSlotTable() repeats for a short window, not just once - see its own comment for
+	// why a single call loses a race with the firmware's own delayed response to the panic's
+	// own CC64/CC123 bytes still being paced out above.
+	if (pendingSlotTableResetSamplesRemaining.load(std::memory_order_relaxed) > 0) {
+		core.resetVoiceSlotTable();
+		pendingSlotTableResetSamplesRemaining.fetch_sub(buffer.getNumSamples(), std::memory_order_relaxed);
+	}
 	// Эти две очереди намеренно идут через очередь движка с отметкой времени, а не через
 	// «немедленные» формы, которыми пользуется мост ниже: их источник - действие
 	// пользователя на панели, оно отстоит от любой ноты на секунды, и обгон в один блок
@@ -2209,7 +2243,22 @@ void D110AudioProcessor::midiPanic() {
 		const juce::ScopedLock sl(engineActionLock);
 		pendingPanicBytes.insert(pendingPanicBytes.end(), firmwareBytes.begin(), firmwareBytes.end());
 		pendingShortMessages.insert(pendingShortMessages.end(), engineMessages.begin(), engineMessages.end());
+		// Alan's report, 2026-08-30: CC64/CC123 above only ever reach the firmware's NORMAL
+		// release path, which depends on envelope-stage pacing this emulation doesn't implement
+		// (see D110CoreNative::releaseStuckNoteContexts()/resetVoiceSlotTable()'s own comments) -
+		// a note stuck on that path never gets released by them alone, and neither does the
+		// Monitor tab's LA32 voice-slot grid. Both applied on the audio thread, next
+		// processBlock() onward - see there.
+		pendingForceReleaseStuckVoices = true;
 	}
+	// 1.5s of samples at whatever rate is currently set - comfortably longer than the ~30ms the
+	// 96 CC64/CC123 bytes above take to reach the firmware's own MIDI IN at its 3125 bytes/s
+	// pace, plus room for its own (still-buggy) response to that to run its course - see
+	// resetVoiceSlotTable()'s own comment for why a single call can't just win that race
+	// outright. getSampleRate() is safe to read from the message thread here: it only ever
+	// changes via prepareToPlay(), and a stale/mid-update read costs at most a slightly
+	// off-length repeat window, never a crash.
+	pendingSlotTableResetSamplesRemaining.store(int(getSampleRate() * 1.5), std::memory_order_relaxed);
 
 	// A stuck note is far more annoying on real external gear than in the internal engine -
 	// there's no "stop the plugin" to fall back on - so panic reaches the direct MIDI Out port
@@ -2415,15 +2464,36 @@ void D110AudioProcessor::sendName(juce::uint32 sysexAddress, int offset,
 }
 
 void D110AudioProcessor::sendDisplayMessage(const juce::String &text) {
-	// Двадцать знаков - столько несёт команда Roland. Индикатор D-110 шириной шестнадцать,
-	// так что четыре последних он просто не покажет; сообщение от этого не перестаёт быть
-	// правильным, и обрезать его здесь значило бы посылать не то, что посылает прибор.
+	// Twenty characters - what Roland's command carries. The D-110's display is sixteen wide,
+	// so it just won't show the last four; that doesn't make the message wrong, and truncating
+	// it here would mean sending something other than what the real unit sends.
 	juce::uint8 data[20];
 	for (int i = 0; i < 20; ++i) {
 		const juce::juce_wchar ch = (i < text.length()) ? text[i] : ' ';
 		data[i] = juce::uint8((ch >= 32 && ch < 127) ? ch : ' ');
 	}
 	sendAreaData(D110CoreType::kSysexDisplay, 0, data, 20);
+}
+
+juce::String D110AudioProcessor::displayMessageSysexHex(const juce::String &text) {
+	juce::uint8 data[20];
+	for (int i = 0; i < 20; ++i) {
+		const juce::juce_wchar ch = (i < text.length()) ? text[i] : ' ';
+		data[i] = juce::uint8((ch >= 32 && ch < 127) ? ch : ' ');
+	}
+	juce::uint8 msg[D110CoreType::kMaxSysexBytes];
+	const int n = D110CoreType::buildDt1Message(D110CoreType::kSysexDisplay, 0, data, 20, msg);
+	juce::StringArray bytes;
+	for (int i = 0; i < n; ++i) bytes.add(juce::String::toHexString(int(msg[i])).paddedLeft('0', 2).toUpperCase());
+	return bytes.joinIntoString(" ");
+}
+
+int D110AudioProcessor::liveChannelForPart(int part) const {
+	if (part < 0 || part > 7 || !core.isRunning()) return -1;
+	std::vector<uint8_t> ram(D110CoreType::kRamSize, 0);
+	if (!core.getRam(ram.data())) return -1;
+	const int chan = ram[(size_t)D110CoreType::kRamSystem + 13 + (size_t)part];
+	return chan > 15 ? -1 : chan + 1; // 0-15 (off) -> 1-16, or -1 if the part is off
 }
 
 void D110AudioProcessor::selectTimbreForPart(int part, int timbre) {

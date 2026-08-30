@@ -25,6 +25,42 @@
 #include "Source/sequencer/D110SequencerPanel.h"
 #include "Source/sequencer/D110SequencerRetroPanel.h"
 
+// Soundbanks view's own test-note button (Alan's request, 2026-08-30: no on-screen keyboard is
+// visible there - see resized()'s own comment on showingSoundbanks - so there was no way to
+// actually hear a browsed tone without leaving the screen). Plays while held, like a real piano
+// key (mouseDown -> note on, mouseUp -> note off) via onPress/onRelease; a long press instead
+// fires onLongPress (and releases whatever note onPress started, so it doesn't hang audibly
+// under the dialog that opens) - same gestureId-invalidation idiom SoundbankBrowser's own
+// long-press-to-context-menu uses, adapted to a single button rather than a list row.
+class HeldNoteButton : public juce::TextButton {
+public:
+	std::function<void()> onPress;
+	std::function<void()> onRelease;
+	std::function<void()> onLongPress;
+
+	void mouseDown(const juce::MouseEvent &e) override {
+		juce::TextButton::mouseDown(e);
+		longPressFired = false;
+		const int gestureId = ++gestureCounter;
+		if (onPress) onPress();
+		juce::Component::SafePointer<HeldNoteButton> safeThis(this);
+		juce::Timer::callAfterDelay(500, [safeThis, gestureId] {
+			if (safeThis == nullptr || gestureId != safeThis->gestureCounter) return;
+			safeThis->longPressFired = true;
+			if (safeThis->onLongPress) safeThis->onLongPress();
+		});
+	}
+	void mouseUp(const juce::MouseEvent &e) override {
+		juce::TextButton::mouseUp(e);
+		++gestureCounter; // invalidates any still-pending long-press callback for this gesture
+		if (!longPressFired && onRelease) onRelease();
+	}
+
+private:
+	int gestureCounter = 0;
+	bool longPressFired = false;
+};
+
 class MainComponent : public juce::Component, private juce::Timer, private juce::MidiInputCallback {
 public:
 	// The app's own external files dir - the one location the native core can always read
@@ -73,6 +109,7 @@ public:
 		// Same shared component the desktop plugin's own SOUNDBANKS tab hosts (SoundbankBrowser.h)
 		// - reached from the hamburger menu instead of a tab, this app having no tab strip at all.
 		addChildComponent(soundbankBrowser);
+		wireUpSoundbankTestNote();
 		// See buildAppMenu()'s own comment: the grid sequencer hides the app's whole
 		// Play/Stop/hamburger row to get its full height, so its own bar-navigation menu
 		// button becomes the only way back to it.
@@ -297,6 +334,18 @@ public:
 				constexpr int buttonH = 40;
 				auto right = transport.removeFromRight(buttonW);
 				menuButton.setBounds(right.removeFromTop(buttonH));
+			}
+			// Test-note/HOLD - leftmost on this same row, Alan's own words ("un bouton tout à
+			// gauche, sur la même ligne que le menu hamburger"). Whatever's left of `transport`
+			// after the hamburger was carved off its right side above.
+			testNoteButton.setVisible(showingSoundbanks);
+			holdButton.setVisible(showingSoundbanks);
+			if (showingSoundbanks) {
+				constexpr int buttonH = 40;
+				const int btnW = juce::jmax(64, juce::roundToInt(transport.getWidth() * 0.16f));
+				testNoteButton.setBounds(transport.removeFromLeft(btnW).removeFromTop(buttonH));
+				transport.removeFromLeft(4);
+				holdButton.setBounds(transport.removeFromLeft(btnW).removeFromTop(buttonH));
 			}
 			if (!inRetroSequencer && !showingSoundbanks) {
 				// Alan's request, 2026-08-28: Play/Stop used to split the WHOLE transport row
@@ -574,8 +623,149 @@ private:
 		if (showingSoundbanks) {
 			showingSequencer = false;
 			soundbankBrowser.refresh(); // pick up anything scanned since this was last shown
+		} else {
+			// Leaving the screen with HOLD still on would otherwise leave a note sustaining
+			// with no visible way back to stop it short of MIDI Panic - stop it here instead.
+			stopHeldTestNote();
 		}
 		resized();
+	}
+
+	// Soundbanks view's test-note (left, plays testNotePitch on the currently selected Part -
+	// see SoundbankBrowser::getSelectedPart()) and HOLD (right, sustains it and follows
+	// whichever tone is auditioned next) buttons - Alan's request, 2026-08-30: that view has no
+	// on-screen keyboard (see resized()'s own comment on showingSoundbanks), so there was
+	// otherwise no way to actually hear a browsed tone without leaving the screen.
+	void wireUpSoundbankTestNote() {
+		testNoteButton.setButtonText(juce::MidiMessage::getMidiNoteName(testNotePitch, true, true, 4));
+		testNoteButton.onPress = [this] {
+			const int part = soundbankBrowser.getSelectedPart();
+			const int channel = processor.liveChannelForPart(part);
+			if (channel < 0) return; // that Part is off - nowhere to send a note
+			testButtonChannel = channel;
+			testButtonNote = testNotePitch;
+			processor.injectTestNote(channel, testNotePitch, 0.9f, true);
+		};
+		testNoteButton.onRelease = [this] {
+			if (testButtonChannel < 0) return;
+			processor.injectTestNote(testButtonChannel, testButtonNote, 0.0f, false);
+			testButtonChannel = -1;
+		};
+		testNoteButton.onLongPress = [this] {
+			// The finger is still down and onPress already struck a note for it - release that
+			// now rather than leave it sounding under the modal dialog below.
+			if (testButtonChannel >= 0) {
+				processor.injectTestNote(testButtonChannel, testButtonNote, 0.0f, false);
+				testButtonChannel = -1;
+			}
+			auto *aw = new juce::AlertWindow("Test note pitch", {}, juce::AlertWindow::NoIcon);
+			// A real slider, Alan's own follow-up request, 2026-08-30 (replacing this dialog's
+			// first cut, a typed note name) - full MIDI range, its own text box shows the note
+			// name rather than a raw number. addCustomComponent() takes no ownership (same as
+			// D110SequencerPanel::promptForTempo()'s own TAP button) - deleted explicitly below.
+			auto *slider = new juce::Slider(juce::Slider::LinearHorizontal, juce::Slider::TextBoxBelow);
+			slider->setSize(280, 60);
+			slider->setRange(0.0, 127.0, 1.0);
+			slider->setValue(testNotePitch, juce::dontSendNotification);
+			slider->textFromValueFunction = [](double v) {
+				return juce::MidiMessage::getMidiNoteName(int(v), true, true, 4);
+			};
+			slider->updateText();
+			// Live preview while dragging - strikes the note under the finger on the currently
+			// selected Part, same "test the sound" purpose as the button itself, so sliding to a
+			// pitch also tells you how it actually sounds there before you commit to it.
+			slider->onValueChange = [this, slider] {
+				if (testButtonChannel >= 0)
+					processor.injectTestNote(testButtonChannel, testButtonNote, 0.0f, false);
+				const int channel = processor.liveChannelForPart(soundbankBrowser.getSelectedPart());
+				if (channel < 0) {
+					testButtonChannel = -1;
+					return;
+				}
+				testButtonChannel = channel;
+				testButtonNote = int(slider->getValue());
+				processor.injectTestNote(channel, testButtonNote, 0.9f, true);
+			};
+			aw->addCustomComponent(slider);
+			aw->addButton("Set", 1, juce::KeyPress(juce::KeyPress::returnKey));
+			aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+			aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, slider](int result) {
+				// Whatever the live preview above left sounding - the dialog's closing either way.
+				if (testButtonChannel >= 0) {
+					processor.injectTestNote(testButtonChannel, testButtonNote, 0.0f, false);
+					testButtonChannel = -1;
+				}
+				if (result == 1) {
+					testNotePitch = int(slider->getValue());
+					testNoteButton.setButtonText(juce::MidiMessage::getMidiNoteName(testNotePitch, true, true, 4));
+				}
+				delete slider;
+				delete aw;
+			}));
+		};
+		addChildComponent(testNoteButton);
+
+		holdButton.setButtonText("HOLD");
+		holdButton.setClickingTogglesState(true);
+		holdButton.onClick = [this] {
+			if (holdButton.getToggleState()) startHeldTestNote();
+			else stopHeldTestNote();
+			updateHoldButtonColour();
+		};
+		addChildComponent(holdButton);
+		updateHoldButtonColour();
+
+		// Alan's request, 2026-08-30: while HOLD is on, browsing to a different sound (double-
+		// tap, or any other way SoundbankBrowser auditions a tone) kills the currently-held note
+		// and immediately strikes the newly-picked one on whichever Part it just landed on, so a
+		// continuously-held note actually previews each new sound's attack rather than quietly
+		// swapping underneath one already mid-decay.
+		soundbankBrowser.onToneAuditioned = [this](int part) {
+			if (!holdActive) return;
+			if (heldChannel >= 0) processor.injectTestNote(heldChannel, heldNote, 0.0f, false);
+			const int channel = processor.liveChannelForPart(part);
+			if (channel < 0) {
+				heldChannel = -1;
+				return;
+			}
+			heldChannel = channel;
+			heldNote = testNotePitch;
+			processor.injectTestNote(heldChannel, heldNote, 0.9f, true);
+		};
+	}
+
+	void startHeldTestNote() {
+		const int part = soundbankBrowser.getSelectedPart();
+		const int channel = processor.liveChannelForPart(part);
+		if (channel < 0) {
+			holdButton.setToggleState(false, juce::dontSendNotification); // nowhere to send it
+			return;
+		}
+		holdActive = true;
+		heldChannel = channel;
+		heldNote = testNotePitch;
+		processor.injectTestNote(heldChannel, heldNote, 0.9f, true);
+	}
+
+	void stopHeldTestNote() {
+		if (heldChannel >= 0) processor.injectTestNote(heldChannel, heldNote, 0.0f, false);
+		holdActive = false;
+		heldChannel = -1;
+		holdButton.setToggleState(false, juce::dontSendNotification);
+	}
+
+	// setClickingTogglesState()'s own colouring relies on the shared LookAndFeel this app DOES
+	// install (unlike the desktop plugin/Standalone - see SoundbankBrowser::toggleHideDuplicates()'s
+	// own comment for that gap) - explicit colours here anyway rather than trusting it, same
+	// robust approach, so this doesn't depend on LookAndFeel install/construction order.
+	void updateHoldButtonColour() {
+		const auto &pal = d110ui::palette();
+		const auto fill = holdActive ? pal.seqActiveFill : pal.box;
+		const auto text = holdActive ? pal.seqActiveText : pal.value;
+		holdButton.setColour(juce::TextButton::buttonColourId, fill);
+		holdButton.setColour(juce::TextButton::buttonOnColourId, fill);
+		holdButton.setColour(juce::TextButton::textColourOffId, text);
+		holdButton.setColour(juce::TextButton::textColourOnId, text);
 	}
 
 	void chooseMidiFile() {
@@ -986,6 +1176,20 @@ private:
 	juce::TextButton playButton, stopButton, menuButton;
 	juce::Label statusLabel;
 	std::unique_ptr<juce::FileChooser> fileChooser;
+
+	// Soundbanks view's test-note/HOLD buttons - see toggleSoundbanksView()'s own comment on
+	// where they're laid out and wireUpSoundbankTestNote()'s own comment for the full behaviour.
+	HeldNoteButton testNoteButton;
+	juce::TextButton holdButton;
+	int testNotePitch = 48; // C3 in this app's own convention (getMidiNoteName(n, true, true, 4))
+	// Which (channel, note) the test-note button itself last struck, if any (-1 = none) - its
+	// own press/release, independent of HOLD's own tracking below even though they usually
+	// target the same Part.
+	int testButtonChannel = -1, testButtonNote = -1;
+	// Which (channel, note) HOLD is currently sustaining, if any - retriggered (killed, then
+	// restruck on the newly-auditioned Part) by onToneAuditioned below while HOLD is on.
+	bool holdActive = false;
+	int heldChannel = -1, heldNote = -1;
 
 	juce::AudioDeviceManager deviceManager;
 	juce::AudioProcessorPlayer player;

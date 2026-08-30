@@ -259,6 +259,18 @@ public:
 	// name included - same convention auditionToneBytes() already uses (see its own comment).
 	bool sendSoundbankToneToExternalMidiPart(int part, const juce::uint8 *body246);
 
+	// Same idea as sendSoundbankToneToExternalMidi() above, but for a full 128-byte Patch
+	// record (kSysexPatches/kPatchRecord) rather than a Tone - Alan's request, 2026-08-29:
+	// right-click a row in the Patches tab's ALL PATCHES list and write it into the same-
+	// numbered Patch Memory slot on a real connected D-110, so a patch edited/auditioned here
+	// can be checked against actual hardware. `slot` is which of the 64 Patch Memory records
+	// to write (matches the row's own patch number - the emulator and the real unit end up
+	// with identical content in that slot), `data128` its current 128 bytes read from this
+	// emulator's own RAM (D110CoreType::kRamPatches + slot*kPatchRecord). No chunking needed:
+	// 128 bytes fits in a single DT1 message (kMaxSysexBytes leaves ~246 bytes of payload
+	// room), unlike the 256-byte Tone case above.
+	bool sendPatchToExternalMidi(int slot, const juce::uint8 *data128);
+
 	// Snapshot of everything the virtual front panel needs to redraw itself each frame.
 	// Built entirely from stable, always-current getters (not mt32emu's own getDisplayState() text,
 	// which is designed to flash transient messages and revert after a couple of seconds, and whose
@@ -664,11 +676,23 @@ public:
 	void sendName(juce::uint32 sysexAddress, int offset, const juce::String &name);
 	// Надпись на индикаторе прибора - штатная команда Roland по адресу 0x200000.
 	void sendDisplayMessage(const juce::String &text);
+	// The exact same byte-for-byte SysEx that sendDisplayMessage() sends, as a space-separated
+	// hex string ("41 10 16 12 ...") - for right-click on Send, to copy to the clipboard and
+	// paste into another program (e.g. MuSE). Doesn't need core.isRunning().
+	static juce::String displayMessageSysexHex(const juce::String &text);
 
 	// Смена тембра партии - обычная смена программы на её собственном MIDI-канале, как с
 	// внешней клавиатуры. Канал берётся из карты прошивки, а не считается по формуле:
 	// заводская раскладка «партия N на канале N+1» изменяема, и формула промахнулась бы.
 	void selectTimbreForPart(int part, int timbre);
+	// Same live-channel lookup selectTimbreForPart() does internally (System Area, chanAssign -
+	// the factory "Part N -> channel N+1" formula is changeable, so this reads the map rather
+	// than assuming it), exposed on its own for anything that needs to send a real MIDI note to
+	// a Part rather than a Program Change - the Android app's Soundbanks test-note button
+	// (Main.cpp), 2026-08-30. Returns the channel 1-16 (matching injectTestNote()'s own
+	// juce::MidiMessage convention), or -1 if the part is off (no channel assigned) or the
+	// firmware isn't running.
+	int liveChannelForPart(int part) const;
 	// Переход на патч НАЖАТИЯМИ САМОЙ ПАНЕЛИ: Patch, затем Bank+ и Number+ столько раз,
 	// сколько нужно. Патч выбирает прошивка - она при этом раскладывает его по временным
 	// областям, пишет своё на индикатор и поднимает зеркало, - а не мы за неё.
@@ -877,6 +901,23 @@ private:
 	// pendingSysexImports because those go through synth->playSysex() too, which expects a
 	// proper F0...F7 sysex frame, not the short channel-voice messages a panic sends.
 	std::vector<juce::uint8> pendingPanicBytes;
+	// midiPanic()'s own request to also call core.releaseStuckNoteContexts() (see its own
+	// comment) - guarded by engineActionLock like the two queues above, since that method
+	// touches `core` state (noteQueue_ etc.) that only the audio thread may otherwise touch.
+	// One-shot: applied on the very next processBlock() and then cleared.
+	bool pendingForceReleaseStuckVoices = false;
+	// Same idea, for core.resetVoiceSlotTable() - NOT one-shot, see that method's own comment
+	// for why a single call loses a race with the firmware's own delayed response to the
+	// panic's CC64/CC123 bytes. Counts down in SAMPLES (exact regardless of block size) from
+	// wherever midiPanic() sets it (message thread); processBlock() (audio thread) calls
+	// resetVoiceSlotTable() again on every block while this is still > 0, so the LAST call -
+	// after the firmware's own response has had time to either genuinely finish or genuinely
+	// never finish - is the one that sticks. std::atomic rather than the lock the two queues
+	// above use: a plain write-here/read-there int would be the same kind of unsynchronised
+	// cross-thread access already found and fixed once this session (see RescanThread's own
+	// comment in SoundbankBrowser.cpp) - a single relaxed word is enough here, no payload data
+	// to keep consistent alongside it the way the locked queues have.
+	std::atomic<int> pendingSlotTableResetSamplesRemaining{ 0 };
 	juce::String lastImportMessage;
 
 	// Active custom PCM wave overrides, keyed by wave index (0-255) - the log-format samples

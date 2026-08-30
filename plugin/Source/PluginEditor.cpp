@@ -3269,6 +3269,16 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 			repaint();
 			return;
 		}
+		if (tab == Tab::Utility) {
+			for (const Button &b : buttons) {
+				if (b.id != 1 || !b.bounds.contains(p)) continue;
+				const juce::String hex = D110AudioProcessor::displayMessageSysexHex(textEntry.getText());
+				juce::PopupMenu m;
+				m.addItem("Copy SysEx to clipboard", [hex] { juce::SystemClipboard::copyTextToClipboard(hex); });
+				m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition());
+				return;
+			}
+		}
 		if (tab == Tab::Utility && zoomBounds.contains(p)) {
 			juce::PopupMenu m;
 			static constexpr int kZoomPresets[] = { 50, 75, 100, 125, 150 };
@@ -3278,6 +3288,32 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 				if (result > 0 && onRequestZoom) onRequestZoom(result);
 			});
 			return;
+		}
+		// ALL PATCHES row list, right-click -> "Send to real D-110" - Alan's request,
+		// 2026-08-29, the Patches-tab equivalent of the Soundbanks browser's own menu of the
+		// same name (SoundbankBrowser::showContextMenuFor()). One item, not a submenu: unlike
+		// a Tone (which can go to any of several places), a Patch has exactly one natural
+		// destination - the same-numbered slot on the real unit, keeping the two in sync.
+		if (tab == Tab::Patches && patchesSubTab == PatchesSubTab::AllPatches
+		    && tableArea.contains(p) && rowHeight > 0.0f) {
+			const int row = int((p.y - tableArea.getY()) / rowHeight);
+			const int patch = patchScroll + row;
+			if (row >= 0 && patch >= 0 && patch < D110CoreType::kNumPatches) {
+				juce::PopupMenu menu;
+				menu.addItem("Send to real D-110", [this, patch] {
+					if (!processor.hasExternalMidiOutput()) {
+						juce::NativeMessageBox::showMessageBoxAsync(
+							juce::MessageBoxIconType::WarningIcon, "D-110 Emulator",
+							"No MIDI Out device selected - pick one first (MIDI Output menu), "
+							"then try again.");
+						return;
+					}
+					processor.sendPatchToExternalMidi(
+						patch, ram.data() + D110CoreType::kRamPatches + size_t(patch) * D110CoreType::kPatchRecord);
+				});
+				menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition());
+				return;
+			}
 		}
 		const int i = cellAt(p);
 		if (i >= 0) {

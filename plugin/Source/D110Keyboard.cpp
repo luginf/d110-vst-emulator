@@ -1,5 +1,7 @@
 #include "D110Keyboard.h"
 
+#include <juce_audio_basics/juce_audio_basics.h>
+
 #include "UiTheme.h"
 
 namespace {
@@ -56,7 +58,12 @@ D110Keyboard::D110Keyboard(D110KeyboardHost &h) : host(h) {
 	startTimerHz(30);
 }
 
-D110Keyboard::~D110Keyboard() { stopTimer(); releaseAllTouchNotes(); releaseAllPcNotes(); }
+D110Keyboard::~D110Keyboard() {
+	stopTimer();
+	releaseAllTouchNotes();
+	releaseAllPcNotes();
+	releaseAllHeldNotes();
+}
 
 void D110Keyboard::sendNote(int note, float velocity, bool on) {
 	if (midiRemap) {
@@ -74,7 +81,7 @@ void D110Keyboard::releaseAllPcNotes() {
 	}
 }
 
-void D110Keyboard::showContextMenu() {
+void D110Keyboard::showContextMenu(int noteForHold) {
 	juce::PopupMenu channelMenu;
 	for (int ch = 1; ch <= 16; ++ch)
 		channelMenu.addItem(1000 + ch, "Channel " + juce::String(ch), true, midiRemap && midiChannel == ch);
@@ -84,13 +91,24 @@ void D110Keyboard::showContextMenu() {
 	layoutMenu.addItem(2002, "AZERTY", true, pcLayout == PcLayout::azerty);
 
 	juce::PopupMenu m;
+	// The click landed ON a key - Alan's request, 2026-08-30: sustain that one note
+	// indefinitely for testing (long decay/release tails, drones) without physically holding
+	// the mouse button down - see toggleHoldNote()'s own comment. Prepended, not appended: the
+	// one item that's actually about THIS key, ahead of the keyboard-wide settings below.
+	if (noteForHold >= 0) {
+		m.addItem(5000, "Hold note (" + juce::MidiMessage::getMidiNoteName(noteForHold, true, true, 4) + ")",
+		          true, heldNotes.count(noteForHold) > 0);
+		m.addSeparator();
+	}
 	m.addSubMenu("MIDI Channel", channelMenu, midiRemap);
 	m.addItem(3000, "MIDI Remap (send on one channel instead of all 16)", true, midiRemap);
 	m.addSeparator();
 	m.addItem(4000, "PC keyboard input (tracker-style)", true, pcKeyboardEnabled);
 	m.addSubMenu("PC keyboard layout", layoutMenu, pcKeyboardEnabled);
 
-	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [this](int result) {
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
+	                 [this, noteForHold](int result) {
+		if (result == 5000) { toggleHoldNote(noteForHold); return; }
 		if (result >= 1001 && result <= 1016) {
 			midiChannel = result - 1000;
 			host.setKeyboardMidiChannel(midiChannel);
@@ -119,6 +137,29 @@ void D110Keyboard::showContextMenu() {
 			return;
 		}
 	});
+}
+
+// showContextMenu()'s own "Hold note" item - Alan's request, 2026-08-30. Independent of the
+// mouse/touch/PC-keyboard tracking above: a held note keeps sounding no matter what else
+// happens on this component (octave change, a chord played elsewhere, ...) until toggled off
+// the same way again, or MIDI PANIC silences it - timerCallback() notices that on its own next
+// tick (host.isNoteActive() already goes false the moment panic clears remoteNoteActive) and
+// drops it from `heldNotes` too, so a stale "still checked" doesn't linger in the menu.
+void D110Keyboard::toggleHoldNote(int note) {
+	if (note < 0) return;
+	if (heldNotes.count(note) > 0) {
+		heldNotes.erase(note);
+		sendNote(note, 0.0f, false);
+	} else {
+		heldNotes.insert(note);
+		sendNote(note, 0.85f, true);
+	}
+	repaint();
+}
+
+void D110Keyboard::releaseAllHeldNotes() {
+	for (int note : heldNotes) sendNote(note, 0.0f, false);
+	heldNotes.clear();
 }
 
 bool D110Keyboard::keyStateChanged(bool /*isKeyDown*/) {
@@ -154,6 +195,15 @@ void D110Keyboard::timerCallback() {
 	// already runs at, rather than only once at construction.
 	midiChannel = host.getKeyboardMidiChannel();
 	midiRemap = host.getMidiRemap();
+	// A held note can go silent without toggleHoldNote() ever being called - MIDI PANIC, the
+	// one other way Alan asked for it to stop (see showContextMenu()'s own comment), works by
+	// clearing remoteNoteActive directly, not through a note-off this component would otherwise
+	// see. Noticed here, same cadence as everything else this callback re-syncs, rather than a
+	// dedicated host interface method for one flag.
+	for (auto it = heldNotes.begin(); it != heldNotes.end();) {
+		if (!host.isNoteActive(*it)) it = heldNotes.erase(it);
+		else ++it;
+	}
 	repaint();
 }
 
@@ -221,7 +271,9 @@ void D110Keyboard::setHeldNoteForSource(int sourceIndex, int note) {
 	const auto it = heldNoteBySource.find(sourceIndex);
 	const int previous = (it != heldNoteBySource.end()) ? it->second : -1;
 	if (note == previous) return;
-	if (previous >= 0) sendNote(previous, 0.0f, false);
+	// Don't cut a note "Hold note" is deliberately sustaining just because the mouse/a touch
+	// that also happened to strike it lets go - see toggleHoldNote()'s own comment.
+	if (previous >= 0 && heldNotes.count(previous) == 0) sendNote(previous, 0.0f, false);
 	if (note >= 0) heldNoteBySource[sourceIndex] = note;
 	else if (it != heldNoteBySource.end()) heldNoteBySource.erase(it);
 	if (note >= 0) sendNote(note, 0.85f, true);
@@ -250,17 +302,21 @@ void D110Keyboard::paint(juce::Graphics &g) {
 	paintButton(octaveDownBounds, "-");
 	paintButton(octaveUpBounds, "+");
 
-	// Lit for three reasons, checked cheapest-first: held by the mouse/a touch, held by a
-	// PC-tracker key, or currently sounding somewhere else in the app (external MIDI In,
-	// sequencer playback, a DAW host track - see D110KeyboardHost::isNoteActive()). All three
-	// just mean "this note is on right now" as far as the key's colour is concerned.
+	// Lit for four reasons, checked cheapest-first: held by the mouse/a touch, "Hold note"-ed
+	// from the right-click menu, held by a PC-tracker key, or currently sounding somewhere else
+	// in the app (external MIDI In, sequencer playback, a DAW host track - see
+	// D110KeyboardHost::isNoteActive()). All four just mean "this note is on right now" as far
+	// as the key's colour is concerned - heldNotes is checked locally rather than only relying
+	// on host.isNoteActive() picking it up next poll, same instant-feedback reasoning as
+	// isTouchHeld/isPcKeyDownForNote already get.
 	auto isTouchHeld = [this](int note) {
 		for (const auto &kv : heldNoteBySource)
 			if (kv.second == note) return true;
 		return false;
 	};
 	auto isLit = [this, isTouchHeld](int note) {
-		return isTouchHeld(note) || isPcKeyDownForNote(note) || host.isNoteActive(note);
+		return isTouchHeld(note) || heldNotes.count(note) > 0 || isPcKeyDownForNote(note)
+		    || host.isNoteActive(note);
 	};
 	for (const auto &k : whiteKeys) {
 		g.setColour(isLit(k.note) ? pal.keyWhiteHeld : pal.keyWhite);
@@ -289,10 +345,13 @@ void D110Keyboard::mouseDown(const juce::MouseEvent &e) {
 	// typing ready to go immediately, with no extra click needed to focus the strip.
 	grabKeyboardFocus();
 
-	if (e.mods.isPopupMenu()) { showContextMenu(); return; }
+	// Computed once, up front, so the right-click branch below can pass it straight to
+	// showContextMenu() (-1 if the click missed every key, e.g. landed on the caption/octave
+	// buttons/margin - that just skips its own "Hold note" item) without a second lookup.
+	const int note = keyAt(e.position);
+	if (e.mods.isPopupMenu()) { showContextMenu(note); return; }
 	if (octaveDownBounds.contains(e.position)) { changeOctave(-1); return; }
 	if (octaveUpBounds.contains(e.position)) { changeOctave(1); return; }
-	const int note = keyAt(e.position);
 	if (note < 0) return;
 	setHeldNoteForSource(e.source.getIndex(), note);
 }

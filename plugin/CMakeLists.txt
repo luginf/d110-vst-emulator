@@ -1704,6 +1704,26 @@ target_link_libraries(d110_native_single_part_stuck PRIVATE
     D110PanelData MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
 
+# Alan's report, 2026-08-30: MIDI PANIC (Utility tab) didn't reset a stuck note's audio or
+# the Monitor tab's voice-slot grid - see the probe's own header comment.
+add_executable(d110_native_midi_panic_stuck native_midi_panic_stuck_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/SoundbankDatabase.cpp Source/SoundbankBrowser.cpp Source/D110Keyboard.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
+target_include_directories(d110_native_midi_panic_stuck PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_midi_panic_stuck PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_native_midi_panic_stuck PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
 # Reproduces Alan's 2026-08-06 JACK/Focusrite report: retriggering a note (same or a
 # different pitch) while the previous one's firmware voice slot is still busy produces no
 # audible sound - see the probe's own header comment for why this checks actual rendered
@@ -1789,6 +1809,29 @@ target_compile_definitions(d110_native_editor_race PRIVATE
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
     JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(d110_native_editor_race PRIVATE
+    D110PanelData MT32Emu::mt32emu
+    juce::juce_audio_utils juce::juce_audio_processors)
+
+# Whether the real D-110 firmware's Display Message SysEx (0x200000) can put independent
+# text on both physical LCD rows, or only ever fills one 20-byte buffer - Alan asked
+# 2026-08-29. Reads the LCD back through the real CGROM, same technique as
+# editor_write_probe.cpp's screen(), against the native core instead of MAME's. See the
+# probe's own header comment.
+add_executable(d110_native_display_line native_display_line_probe.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/SoundbankDatabase.cpp Source/SoundbankBrowser.cpp Source/D110Keyboard.cpp
+    Source/native/mcs96_cpu.cpp Source/native/d110_bus.cpp Source/native/msm6222b.cpp
+    Source/native/D110CoreNative.cpp Source/native/ram_mirror.cpp
+    Source/sequencer/D110SequencerEngine.cpp
+    Source/sequencer/D110SequencerSongsFile.cpp
+    Source/UiTheme.cpp
+    Source/sequencer/D110SequencerPanel.cpp
+    Source/sequencer/D110SequencerRetroPanel.cpp)
+target_include_directories(d110_native_display_line PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(d110_native_display_line PRIVATE
+    D110_NATIVE_CORE=1
+    JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(d110_native_display_line PRIVATE
     D110PanelData MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
 
