@@ -2,6 +2,9 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <functional>
+#include <set>
+
 #include "SoundbankDatabase.h"
 
 class D110AudioProcessor;
@@ -26,6 +29,21 @@ public:
 	// (e.g. Android and the desktop plugin never share a live process, but the database on
 	// disk is the same folder if Alan points both at it).
 	void refresh();
+
+	// Which Part (0-7) a double-click/double-tap auditions into right now - the PART row's own
+	// selection. Android's own test-note/HOLD buttons (Main.cpp, Alan's request 2026-08-30)
+	// target whichever Part this is, matching what auditioning a tone here already does.
+	int getSelectedPart() const { return selectedPart; }
+
+	// Fires after a tone is auditioned into a Part's live Tone Temporary (double-click, or any
+	// of the right-click/long-press "Send to Part N" paths) - `part` is which one. Null by
+	// default; only Android's Main.cpp wires this up (Alan's request, 2026-08-30: HOLD's own
+	// note should retrigger - kill the old one, strike the new - whenever browsing lands on a
+	// different sound while HOLD is on, so a continuously-held test note actually previews each
+	// newly-picked tone's attack instead of just quietly swapping underneath a note already
+	// mid-decay). The desktop editor's own SOUNDBANKS tab has no such feature and leaves this
+	// unset.
+	std::function<void(int part)> onToneAuditioned;
 
 	void paint(juce::Graphics &g) override;
 	void resized() override;
@@ -57,6 +75,21 @@ private:
 	// showExternalInjectMenuFor()'s own comment). On Android, the same menu opens from a
 	// long-press instead (no right mouse button to hold there) - see handleLongPress().
 	void showContextMenuFor(const d110bank::Entry &entry);
+	// "Rename..." on the row context menu - Alan's request, 2026-08-30: rewrites the tone's own
+	// embedded 10-char name (via d110bank::Database::rename() - see its own comment for why,
+	// unlike everything else this component writes, that's a direct file write rather than a
+	// firmware SysEx write, since a soundbank entry isn't loaded into any running instrument).
+	void promptRenameEntry(const d110bank::Entry &entry);
+	// "Delete" on the row context menu - Alan's request, 2026-08-30: permanently removes a tone
+	// from the database (confirmed first - this can't be undone the way RESCAN/Favorites can).
+	// Also drops it from Favorites if it was one, since Database::remove() itself doesn't know
+	// about that separate file.
+	void confirmDeleteEntry(const d110bank::Entry &entry);
+	// Re-reads the database (same reasoning as checkRescanProgress()'s own post-scan reload -
+	// rename()/remove() can shift/replace pointers into Database's own `entries` vector) and
+	// refreshes the filtered list/duplicate-hidden set. Shared tail end of promptRenameEntry()/
+	// confirmDeleteEntry() once their edit actually lands.
+	void reloadAfterEdit(const juce::String &statusMessage);
 	// Long-press-to-context-menu, Android's equivalent of a desktop right-click (touch has no
 	// second button). Scheduled from mouseDown() (touch sources only - see its own comment) via
 	// juce::Timer::callAfterDelay(); `gestureId` is compared against `longPressGestureId` so a
@@ -83,6 +116,24 @@ private:
 	// favoris.syx" -> "mes favoris_01.syx"/"_02.syx"/... example is implemented there, not
 	// here, since Database/Favorites is where the on-disk tone bytes actually live).
 	void exportFavorites();
+	// "HIDE DUPLICATES" toggle - Alan's request, 2026-08-30: find tones that are the same SOUND
+	// (identical 246-byte tone body - see d110bank::Database::findDuplicateGroups()'s own
+	// comment) even when captured under different names, and filter the browse list down to one
+	// representative per group, search included - nothing is deleted, a hidden entry is still
+	// reachable by switching the toggle back off. `duplicateHidden` is only ever populated while
+	// the toggle is on - recomputed here and after anything that can change the database's
+	// contents (rescan, delete).
+	void toggleHideDuplicates();
+	void recomputeDuplicateHidden();
+	// "BACKUP..." button - Alan's request, 2026-08-30: zips the whole database (index.json +
+	// every tone file - d110bank::Database::backupToZip()) to a file Alan picks. Independent of
+	// Favorites, same reasoning as EXPORT FAVORITES being its own separate action.
+	void backupDatabase();
+	// "RESTORE..." button - Alan's request, 2026-08-30: REPLACES the current database wholesale
+	// from a zip written by backupDatabase() (his own explicit choice - a restore should put
+	// things back exactly as backed up, not merge) - confirmed first, since it's destructive to
+	// whatever's in the database right now.
+	void restoreDatabase();
 #if !JUCE_ANDROID
 	// "CHOOSE FILES/FOLDER..." button - Alan's request, 2026-08-28: picking the SysEx source
 	// used to only be reachable from the desktop extended editor's own Utility tab, which he
@@ -107,10 +158,19 @@ private:
 	juce::TextButton rescanButton{ "RESCAN" };
 	juce::TextButton injectButton{ "INJECT TO SLOT..." };
 	juce::TextButton exportFavoritesButton{ "EXPORT FAVORITES..." };
+	juce::TextButton hideDuplicatesButton{ "HIDE DUPLICATES" };
+	juce::TextButton backupButton{ "BACKUP..." };
+	juce::TextButton restoreButton{ "RESTORE..." };
 #if !JUCE_ANDROID
 	juce::TextButton chooseSourceButton{ "CHOOSE FILES/FOLDER..." };
 #endif
 	juce::Label statusLabel;
+
+	// See toggleHideDuplicates()'s own comment - membership only, no ordering/display
+	// information (that lives in the group each entry came from, findDuplicateGroups()'s own
+	// vector, not needed again once the hidden set is built).
+	bool hideDuplicates = false;
+	std::set<const d110bank::Entry *> duplicateHidden;
 
 	// "ALL", "FAVORITES", "A".."Z", "0-9", "_" - fixed browse order. A non-empty search query
 	// overrides `selectedGroup` entirely (searches every letter, not just the selected one -

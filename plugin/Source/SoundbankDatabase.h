@@ -134,6 +134,48 @@ public:
 	// missing or the wrong size (e.g. the database folder was tampered with outside the app).
 	static bool readToneBytes(const Entry &entry, juce::uint8 *out256);
 
+	// Renames an entry - Alan's request, 2026-08-30. Rewrites the embedded 10-character name
+	// field (offset 0-9 of the 256-byte record) on disk, using the same space-padded/printable-
+	// ASCII (32-126) convention D110AudioProcessor::sendName() uses for a live firmware name
+	// write (duplicated rather than shared - this class stays decoupled from D110Core, see this
+	// file's own header comment), so a renamed tone shows the new name if later injected into a
+	// real or emulated D-110, not just in this browser's own list. `newName` is truncated to 10
+	// characters. Recomputes displayName's " (N)" disambiguation suffix against whatever else is
+	// already in the database under the resulting name, same scheme rescan() uses, and rewrites
+	// index.json. Returns false if the entry can't be found/read.
+	bool rename(const Entry &entry, const juce::String &newName);
+
+	// Permanently deletes an entry - Alan's request, 2026-08-30: its on-disk tone file and its
+	// index.json row. Does NOT touch Favorites (own separate file, see the Favorites class below)
+	// - a caller removing a favorited entry should also call Favorites::toggle() on it, same as
+	// SoundbankBrowser's context menu does. Returns false if not found.
+	bool remove(const Entry &entry);
+
+	// Groups every entry by its 246-byte tone BODY (offset 10..255 - the sound itself, name
+	// excluded) rather than by name+bytes the way rescan()'s own incremental merge does - Alan's
+	// request, 2026-08-30: find "real" duplicates a same-name-same-bytes check can't catch (the
+	// same sound re-dumped, or captured under a different name, somewhere else in the library).
+	// Only groups with more than one member are returned, each sorted alphabetically by
+	// displayName (browse order) with groups themselves ordered the same way by their first
+	// member - what SoundbankBrowser's "Hide duplicates" toggle hides everything but element [0]
+	// of. Reads every entry's file off disk - fine for an explicit refresh/rescan-time call, not
+	// meant to run per keystroke.
+	std::vector<std::vector<const Entry *>> findDuplicateGroups() const;
+
+	// Backs up the whole database (index.json + every tone file) as one zip - Alan's request,
+	// 2026-08-30. Independent of Favorites (its own separate file - see exportTonesAsSysex()'s
+	// sibling reasoning for why that one's export is kept apart from this too). False if `root`
+	// doesn't exist yet (nothing to back up) or the zip couldn't be written.
+	bool backupToZip(const juce::File &zipFile) const;
+
+	// Restores from a zip written by backupToZip() - REPLACES the current database wholesale
+	// (Alan's explicit choice, 2026-08-30: "restore" should put things back exactly as backed
+	// up, not merge with whatever's there now). Extracted to a temporary folder first and only
+	// swapped in on full success, so a bad/corrupt zip leaves the existing database untouched.
+	// Reloads `entries` from the restored index.json before returning. False if the zip can't be
+	// read or doesn't contain an index.json.
+	bool restoreFromZip(const juce::File &zipFile);
+
 private:
 	juce::File root;
 	std::vector<Entry> entries;

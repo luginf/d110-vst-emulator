@@ -1,6 +1,7 @@
 #include "SoundbankDatabase.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <map>
 
@@ -443,6 +444,122 @@ bool Database::readToneBytes(const Entry &entry, juce::uint8 *out256) {
 	juce::MemoryBlock mb;
 	if (!entry.file.loadFileAsData(mb) || mb.getSize() != size_t(kToneRecordSize)) return false;
 	std::memcpy(out256, mb.getData(), size_t(kToneRecordSize));
+	return true;
+}
+
+bool Database::rename(const Entry &entryRef, const juce::String &newName) {
+	for (auto &e : entries) {
+		if (e.file != entryRef.file) continue;
+
+		juce::uint8 data[kToneRecordSize];
+		if (!readToneBytes(e, data)) return false;
+
+		// Same space-padded/printable-ASCII (32-126) convention as
+		// D110AudioProcessor::sendName() - duplicated rather than shared, see this method's own
+		// header comment.
+		for (int i = 0; i < 10; ++i) {
+			const juce::juce_wchar ch = i < newName.length() ? newName[i] : ' ';
+			data[i] = juce::uint8((ch >= 32 && ch < 127) ? ch : ' ');
+		}
+		e.file.replaceWithData(data, size_t(kToneRecordSize));
+
+		const auto trimmed = trimmedName(data, 10);
+		const juce::String rawName = trimmed.isEmpty() ? juce::String("(Unnamed)") : trimmed;
+
+		// Fresh disambiguation suffix against whatever else is already under this name right
+		// now - same scheme rescan()'s own addDecodedTone lambda builds incrementally during a
+		// scan.
+		int count = 0;
+		for (const auto &other : entries)
+			if (&other != &e && other.rawName == rawName) ++count;
+		e.rawName = rawName;
+		e.displayName = count == 0 ? rawName : rawName + " (" + juce::String(count) + ")";
+
+		saveIndex();
+		return true;
+	}
+	return false;
+}
+
+bool Database::remove(const Entry &entryRef) {
+	for (size_t i = 0; i < entries.size(); ++i) {
+		if (entries[i].file != entryRef.file) continue;
+		entries[i].file.deleteFile();
+		entries.erase(entries.begin() + long(i));
+		saveIndex();
+		return true;
+	}
+	return false;
+}
+
+std::vector<std::vector<const Entry *>> Database::findDuplicateGroups() const {
+	// Keyed by the 246-byte tone BODY only (offset 10..255, name excluded) so the same sound
+	// captured/named differently elsewhere in the library still lands in one group. A
+	// fixed-size std::array rather than std::vector as the map key - some libstdc++ versions
+	// emit a bogus -Wstringop-overread warning from <=> on std::vector<unsigned char> that this
+	// sidesteps entirely.
+	using ToneBody = std::array<juce::uint8, size_t(kToneRecordSize - 10)>;
+	std::map<ToneBody, std::vector<const Entry *>> byBody;
+	for (const auto &e : entries) {
+		juce::uint8 data[kToneRecordSize];
+		if (!readToneBytes(e, data)) continue;
+		ToneBody body;
+		std::memcpy(body.data(), data + 10, body.size());
+		byBody[body].push_back(&e);
+	}
+
+	std::vector<std::vector<const Entry *>> groups;
+	for (auto &kv : byBody) {
+		if (kv.second.size() < 2) continue;
+		std::sort(kv.second.begin(), kv.second.end(), [](const Entry *a, const Entry *b) {
+			return a->displayName.compareIgnoreCase(b->displayName) < 0;
+		});
+		groups.push_back(std::move(kv.second));
+	}
+	std::sort(groups.begin(), groups.end(), [](const std::vector<const Entry *> &a,
+	                                            const std::vector<const Entry *> &b) {
+		return a.front()->displayName.compareIgnoreCase(b.front()->displayName) < 0;
+	});
+	return groups;
+}
+
+bool Database::backupToZip(const juce::File &zipFile) const {
+	if (!root.isDirectory()) return false;
+
+	juce::ZipFile::Builder builder;
+	for (const auto &entry : juce::RangedDirectoryIterator(root, true, "*", juce::File::findFiles,
+	                                                        juce::File::FollowSymlinks::no))
+		builder.addFile(entry.getFile(), 0, entry.getFile().getRelativePathFrom(root));
+
+	zipFile.deleteFile(); // createOutputStream() below would otherwise APPEND to a pre-existing file
+	auto out = zipFile.createOutputStream();
+	if (out == nullptr) return false;
+	return builder.writeToStream(*out, nullptr);
+}
+
+bool Database::restoreFromZip(const juce::File &zipFile) {
+	juce::ZipFile zip(zipFile);
+	if (zip.getNumEntries() == 0) return false;
+
+	bool hasIndex = false;
+	for (int i = 0; i < zip.getNumEntries(); ++i)
+		if (zip.getEntry(i)->filename == "index.json") hasIndex = true;
+	if (!hasIndex) return false;
+
+	// Extracted to a temp folder first and only swapped in on full success - a bad/corrupt zip
+	// (or one that runs out of disk mid-extract) must leave the existing database untouched.
+	const auto tempDir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+		                      .getChildFile("d110_soundbank_restore_" + juce::Uuid().toString().substring(0, 8));
+	tempDir.createDirectory();
+	const auto result = zip.uncompressTo(tempDir);
+	if (result.failed()) {
+		tempDir.deleteRecursively();
+		return false;
+	}
+
+	root.deleteRecursively();
+	tempDir.moveFileTo(root);
+	load();
 	return true;
 }
 

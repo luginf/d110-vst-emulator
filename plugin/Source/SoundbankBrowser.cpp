@@ -94,6 +94,16 @@ SoundbankBrowser::SoundbankBrowser(D110AudioProcessor &processorToUse) : process
 	exportFavoritesButton.setEnabled(false);
 	addAndMakeVisible(exportFavoritesButton);
 
+	hideDuplicatesButton.setClickingTogglesState(true);
+	hideDuplicatesButton.onClick = [this] { toggleHideDuplicates(); };
+	addAndMakeVisible(hideDuplicatesButton);
+
+	backupButton.onClick = [this] { backupDatabase(); };
+	addAndMakeVisible(backupButton);
+
+	restoreButton.onClick = [this] { restoreDatabase(); };
+	addAndMakeVisible(restoreButton);
+
 #if !JUCE_ANDROID
 	chooseSourceButton.onClick = [this] { chooseSource(); };
 	addAndMakeVisible(chooseSourceButton);
@@ -115,6 +125,7 @@ void SoundbankBrowser::refresh() {
 	selectedEntry = nullptr;
 	injectButton.setEnabled(false);
 	exportFavoritesButton.setEnabled(processor.getSoundbankFavorites().size() > 0);
+	recomputeDuplicateHidden();
 	rebuildFilteredList();
 
 	const int total = processor.getSoundbankDatabase().size();
@@ -158,8 +169,10 @@ void SoundbankBrowser::rebuildFilteredList() {
 		pool = db.byLetter(selectedGroup);
 	}
 
-	for (const auto *e : pool)
+	for (const auto *e : pool) {
+		if (hideDuplicates && duplicateHidden.count(e) > 0) continue;
 		if (query.isEmpty() || e->displayName.containsIgnoreCase(query)) filtered.push_back(e);
+	}
 
 	listScrollRow = 0;
 	if (selectedEntry != nullptr
@@ -227,6 +240,177 @@ void SoundbankBrowser::exportFavorites() {
 			}
 			delete chooser;
 		});
+}
+
+// "HIDE DUPLICATES" - Alan's request, 2026-08-30.
+void SoundbankBrowser::toggleHideDuplicates() {
+	hideDuplicates = hideDuplicatesButton.getToggleState();
+
+	// setClickingTogglesState()'s own colouring relies on a LookAndFeel this app's own
+	// Standalone/plugin never installs (only Nonet Sequencer's main() does, via
+	// d110ui::sharedLookAndFeel() - a real gap, discovered testing this very button: with no
+	// LookAndFeel installed, JUCE's stock default buttonOnColourId reads as visually identical
+	// to buttonColourId here, so a toggled button gave no visible feedback at all). Set the
+	// colours directly instead, same pal.seqActiveFill/pal.value pair paint()'s own hand-painted
+	// PART/group "buttons" already use for their own on/off state.
+	// Both buttonColourId AND buttonOnColourId set to the SAME pair - TextButton::paintButton()
+	// itself already branches on getToggleState() to pick which of the two it reads
+	// (buttonOnColourId when on), so setting only one left the other (whichever JUCE's own
+	// toggle-state check picked) still on an unset default. Setting both to the current desired
+	// pair sidesteps having to also track which ID that branch will choose.
+	const auto &pal = d110ui::palette();
+	const auto fill = hideDuplicates ? pal.seqActiveFill : pal.box;
+	const auto text = hideDuplicates ? pal.seqActiveText : pal.value;
+	hideDuplicatesButton.setColour(juce::TextButton::buttonColourId, fill);
+	hideDuplicatesButton.setColour(juce::TextButton::buttonOnColourId, fill);
+	hideDuplicatesButton.setColour(juce::TextButton::textColourOffId, text);
+	hideDuplicatesButton.setColour(juce::TextButton::textColourOnId, text);
+
+	if (hideDuplicates) {
+		recomputeDuplicateHidden();
+		statusLabel.setText(duplicateHidden.empty()
+		                         ? juce::String("No duplicate sounds found.")
+		                         : "Hiding " + juce::String(duplicateHidden.size())
+		                               + " duplicate sound(s) (same sound, different name/file).",
+		                     juce::dontSendNotification);
+	} else {
+		statusLabel.setText("Showing duplicates again.", juce::dontSendNotification);
+	}
+	rebuildFilteredList();
+	repaint();
+}
+
+void SoundbankBrowser::recomputeDuplicateHidden() {
+	duplicateHidden.clear();
+	if (!hideDuplicates) return; // nothing reads it while the toggle is off - no point computing it
+	for (const auto &group : processor.getSoundbankDatabase().findDuplicateGroups())
+		for (size_t i = 1; i < group.size(); ++i) duplicateHidden.insert(group[i]);
+}
+
+// "BACKUP..." - Alan's request, 2026-08-30.
+void SoundbankBrowser::backupDatabase() {
+	auto *chooser = new juce::FileChooser(
+		"Backup Soundbanks Database as...",
+		processor.getLastDialogDir().getChildFile("d110-soundbanks-backup.zip"), "*.zip");
+	chooser->launchAsync(
+		juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+			| juce::FileBrowserComponent::warnAboutOverwriting,
+		[this, chooser](const juce::FileChooser &fc) {
+			auto file = fc.getResult();
+			if (file != juce::File()) {
+				if (!file.hasFileExtension("zip")) file = file.withFileExtension("zip");
+				processor.setLastDialogDir(file.getParentDirectory());
+				const bool ok = processor.getSoundbankDatabase().backupToZip(file);
+				statusLabel.setText(ok ? "Database backed up to " + file.getFileName() + "."
+				                        : "Backup failed - nothing to back up, or the file couldn't be written.",
+				                     juce::dontSendNotification);
+				repaint();
+			}
+			delete chooser;
+		});
+}
+
+// "RESTORE..." - Alan's request, 2026-08-30: REPLACES the whole database - confirmed first,
+// since whatever's currently in it (and not also in the backup) is gone afterwards.
+void SoundbankBrowser::restoreDatabase() {
+	auto *chooser =
+		new juce::FileChooser("Restore Soundbanks Database from...", processor.getLastDialogDir(), "*.zip");
+	chooser->launchAsync(
+		juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+		[this, chooser](const juce::FileChooser &fc) {
+			auto file = fc.getResult();
+			if (file == juce::File()) {
+				delete chooser;
+				return;
+			}
+			processor.setLastDialogDir(file.getParentDirectory());
+
+			auto *aw = new juce::AlertWindow(
+				"Restore database?",
+				"This REPLACES the entire Soundbanks database with the contents of \""
+					+ file.getFileName()
+					+ "\" - any tone added or deleted since that backup was made is lost. "
+					  "Favorites are a separate list and are not affected.",
+				juce::AlertWindow::WarningIcon);
+			aw->addButton("Restore", 1, juce::KeyPress(juce::KeyPress::returnKey));
+			aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+			aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, file](int result) {
+				if (result == 1) {
+					const bool ok = processor.getSoundbankDatabase().restoreFromZip(file);
+					if (ok) reloadAfterEdit("Database restored from " + file.getFileName() + ".");
+					else
+						statusLabel.setText("Restore failed - that file doesn't look like a Soundbanks "
+						                     "database backup.",
+						                     juce::dontSendNotification);
+					repaint();
+				}
+				delete aw;
+			}));
+			delete chooser;
+		});
+}
+
+// "Rename..." on the row context menu - Alan's request, 2026-08-30.
+void SoundbankBrowser::promptRenameEntry(const d110bank::Entry &entryRef) {
+	const d110bank::Entry entry = entryRef; // async dialog - see showContextMenuFor()'s own comment
+
+	auto *aw = new juce::AlertWindow(
+		"Rename tone", "Up to 10 characters, printable ASCII only - the D-110's own name field limit.",
+		juce::AlertWindow::NoIcon);
+	aw->addTextEditor("name", entry.rawName, "Name:");
+	if (auto *nameEditor = aw->getTextEditor("name"))
+		nameEditor->setInputRestrictions(10, " !\"#$%&'()*+,-./0123456789:;<=>?@"
+		                                      "ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`"
+		                                      "abcdefghijklmnopqrstuvwxyz{|}~");
+	aw->addButton("Rename", 1, juce::KeyPress(juce::KeyPress::returnKey));
+	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, entry](int result) {
+		if (result == 1) {
+			const auto newName = aw->getTextEditorContents("name").trim();
+			if (newName.isNotEmpty() && processor.getSoundbankDatabase().rename(entry, newName))
+				reloadAfterEdit("Renamed to \"" + newName + "\".");
+		}
+		delete aw;
+	}));
+}
+
+// "Delete" on the row context menu - Alan's request, 2026-08-30.
+void SoundbankBrowser::confirmDeleteEntry(const d110bank::Entry &entryRef) {
+	const d110bank::Entry entry = entryRef; // async dialog - see showContextMenuFor()'s own comment
+
+	auto *aw = new juce::AlertWindow(
+		"Delete this tone?",
+		"This permanently removes \"" + entry.displayName
+			+ "\" from the database. This can't be undone.",
+		juce::AlertWindow::WarningIcon);
+	aw->addButton("Delete", 1, juce::KeyPress(juce::KeyPress::returnKey));
+	aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+	aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, entry](int result) {
+		if (result == 1) {
+			// Database::remove() has no knowledge of Favorites (its own separate file) - drop it
+			// from there too if it was one, same as removing it any other way would need to.
+			auto &favorites = processor.getSoundbankFavorites();
+			if (favorites.contains(entry)) favorites.toggle(entry);
+			if (processor.getSoundbankDatabase().remove(entry))
+				reloadAfterEdit("Deleted \"" + entry.displayName + "\".");
+		}
+		delete aw;
+	}));
+}
+
+void SoundbankBrowser::reloadAfterEdit(const juce::String &statusMessage) {
+	// Same reasoning as checkRescanProgress()'s own post-scan reload: Database::remove() can
+	// shift/reallocate its `entries` vector, invalidating pointers `filtered`/`selectedEntry`
+	// hold into it - reloading from the just-saved index.json and rebuilding everything from
+	// scratch is the same known-safe pattern already used there.
+	processor.getSoundbankDatabase().load();
+	selectedEntry = nullptr;
+	injectButton.setEnabled(false);
+	exportFavoritesButton.setEnabled(processor.getSoundbankFavorites().size() > 0);
+	recomputeDuplicateHidden();
+	rebuildFilteredList();
+	statusLabel.setText(statusMessage, juce::dontSendNotification);
+	repaint();
 }
 
 #if !JUCE_ANDROID
@@ -330,6 +514,7 @@ void SoundbankBrowser::checkRescanProgress() {
 	// message thread, the only thread ever allowed to touch the SHARED Database (see
 	// RescanThread's own comment above for why).
 	processor.getSoundbankDatabase().load();
+	recomputeDuplicateHidden();
 	rebuildFilteredList();
 	// Alan's request, 2026-08-28: report how many sounds a scan found, both new-this-time and
 	// the running total.
@@ -466,6 +651,10 @@ void SoundbankBrowser::showContextMenuFor(const d110bank::Entry &entryRef) {
 	externalMenu.addItem("Inject to slot...", [this, entry] { showExternalInjectMenuFor(entry); });
 	menu.addSubMenu("Send to real D-110", externalMenu);
 
+	menu.addSeparator();
+	menu.addItem("Rename...", [this, entry] { promptRenameEntry(entry); });
+	menu.addItem("Delete", [this, entry] { confirmDeleteEntry(entry); });
+
 	menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition());
 }
 
@@ -534,6 +723,17 @@ void SoundbankBrowser::resized() {
 	top.removeFromRight(2.0f);
 	searchBox.setBounds(top.toNearestInt());
 	area.removeFromTop(4.0f);
+
+	// Database-management row - Alan's request, 2026-08-30: hide-duplicates toggle plus
+	// backup/restore, kept apart from the bottom action row (already crowded with per-tone
+	// actions) since these three act on the database as a whole.
+	auto toolsRow = area.removeFromTop(24.0f);
+	area.removeFromTop(4.0f);
+	hideDuplicatesButton.setBounds(toolsRow.removeFromLeft(150.0f).reduced(2.0f).toNearestInt());
+	toolsRow.removeFromLeft(4.0f);
+	backupButton.setBounds(toolsRow.removeFromLeft(90.0f).reduced(2.0f).toNearestInt());
+	toolsRow.removeFromLeft(4.0f);
+	restoreButton.setBounds(toolsRow.removeFromLeft(90.0f).reduced(2.0f).toNearestInt());
 
 	// Which Part a double-click auditions into - see the `selectedPart` member's own comment.
 	auto partRow = area.removeFromTop(24.0f);
@@ -895,6 +1095,7 @@ void SoundbankBrowser::auditionEntryToPart(const d110bank::Entry &entry, int par
 	processor.auditionToneBytes(part, data);
 	statusLabel.setText("Playing \"" + entry.displayName + "\" on Part " + juce::String(part + 1) + ".",
 	                     juce::dontSendNotification);
+	if (onToneAuditioned) onToneAuditioned(part);
 	repaint();
 }
 
@@ -908,7 +1109,8 @@ void SoundbankBrowser::mouseWheelMove(const juce::MouseEvent &, const juce::Mous
 // through the list at all - unusable on Android, and not discoverable even on desktop). Moves
 // the selection through the same row-major grid paint() lays out (Up/Down by one grid row =
 // `listColumns` entries, Left/Right by one entry, Page Up/Down by a full screen), auto-scrolling
-// to keep the new selection visible exactly the way any normal list view does.
+// to keep the new selection visible exactly the way any normal list view does. Also auditions
+// the newly-selected tone (2026-08-30 follow-up - see the `selectionChanged` block below).
 bool SoundbankBrowser::keyPressed(const juce::KeyPress &key) {
 	if (filtered.empty()) return false;
 
@@ -929,8 +1131,16 @@ bool SoundbankBrowser::keyPressed(const juce::KeyPress &key) {
 	else return false;
 
 	newIndex = juce::jlimit(0, int(filtered.size()) - 1, newIndex);
+	const bool selectionChanged = selectedEntry != filtered[size_t(newIndex)];
 	selectedEntry = filtered[size_t(newIndex)];
 	injectButton.setEnabled(true);
+
+	// Alan's request, 2026-08-30: moving the selection with the keyboard plays it immediately,
+	// the same instant, non-destructive audition double-click already does - "comme un
+	// double-clic, mais au clavier". Only on an actual move (not e.g. Up already at the first
+	// row, which clamps to the same entry) so holding the key at either end doesn't keep
+	// retriggering the same note.
+	if (selectionChanged) auditionEntryToPart(*selectedEntry, selectedPart);
 
 	const int row = newIndex / listColumns;
 	if (row < listScrollRow) listScrollRow = row;

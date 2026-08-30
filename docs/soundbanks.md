@@ -52,6 +52,9 @@ click-to-activate so it never steals keyboard focus from the on-screen keyboard 
 - **Double-click** (or, on a chosen tone, the on-screen **PART** row above the list) - plays it
   immediately on the selected Part's live/working tone. Free to audition as much as you like;
   no Tone Memory slot is spent.
+- **Arrow keys** - once a tone is selected, Up/Down/Left/Right/Page Up/Page Down move the
+  selection and audition each newly-selected tone immediately too, the same as a double-click -
+  a fast way to browse through a bank by ear without touching the mouse.
 - **Right-click** (desktop) / **long-press** (Android) a tone for:
   - **Add/Remove Favorites** - a separate, hand-picked list (see below).
   - **Send to** - audition on any of the 8 Parts, not just the currently selected one.
@@ -62,6 +65,26 @@ click-to-activate so it never steals keyboard focus from the on-screen keyboard 
     instead of this emulator. Needs a MIDI Out device selected first (hamburger/Options ->
     **MIDI Output**). Slot names can't be shown for a real remote unit the way they can for this
     emulator's own RAM.
+  - **Rename...** - up to 10 characters, printable ASCII only (the D-110's own name field
+    limit). Rewrites the tone's name for real, including the 10-character name embedded in its
+    256 bytes - so a renamed tone shows its new name if later injected into a real or emulated
+    D-110, not just here in the browser.
+  - **Delete** - permanently removes the tone from the database (confirmed first - this can't be
+    undone). Also drops it from Favorites if it was one.
+
+## Hiding duplicates
+
+**HIDE DUPLICATES** finds tones that are the same *sound* - identical audio data - even when
+they were captured under different names or came from different source files, and filters the
+browse list down to one entry per group. Nothing is deleted; switching the toggle back off shows
+everything again. Use **Delete** (above) to actually remove the extras you don't want to keep.
+
+## Backup and restore
+
+**BACKUP...** saves the whole database (every tone plus its name) to a single `.zip` file you
+choose. **RESTORE...** loads one of those backups back in - this *replaces* the entire current
+database with the backup's contents, so anything added or deleted since that backup was made is
+lost (confirmed first). Favorites are a separate list and aren't touched by either.
 
 ## Favorites
 

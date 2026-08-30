@@ -268,6 +268,171 @@ int main() {
 		check(d110bank::decodeTonesFromFile(singleBase).size() == 3, "that single file decodes back to 3 tones");
 	}
 
+	// Rename/delete/find-duplicates/backup-restore - Alan's request, 2026-08-30. Own fresh
+	// database/source, independent of the fixture above.
+	{
+		const auto srcDir = tempRoot.getChildFile("edit_source");
+		const auto editDbDir = tempRoot.getChildFile("edit_db");
+		srcDir.createDirectory();
+
+		juce::uint8 sax[256];
+		makeTone(sax, "SAX 1");
+		writeSyx(srcDir.getChildFile("a.syx"), kSysexTones, 0 * 256, sax);
+
+		// Same 246-byte BODY as SAX 1 but a different embedded name and a different name field -
+		// the "real duplicate" findDuplicateGroups() must catch that a plain rescan-time
+		// same-name-same-bytes merge would miss.
+		juce::uint8 saxRenamed[256];
+		std::memcpy(saxRenamed, sax, 256);
+		std::memcpy(saxRenamed, "SAX COPY", 8);
+		writeSyx(srcDir.getChildFile("b.syx"), kSysexTones, 1 * 256, saxRenamed);
+
+		// A DIFFERENT body (makeTone()'s own filler pattern for bytes 10..255 is otherwise the
+		// same deterministic sequence regardless of name - tone[20] nudged the same way the
+		// STRINGS fixture above does, so this one does NOT land in SAX 1/SAX COPY's duplicate
+		// group).
+		juce::uint8 bass[256];
+		makeTone(bass, "BASS 1");
+		bass[20] = 99;
+		writeSyx(srcDir.getChildFile("c.syx"), kSysexTones, 2 * 256, bass);
+
+		d110bank::Database editDb(editDbDir);
+		editDb.rescan(srcDir);
+		check(editDb.size() == 3, "edit fixture: 3 entries before any rename/delete");
+
+		const d110bank::Entry *saxEntry = nullptr;
+		const d110bank::Entry *saxCopyEntry = nullptr;
+		const d110bank::Entry *bassEntry = nullptr;
+		for (const auto &e : editDb.all()) {
+			if (e.displayName == "SAX 1") saxEntry = &e;
+			if (e.displayName == "SAX COPY") saxCopyEntry = &e;
+			if (e.displayName == "BASS 1") bassEntry = &e;
+		}
+		check(saxEntry != nullptr && saxCopyEntry != nullptr && bassEntry != nullptr,
+		      "edit fixture: all 3 distinctly-named entries found");
+
+		// --- findDuplicateGroups() ---
+		{
+			const auto groups = editDb.findDuplicateGroups();
+			check(groups.size() == 1, "exactly one duplicate group (SAX 1 / SAX COPY share a body)");
+			check(!groups.empty() && groups[0].size() == 2,
+			      "that group has exactly 2 members");
+			check(!groups.empty() && groups[0].size() == 2
+			          && groups[0][0]->displayName == "SAX 1" && groups[0][1]->displayName == "SAX COPY",
+			      "group is sorted alphabetically (SAX 1 before SAX COPY)");
+		}
+
+		// --- rename() ---
+		{
+			const d110bank::Entry before = *bassEntry;
+			const bool ok = editDb.rename(before, "NEW BASS");
+			check(ok, "rename() reports success");
+
+			bool found = false;
+			for (const auto &e : editDb.all())
+				if (e.file == before.file) {
+					found = true;
+					check(e.rawName == "NEW BASS", "rename() updated rawName");
+					check(e.displayName == "NEW BASS", "rename() updated displayName (no collision)");
+				}
+			check(found, "renamed entry is still present (same file identity)");
+
+			juce::uint8 reread[256] = {};
+			check(d110bank::Database::readToneBytes(before, reread),
+			      "renamed entry's file still reads back as 256 bytes");
+			check(std::memcmp(reread, "NEW BASS", 8) == 0 && reread[8] == ' ' && reread[9] == ' ',
+			      "rename() rewrote the embedded name field on disk, space-padded to 10 chars");
+			check(std::memcmp(reread + 10, bass + 10, 246) == 0,
+			      "rename() left the tone BODY (bytes 10..255) completely untouched");
+
+			d110bank::Database reloaded(editDbDir);
+			reloaded.load();
+			bool persisted = false;
+			for (const auto &e : reloaded.all())
+				if (e.displayName == "NEW BASS") persisted = true;
+			check(persisted, "rename() persisted to index.json - a fresh load() sees the new name");
+		}
+
+		// A second rename to a name already in use ("SAX 1") must pick up a " (N)" suffix, same
+		// scheme rescan() itself uses.
+		{
+			const bool ok = editDb.rename(*saxCopyEntry, "SAX 1");
+			check(ok, "rename() to an already-used name reports success");
+			bool found = false;
+			for (const auto &e : editDb.all())
+				if (e.file == saxCopyEntry->file) {
+					found = true;
+					check(e.displayName == "SAX 1 (1)",
+					      "renaming into an existing name disambiguates as \"SAX 1 (1)\", not a silent clash");
+				}
+			check(found, "renamed-into-collision entry still present");
+		}
+
+		// --- remove() ---
+		{
+			const auto beforeCount = editDb.size();
+			const d110bank::Entry toDelete = *saxEntry; // copy - the vector's about to shrink under it
+			const bool exists = toDelete.file.existsAsFile();
+			check(exists, "sanity: the entry's on-disk file exists before remove()");
+
+			const bool ok = editDb.remove(toDelete);
+			check(ok, "remove() reports success");
+			check(editDb.size() == beforeCount - 1, "database shrank by exactly 1 entry");
+			check(!toDelete.file.existsAsFile(), "remove() deleted the entry's on-disk file");
+
+			bool stillThere = false;
+			for (const auto &e : editDb.all())
+				if (e.file == toDelete.file) stillThere = true;
+			check(!stillThere, "removed entry no longer appears in all()");
+
+			const bool removeAgain = editDb.remove(toDelete);
+			check(!removeAgain, "removing an already-removed entry reports failure, not a crash");
+		}
+
+		// --- backupToZip() / restoreFromZip() ---
+		{
+			const auto backupZip = tempRoot.getChildFile("backup.zip");
+			const bool backedUp = editDb.backupToZip(backupZip);
+			check(backedUp, "backupToZip() reports success");
+			check(backupZip.existsAsFile(), "backup zip file was actually written");
+
+			const int countBeforeRestore = editDb.size();
+
+			// Mutate the database further AFTER the backup - restore must put it back to
+			// exactly the backed-up state, discarding this.
+			juce::uint8 extra[256];
+			makeTone(extra, "AFTER BACKUP");
+			const auto extraFile = editDbDir.getChildFile("_").getChildFile("z.d110tone");
+			extraFile.getParentDirectory().createDirectory();
+			extraFile.replaceWithData(extra, 256);
+			// Not added to the index on purpose - restoreFromZip() replaces the whole root, so
+			// even an untracked stray file must be gone afterwards too.
+			check(extraFile.existsAsFile(), "sanity: the untracked post-backup file exists");
+
+			const bool restored = editDb.restoreFromZip(backupZip);
+			check(restored, "restoreFromZip() reports success");
+			check(editDb.size() == countBeforeRestore,
+			      "restored database has exactly the entry count it had at backup time");
+			check(!extraFile.existsAsFile(),
+			      "restoreFromZip() wiped even an untracked stray file - a real REPLACE, not a merge");
+
+			bool sawNewBassAfterRestore = false;
+			for (const auto &e : editDb.all())
+				if (e.displayName == "NEW BASS") sawNewBassAfterRestore = true;
+			check(sawNewBassAfterRestore, "a renamed entry survived the backup/restore round trip");
+
+			// A completely fresh Database instance pointed at the same root also sees the
+			// restored state - restoreFromZip() actually persisted to disk, not just in-memory.
+			d110bank::Database freshAfterRestore(editDbDir);
+			freshAfterRestore.load();
+			check(freshAfterRestore.size() == countBeforeRestore,
+			      "a fresh Database instance loads the restored state from disk");
+
+			check(!editDb.restoreFromZip(tempRoot.getChildFile("does_not_exist.zip")),
+			      "restoreFromZip() on a missing file reports failure cleanly");
+		}
+	}
+
 	tempRoot.deleteRecursively();
 
 	std::printf(failures == 0 ? "\nALL PASSED\n" : "\n%d FAILURE(S)\n", failures);
