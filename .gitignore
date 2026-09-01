@@ -7,12 +7,20 @@ out/
 *.bin
 *.rom
 
+# D-50 SysEx patch-bank dumps (d50/roms/) - somebody's own patch work, not ours to
+# distribute, same reasoning as the ROM dumps above.
+*.syx
+
 # OS/editor cruft
 .vs/
 .vscode/
 *.user
 Thumbs.db
 .DS_Store
+
+# Python bytecode cache (d50/tools/*.py get run directly, not installed)
+__pycache__/
+*.pyc
 
 # Local release-packaging zip files
 *.zip

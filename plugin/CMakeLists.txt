@@ -2119,6 +2119,193 @@ target_compile_definitions(d110_keyboard_activity_probe PRIVATE JUCE_USE_CURL=0 
 target_link_libraries(d110_keyboard_activity_probe PRIVATE
     juce::juce_audio_devices juce::juce_audio_basics juce::juce_events juce::juce_core)
 
+# --- D-50 (d50/) ------------------------------------------------------------
+# Michi71's PicoFaceD5 engine (github.com/Michi71/PicoVintageSynthCollection),
+# ported from a reimplemented RP2350 firmware, not real D-50 hardware - see
+# d50/UPSTREAM_README.md for provenance and CLAUDE.md for what that means for
+# this port. Needs a local ROM set (the two PCM ROMs + the program EPROM) that
+# is not part of this repository; without one the probe is skipped and
+# everyone else's build stays green, the same convention already used for the
+# MAME backend/D-110 ROMs.
+set(_d50_dir ${CMAKE_CURRENT_SOURCE_DIR}/../d50)
+file(GLOB _d50_rom_files ${_d50_dir}/roms/*.bin ${_d50_dir}/roms/*.BIN)
+if(_d50_rom_files)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(_d50_gen ${CMAKE_CURRENT_BINARY_DIR}/d50_rom)
+    set(_d50_pcm_table ${_d50_gen}/d5_pcm_table.h)
+    set(_d50_tbl ${_d50_dir}/tools/d5_sample_table.json)
+    set(_d50_make_blob ${_d50_dir}/tools/d5_make_blob.py)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                 ${_d50_tbl} ${_d50_make_blob})
+    # Rerun when the sample table or the converter changes, not only when the
+    # output is missing - a build that silently kept a stale blob would send
+    # the wrong sample geometry to a probe/plugin without any signal.
+    if(EXISTS ${_d50_pcm_table} AND
+       (${_d50_tbl} IS_NEWER_THAN ${_d50_pcm_table} OR
+        ${_d50_make_blob} IS_NEWER_THAN ${_d50_pcm_table}))
+        message(STATUS "D-50: sample table changed, reconverting")
+        file(REMOVE ${_d50_pcm_table})
+    endif()
+    if(NOT EXISTS ${_d50_pcm_table})
+        message(STATUS "D-50: converting ROM set (this takes a moment)")
+        execute_process(
+            COMMAND ${Python3_EXECUTABLE} ${_d50_make_blob} ${_d50_dir}/roms ${_d50_gen}
+            RESULT_VARIABLE _d50_rc
+            OUTPUT_VARIABLE _d50_out
+            ERROR_VARIABLE _d50_err)
+        if(NOT _d50_rc EQUAL 0)
+            message(FATAL_ERROR "D-50: ROM conversion failed\n${_d50_out}${_d50_err}")
+        endif()
+        message(STATUS "D-50: ${_d50_out}")
+    endif()
+
+    # Patch bank(s): optional upstream, but the probe below (vendored as-is
+    # from Michi71's own host harness) always includes the generated header,
+    # so for now it only builds once a bank is there. The real plugin target
+    # will fall back to d5_presets.h's 8 hand-built patches the way D5_Bridge
+    # already does (see its __has_include("d5_patch_data.h") guard).
+    file(GLOB _d50_syx ${_d50_dir}/roms/*.syx ${_d50_dir}/roms/*.SYX)
+    set(_d50_patch_data ${_d50_gen}/d5_patch_data.h)
+    if(_d50_syx)
+        list(SORT _d50_syx)
+        set(_d50_stale TRUE)
+        if(EXISTS ${_d50_patch_data})
+            set(_d50_stale FALSE)
+            foreach(_f ${_d50_syx})
+                if(${_f} IS_NEWER_THAN ${_d50_patch_data})
+                    set(_d50_stale TRUE)
+                endif()
+            endforeach()
+        endif()
+        if(_d50_stale)
+            message(STATUS "D-50: converting patch bank(s)")
+            execute_process(
+                COMMAND ${Python3_EXECUTABLE} ${_d50_dir}/tools/d5_syx_to_patches.py
+                        ${_d50_syx} ${_d50_gen}
+                RESULT_VARIABLE _d50_syx_rc
+                OUTPUT_VARIABLE _d50_syx_out
+                ERROR_VARIABLE _d50_syx_err)
+            if(NOT _d50_syx_rc EQUAL 0)
+                message(FATAL_ERROR "D-50: patch bank conversion failed\n${_d50_syx_out}${_d50_syx_err}")
+            endif()
+            message(STATUS "D-50: ${_d50_syx_out}")
+        endif()
+    endif()
+
+    if(EXISTS ${_d50_patch_data})
+        add_executable(d50_engine_probe d50_engine_probe.cpp)
+        target_include_directories(d50_engine_probe PRIVATE ${_d50_dir} ${_d50_gen})
+        target_compile_features(d50_engine_probe PRIVATE cxx_std_17)
+
+        # D50Emulator: the first playable JUCE wrapper around the ported engine - see
+        # plugin/Source/d50/D50AudioProcessor.h's own header comment. Gated on the same
+        # ROMs+bank requirement as d50_engine_probe just above, for the same reason
+        # (d5_engine/d5_patch_map.h needs d5_pcm_table.h either way) - D5_Bridge still
+        # compiles whatever .syx is in d50/roms/ into d5_patch_data.h as a fallback (and
+        # this target won't even exist without one, see the else() branch below), but
+        # D5SyxLoader.cpp loading a real bank at runtime (see D5_Bridge::loadBank()) now
+        # takes priority whenever one is found - a release build that ships no .syx at
+        # all still plays real patches, from disk, same as the ROMs (d50/roms/README.md).
+        juce_add_plugin(D50Emulator
+            VERSION ${PROJECT_VERSION}
+            COMPANY_NAME "DIY"
+            IS_SYNTH TRUE
+            NEEDS_MIDI_INPUT TRUE
+            NEEDS_MIDI_OUTPUT FALSE
+            IS_MIDI_EFFECT FALSE
+            EDITOR_WANTS_KEYBOARD_FOCUS FALSE
+            COPY_PLUGIN_AFTER_BUILD TRUE
+            ${D110_VST3_COPY_DIR_ARGS}
+            PLUGIN_MANUFACTURER_CODE Manu
+            PLUGIN_CODE Dv50
+            FORMATS ${D110_FORMATS}
+            PRODUCT_NAME "D-50 Emulator"
+        )
+
+        target_sources(D50Emulator PRIVATE
+            Source/d50/D50AudioProcessor.cpp
+            Source/d50/D50Editor.cpp
+            ../d50/D5_Bridge.cpp
+            ../d50/D5RomLoader.cpp
+            ../d50/D5SyxLoader.cpp
+            Source/D110Keyboard.cpp
+            Source/UiTheme.cpp
+        )
+        target_include_directories(D50Emulator PRIVATE ${_d50_dir} ${_d50_gen})
+        target_compile_definitions(D50Emulator PUBLIC
+            JUCE_WEB_BROWSER=0
+            JUCE_USE_CURL=0
+            JUCE_VST3_CAN_REPLACE_VST2=0
+            JUCE_DISPLAY_SPLASH_SCREEN=0
+            JUCE_VST3_EMULATE_MIDI_CC_WITH_PARAMETERS=0
+        )
+        target_link_libraries(D50Emulator PRIVATE
+            juce::juce_audio_utils
+            juce::juce_audio_processors
+        )
+        target_link_libraries(D50Emulator PUBLIC
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_warning_flags
+        )
+
+        # loadPcmBlob()/loadPatchBank() look for raw ROM dumps and .syx banks in a
+        # d50-roms/ folder beside the running binary first (see their own comments) -
+        # copying Alan's own raw files there (never a pre-converted blob or the compiled-
+        # in bank) after every build exercises the SAME path a real end user's own ROM/
+        # bank would take, not a shortcut only his own dev setup gets.
+        if(TARGET D50Emulator_Standalone)
+            add_custom_command(TARGET D50Emulator_Standalone POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                        $<TARGET_FILE_DIR:D50Emulator_Standalone>/d50-roms
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_d50_rom_files}
+                        $<TARGET_FILE_DIR:D50Emulator_Standalone>/d50-roms/)
+            if(_d50_syx)
+                add_custom_command(TARGET D50Emulator_Standalone POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_d50_syx}
+                            $<TARGET_FILE_DIR:D50Emulator_Standalone>/d50-roms/)
+            endif()
+        endif()
+
+        # Offline check for D50AudioProcessor itself (MIDI mapping, resampling) - same
+        # reasoning as d110_audio_test.cpp, see d50_processor_probe.cpp's own header
+        # comment for why this is more trustworthy here than a Standalone window under Xvfb.
+        add_executable(d50_processor_probe d50_processor_probe.cpp
+            Source/d50/D50AudioProcessor.cpp
+            Source/d50/D50Editor.cpp
+            ../d50/D5_Bridge.cpp
+            ../d50/D5RomLoader.cpp
+            ../d50/D5SyxLoader.cpp
+            Source/D110Keyboard.cpp
+            Source/UiTheme.cpp)
+        target_include_directories(d50_processor_probe PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}" ${_d50_dir} ${_d50_gen})
+        target_compile_definitions(d50_processor_probe PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)
+        target_link_libraries(d50_processor_probe PRIVATE
+            juce::juce_audio_utils juce::juce_audio_processors juce::juce_audio_formats)
+
+        # Same "beside the binary" convenience as the plugin's own POST_BUILD step, so this
+        # probe is runnable straight after a build with no manual file copying either.
+        add_custom_command(TARGET d50_processor_probe POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    $<TARGET_FILE_DIR:d50_processor_probe>/d50-roms
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_d50_rom_files}
+                    $<TARGET_FILE_DIR:d50_processor_probe>/d50-roms/)
+        if(_d50_syx)
+            add_custom_command(TARGET d50_processor_probe POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_d50_syx}
+                        $<TARGET_FILE_DIR:d50_processor_probe>/d50-roms/)
+        endif()
+    else()
+        message(STATUS
+            "D-50: no patch bank (*.syx) in ${_d50_dir}/roms - skipping d50_engine_probe "
+            "for now (needs one to build; put a D-50 SysEx bulk dump there)")
+    endif()
+else()
+    message(STATUS
+        "D-50: skipped - no ROM images in ${_d50_dir}/roms "
+        "(needs the two PCM ROMs and a program EPROM; see d50/UPSTREAM_README.md)")
+endif()
+
 if(D110_BUILD_MAME_BACKEND)
 
 # One-shot MAME-backed helper: produces a properly factory-reset nvram folder for
