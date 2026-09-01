@@ -2037,6 +2037,187 @@ public:
 	void closeButtonPressed() override { delete this; }
 };
 
+// Content of SysexTonePickerWindow below - a checklist of every internal Tone Memory record
+// decoded from a SysEx/MIDI file that came in with more than Bank I's own 64 slots. Plain stock
+// JUCE widgets (ListBox/TextButton/Label), not this app's usual hand-painted Cell/Button
+// drawing - same call already made for SoundbankBrowser.cpp's confirm-overwrite AlertWindow:
+// a one-off utility dialog outside the main panel doesn't need to match its custom rendering,
+// and a real ListBox gets scrolling/keyboard nav for free on what could be a very long list.
+class SysexTonePickerContent : public juce::Component, private juce::ListBoxModel {
+public:
+	SysexTonePickerContent(D110AudioProcessor &proc, juce::File source,
+	                       std::vector<d110bank::DecodedTone> tonesIn)
+		: processor(proc), sourceFile(std::move(source)), tones(std::move(tonesIn)),
+		  selected(tones.size(), false) {
+		header.setText(juce::String(int(tones.size())) + " tones found, which is above the 64 "
+		               "tone limit of Bank I - select which ones you want to import.",
+		               juce::dontSendNotification);
+		header.setColour(juce::Label::textColourId, juce::Colours::white);
+		header.setJustificationType(juce::Justification::topLeft);
+		addAndMakeVisible(header);
+
+		list.setModel(this);
+		list.setColour(juce::ListBox::backgroundColourId, juce::Colour(0xff1a1a1a));
+		list.setColour(juce::ListBox::outlineColourId, juce::Colours::grey);
+		list.setRowHeight(22);
+		list.updateContent();
+		addAndMakeVisible(list);
+
+		counter.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
+		addAndMakeVisible(counter);
+		updateCounter();
+
+		selectFirst64.setButtonText("Select first 64");
+		selectFirst64.onClick = [this] {
+			std::fill(selected.begin(), selected.end(), false);
+			for (size_t i = 0; i < selected.size() && i < 64; ++i) selected[i] = true;
+			list.repaint();
+			updateCounter();
+		};
+		addAndMakeVisible(selectFirst64);
+
+		clearAll.setButtonText("Clear");
+		clearAll.onClick = [this] {
+			std::fill(selected.begin(), selected.end(), false);
+			list.repaint();
+			updateCounter();
+		};
+		addAndMakeVisible(clearAll);
+
+		importButton.setButtonText("Import Selected");
+		importButton.onClick = [this] { doImport(); };
+		addAndMakeVisible(importButton);
+
+		splitButton.setButtonText("Split into files instead...");
+		splitButton.onClick = [this] { doSplit(); };
+		addAndMakeVisible(splitButton);
+
+		cancelButton.setButtonText("Cancel");
+		cancelButton.onClick = [this] { closeParentWindow(); };
+		addAndMakeVisible(cancelButton);
+
+		setSize(560, 520);
+	}
+
+	void resized() override {
+		auto area = getLocalBounds().reduced(10);
+		header.setBounds(area.removeFromTop(48));
+		area.removeFromTop(6);
+		auto buttonsRow = area.removeFromBottom(28);
+		cancelButton.setBounds(buttonsRow.removeFromRight(80));
+		buttonsRow.removeFromRight(6);
+		splitButton.setBounds(buttonsRow.removeFromRight(180));
+		buttonsRow.removeFromRight(6);
+		importButton.setBounds(buttonsRow.removeFromRight(140));
+		area.removeFromBottom(6);
+		auto counterRow = area.removeFromBottom(24);
+		selectFirst64.setBounds(counterRow.removeFromLeft(120));
+		counterRow.removeFromLeft(6);
+		clearAll.setBounds(counterRow.removeFromLeft(70));
+		counterRow.removeFromLeft(10);
+		counter.setBounds(counterRow);
+		area.removeFromBottom(6);
+		list.setBounds(area);
+	}
+
+	void paint(juce::Graphics &g) override { g.fillAll(juce::Colour(0xff202020)); }
+
+private:
+	int getNumRows() override { return int(tones.size()); }
+
+	void paintListBoxItem(int row, juce::Graphics &g, int w, int h, bool) override {
+		if (row < 0 || row >= int(tones.size())) return;
+		g.fillAll(juce::Colour(0xff1a1a1a));
+		const bool on = selected[size_t(row)];
+		g.setColour(on ? juce::Colours::yellow : juce::Colours::grey);
+		g.drawRect(4, h / 2 - 6, 12, 12, 1);
+		if (on) g.fillRect(6, h / 2 - 4, 8, 8);
+		g.setColour(juce::Colours::white);
+		g.drawText(juce::String(row + 1).paddedLeft('0', 3) + "  " + tones[size_t(row)].name,
+		           24, 0, w - 28, h, juce::Justification::centredLeft);
+	}
+
+	void listBoxItemClicked(int row, const juce::MouseEvent &) override {
+		if (row < 0 || row >= int(tones.size())) return;
+		if (!selected[size_t(row)] && countSelected() >= 64) return; // at the cap - ignore more picks
+		selected[size_t(row)] = !selected[size_t(row)];
+		list.repaintRow(row);
+		updateCounter();
+	}
+
+	int countSelected() const { return int(std::count(selected.begin(), selected.end(), true)); }
+
+	void updateCounter() {
+		const int n = countSelected();
+		counter.setText(juce::String(n) + " / 64 selected", juce::dontSendNotification);
+		importButton.setEnabled(n > 0);
+	}
+
+	void closeParentWindow() {
+		if (auto *dw = findParentComponentOfClass<juce::DocumentWindow>()) dw->closeButtonPressed();
+	}
+
+	void doImport() {
+		std::vector<d110bank::DecodedTone> chosen;
+		for (size_t i = 0; i < tones.size(); ++i)
+			if (selected[i]) chosen.push_back(tones[i]);
+		// A temp file, not written alongside the source: this is a one-shot transient bank, not
+		// something meant to be kept around and reimported later - see "Split into files
+		// instead..." below for the case Alan does want files kept.
+		const auto tempFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
+			.getChildFile("d110_import_selected_"
+			              + juce::String(juce::Time::getCurrentTime().toMilliseconds()) + ".syx");
+		if (d110bank::buildToneBankFile(chosen, tempFile)) processor.importSysexBank(tempFile);
+		closeParentWindow();
+	}
+
+	void doSplit() {
+		const auto parts = d110bank::splitToneSysexFile(sourceFile);
+		if (parts.empty()) return;
+		int totalTones = 0;
+		for (const auto &p : parts) totalTones += p.toneCount;
+		juce::PopupMenu menu;
+		menu.addSectionHeader(juce::String(totalTones) + " tones split into "
+		                       + juce::String(int(parts.size())) + " files, alongside the source");
+		for (size_t i = 0; i < parts.size(); ++i)
+			menu.addItem(int(i) + 1, "Import part " + juce::String(i + 1) + " ("
+			                             + juce::String(parts[i].toneCount) + " tones) into Bank I");
+		menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&splitButton),
+			[this, parts](int result) {
+				if (result <= 0) return; // cancelled
+				processor.importSysexBank(parts[size_t(result - 1)].file);
+				closeParentWindow();
+			});
+	}
+
+	D110AudioProcessor &processor;
+	juce::File sourceFile;
+	std::vector<d110bank::DecodedTone> tones;
+	std::vector<bool> selected;
+	juce::Label header, counter;
+	juce::ListBox list;
+	juce::TextButton selectFirst64, clearAll, importButton, splitButton, cancelButton;
+};
+
+// Shown from D110EditorPane's "IMPORT SysEx / MIDI BANK" (see buttonPressed(), id==2) whenever
+// the picked file decodes to more than 64 internal Tone Memory records - Alan's request,
+// 2026-09-01: rather than importing the file blind and losing whatever didn't fit in Bank I's 64
+// slots, ask which ones to keep. Not modal, self-deletes on close - same reasoning as
+// ImagePopupWindow above.
+class SysexTonePickerWindow : public juce::DocumentWindow {
+public:
+	SysexTonePickerWindow(D110AudioProcessor &proc, const juce::File &source,
+	                      std::vector<d110bank::DecodedTone> tones)
+		: DocumentWindow("Select tones to import", juce::Colour(0xff202020), DocumentWindow::closeButton) {
+		setUsingNativeTitleBar(true);
+		setContentOwned(new SysexTonePickerContent(proc, source, std::move(tones)), true);
+		setResizable(true, true);
+		centreWithSize(getWidth(), getHeight());
+		setVisible(true);
+	}
+	void closeButtonPressed() override { delete this; }
+};
+
 // Shows docs/D20infos.png (embedded as BinaryData, see plugin/CMakeLists.txt's
 // juce_add_binary_data(D110PanelData ...)) in its own resizable pop-up window, sized to half
 // the emulator's own current window width (Alan's request, 2026-08-25) rather than a fixed
@@ -2905,10 +3086,22 @@ void D110EditorPane::buttonPressed(int id) {
 		// Диалог асинхронный, поэтому объект обязан пережить вызов; он и живёт в поле панели
 		// прибора, у которой уже есть такой же выбор в меню правой кнопки.
 		auto onPicked = [this](const juce::File &file) {
-			if (file != juce::File()) {
-				processor.setLastDialogDir(file.getParentDirectory());
+			if (file == juce::File()) return;
+			processor.setLastDialogDir(file.getParentDirectory());
+			// Alan's request, 2026-09-01: a file with more internal Tone Memory records than
+			// Bank I has slots for (64) used to just overrun it silently on import - anything
+			// past tone 64 was either unreachable or clobbered earlier tones, depending on what
+			// the real firmware's own address decode does with an out-of-range write. Counting
+			// first and, only over the limit, asking which ones to keep catches that up front
+			// instead. A file with <=64 tones (the overwhelming common case, and also any file
+			// that isn't tone data at all - Patches/Timbres/System, or empty) is imported exactly
+			// as before: whole, unexamined, byte-for-byte.
+			const auto tones = d110bank::decodeTonesFromFile(file);
+			if (int(tones.size()) <= 64) {
 				processor.importSysexBank(file);
+				return;
 			}
+			new SysexTonePickerWindow(processor, file, tones);
 		};
 		if (TieredNativeFileChooser::isAvailable()) {
 			// See TieredNativeFileChooser's own comment: gives a real, independently selectable

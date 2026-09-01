@@ -242,6 +242,49 @@ int exportTonesAsSysex(const std::vector<Entry> &tones, const juce::File &baseFi
 	return numFiles;
 }
 
+std::vector<SplitPart> splitToneSysexFile(const juce::File &sourceFile) {
+	const auto tones = decodeTonesFromFile(sourceFile);
+	std::vector<SplitPart> written;
+	if (tones.empty()) return written;
+
+	const int numFiles = (int(tones.size()) + kNumToneSlots - 1) / kNumToneSlots;
+	const auto dir = sourceFile.getParentDirectory();
+	const auto stem = sourceFile.getFileNameWithoutExtension() + "_split";
+	const auto ext = sourceFile.getFileExtension().isEmpty() ? ".syx" : sourceFile.getFileExtension();
+
+	for (int chunk = 0; chunk < numFiles; ++chunk) {
+		const auto target = numFiles == 1 ? dir.getChildFile(stem + ext)
+		                                   : dir.getChildFile(stem + "_"
+		                                                       + juce::String(chunk + 1).paddedLeft('0', 2)
+		                                                       + ext);
+		juce::MemoryBlock out;
+		int count = 0;
+		for (int slot = 0; slot < kNumToneSlots; ++slot) {
+			const size_t idx = size_t(chunk) * size_t(kNumToneSlots) + size_t(slot);
+			if (idx >= tones.size()) break;
+			juce::uint8 msg[kToneRecordSize + 16];
+			const int n = buildToneDt1(slot, tones[idx].data, msg);
+			out.append(msg, size_t(n));
+			++count;
+		}
+		target.replaceWithData(out.getData(), out.getSize());
+		written.push_back({ target, count });
+	}
+	return written;
+}
+
+bool buildToneBankFile(const std::vector<DecodedTone> &tones, const juce::File &outFile) {
+	if (tones.empty() || tones.size() > size_t(kNumToneSlots)) return false;
+
+	juce::MemoryBlock out;
+	for (int slot = 0; slot < int(tones.size()); ++slot) {
+		juce::uint8 msg[kToneRecordSize + 16];
+		const int n = buildToneDt1(slot, tones[size_t(slot)].data, msg);
+		out.append(msg, size_t(n));
+	}
+	return outFile.replaceWithData(out.getData(), out.getSize());
+}
+
 juce::String letterGroupFor(const juce::String &name) {
 	const auto trimmed = name.trim();
 	if (trimmed.isEmpty()) return "_";

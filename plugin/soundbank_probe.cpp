@@ -268,6 +268,100 @@ int main() {
 		check(d110bank::decodeTonesFromFile(singleBase).size() == 3, "that single file decodes back to 3 tones");
 	}
 
+	// splitToneSysexFile() - Alan's request, 2026-09-01: a dump with more tones than Bank I has
+	// slots for (64) overruns it on a plain "Import SysEx/MIDI Bank..."; splitting first into
+	// self-contained 64-tone banks alongside the source file fixes that.
+	{
+		const auto splitDir = tempRoot.getChildFile("split_src");
+		splitDir.createDirectory();
+
+		// One source file with 70 tones, each its own DT1 message concatenated back to back - the
+		// realistic shape for this feature: a personal library assembled from several captures
+		// (each independently addressed slot 0..63, exactly like Bank I's own real address
+		// space - there is no valid Tone-area SysEx address past slot 63 in the first place, see
+		// decodeTonesFromMessage()'s own bounds check), so tone 65 here reuses slot address 0
+		// again, same as a second real 64-slot dump concatenated after the first would.
+		juce::MemoryBlock allBytes;
+		for (int i = 0; i < 70; ++i) {
+			juce::uint8 tone[256];
+			makeTone(tone, ("SPLIT " + juce::String(i)).toRawUTF8());
+			juce::uint8 msg[512];
+			const int len = buildDt1(kSysexTones, (i % 64) * 256, tone, 256, msg);
+			allBytes.append(msg, size_t(len));
+		}
+		const auto bigFile = splitDir.getChildFile("big.syx");
+		bigFile.replaceWithData(allBytes.getData(), allBytes.getSize());
+
+		const auto parts = d110bank::splitToneSysexFile(bigFile);
+		check(parts.size() == 2, "70 tones split into exactly 2 parts (64 + 6)");
+		check(parts.size() == 2 && parts[0].toneCount == 64 && parts[1].toneCount == 6,
+		      "part tone counts are 64 then 6");
+		check(bigFile.existsAsFile() && d110bank::decodeTonesFromFile(bigFile).size() == 70,
+		      "the source file itself is left untouched");
+
+		const auto part1 = splitDir.getChildFile("big_split_01.syx");
+		const auto part2 = splitDir.getChildFile("big_split_02.syx");
+		check(parts.size() == 2 && parts[0].file == part1 && parts[1].file == part2,
+		      "part files are named <source>_split_01/_02, next to the source");
+
+		const auto decoded1 = d110bank::decodeTonesFromFile(part1);
+		const auto decoded2 = d110bank::decodeTonesFromFile(part2);
+		check(int(decoded1.size()) == 64 && !decoded1.empty() && decoded1[0].name == "SPLIT 0",
+		      "part 1 decodes back to 64 tones starting at SPLIT 0");
+		check(int(decoded2.size()) == 6 && !decoded2.empty() && decoded2[5].name == "SPLIT 69",
+		      "part 2 decodes back to 6 tones ending at SPLIT 69, i.e. nothing lost past slot 64");
+
+		// The <=64 case - one file, "_split" suffix, no "_01".
+		juce::MemoryBlock smallBytes;
+		for (int i = 0; i < 5; ++i) {
+			juce::uint8 tone[256];
+			makeTone(tone, ("SMALL " + juce::String(i)).toRawUTF8());
+			juce::uint8 msg[512];
+			const int len = buildDt1(kSysexTones, i * 256, tone, 256, msg);
+			smallBytes.append(msg, size_t(len));
+		}
+		const auto smallFile = splitDir.getChildFile("small.syx");
+		smallFile.replaceWithData(smallBytes.getData(), smallBytes.getSize());
+		const auto smallParts = d110bank::splitToneSysexFile(smallFile);
+		const auto smallSplitFile = splitDir.getChildFile("small_split.syx");
+		check(smallParts.size() == 1 && smallParts[0].file == smallSplitFile
+		          && smallParts[0].toneCount == 5,
+		      "5 tones (<=64) split into exactly one '_split' file, no numeric suffix");
+
+		// No tones at all - a file with unrelated SysEx (or none) yields no parts.
+		const auto emptyFile = splitDir.getChildFile("empty.syx");
+		emptyFile.replaceWithData(nullptr, 0);
+		check(d110bank::splitToneSysexFile(emptyFile).empty(), "an empty/tone-less file splits into nothing");
+	}
+
+	// buildToneBankFile() - Alan's request, 2026-09-01: the tone-picker's own "Import Selected"
+	// path (SysexTonePickerContent::doImport() in PluginEditor.cpp) builds a fresh bank file from
+	// an arbitrary user-picked SUBSET of decoded tones, not necessarily contiguous ones from a
+	// single source file.
+	{
+		std::vector<d110bank::DecodedTone> picked;
+		for (int i : { 3, 40, 63 }) {
+			d110bank::DecodedTone t;
+			makeTone(t.data, ("PICK " + juce::String(i)).toRawUTF8());
+			t.name = "PICK " + juce::String(i);
+			picked.push_back(t);
+		}
+		const auto outFile = tempRoot.getChildFile("picked.syx");
+		check(d110bank::buildToneBankFile(picked, outFile), "buildToneBankFile() reports success for 3 tones");
+		const auto decoded = d110bank::decodeTonesFromFile(outFile);
+		check(int(decoded.size()) == 3, "written file decodes back to exactly 3 tones");
+		check(!decoded.empty() && decoded[0].name == "PICK 3" && decoded[1].name == "PICK 40"
+		          && decoded[2].name == "PICK 63",
+		      "order preserved, addressed as slots 0/1/2 regardless of the tones' original slot numbers");
+
+		check(!d110bank::buildToneBankFile({}, outFile), "buildToneBankFile() refuses an empty selection");
+
+		std::vector<d110bank::DecodedTone> tooMany(65);
+		for (auto &t : tooMany) makeTone(t.data, "X");
+		check(!d110bank::buildToneBankFile(tooMany, outFile),
+		      "buildToneBankFile() refuses more than 64 tones (Bank I's own slot count)");
+	}
+
 	// Rename/delete/find-duplicates/backup-restore - Alan's request, 2026-08-30. Own fresh
 	// database/source, independent of the fixture above.
 	{

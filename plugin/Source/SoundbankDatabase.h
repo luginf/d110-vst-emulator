@@ -74,6 +74,35 @@ std::vector<DecodedTone> decodeTonesFromFile(const juce::File &file);
 // many files were written (0 if `tones` is empty).
 int exportTonesAsSysex(const std::vector<Entry> &tones, const juce::File &baseFile);
 
+// One file written by splitToneSysexFile() below.
+struct SplitPart {
+	juce::File file;
+	int toneCount = 0;
+};
+
+// Alan's request, 2026-09-01: a big SysEx/MIDI dump can carry more internal Tone Memory records
+// than the real instrument's Bank I has slots for (64) - "Import SysEx/MIDI Bank..." just
+// replays every message in the file with no address-range awareness at all (see
+// D110AudioProcessor::importSysexBank()'s own comment), so anything past tone 64 either
+// overwrites earlier tones in the same file or lands past the end of Bank I, unreachable from
+// the panel. This scans `sourceFile` the same way decodeTonesFromFile() does, then rewrites what
+// it found as one or more standalone, self-contained banks of at most kNumToneSlots (64) tones
+// each - same chunk/rebuild logic as exportTonesAsSysex(), each part addressed fresh as slot
+// 0..63 rather than carrying the source file's own slot numbers forward - written alongside
+// `sourceFile` as "<source name>_split.<ext>" (a single part) or "<source name>_split_NN.<ext>"
+// (more than one, 2-digit 1-based), so the source file itself is never touched. Each returned
+// part can be handed straight to D110AudioProcessor::importSysexBank() to load just that block
+// of up to 64 tones into Bank I. Empty if the source has no internal Tone Memory records at all.
+std::vector<SplitPart> splitToneSysexFile(const juce::File &sourceFile);
+
+// Writes exactly the given tones as one standalone bank file, slot = index in `tones` - used by
+// the SysEx import flow's tone picker (PluginEditor.cpp's SysexTonePickerContent) once Alan has
+// picked which subset (at most kNumToneSlots, 64) of a too-big dump to actually load, to build
+// the temp file handed to D110AudioProcessor::importSysexBank(). False (nothing written) if
+// `tones` is empty or has more than kNumToneSlots entries - the caller's job to keep the
+// selection within that bound in the first place.
+bool buildToneBankFile(const std::vector<DecodedTone> &tones, const juce::File &outFile);
+
 // --- Patch-oriented decoding, ON HOLD ------------------------------------------------------
 // The feature's first cut scanned PATCHES (128-byte Patch Memory records, SysEx 06 00 00) -
 // Alan corrected this 2026-08-28 ("je veux les sons (tones), pas les patch"), but asked to
