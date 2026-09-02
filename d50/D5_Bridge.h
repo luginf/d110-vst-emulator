@@ -138,6 +138,21 @@ public:
     bool upperPartial2Muted() const { return patch_.upper_partial2_muted(); }
     bool lowerPartial1Muted() const { return patch_.lower_partial1_muted(); }
     bool lowerPartial2Muted() const { return patch_.lower_partial2_muted(); }
+
+    // d110-vst-emulator addition, no real-panel equivalent: per-partial PCM
+    // pitch offset in semitones (-48..+48), sitting next to the mutes above
+    // as the same kind of listening/debugging aid (Alan, 2026-09-02 -
+    // tracking a ~2-octave-low PCM attack on tone 22 "Pipe Solo"'s lower
+    // tone against a real unit). See d5_patch.h's Tone::set_partial1_
+    // debug_pitch() for why a synth-waveform partial simply ignores this.
+    void setUpperPartial1PitchOffset(int s) { patch_.set_upper_partial1_pitch_offset(s); }
+    void setUpperPartial2PitchOffset(int s) { patch_.set_upper_partial2_pitch_offset(s); }
+    void setLowerPartial1PitchOffset(int s) { patch_.set_lower_partial1_pitch_offset(s); }
+    void setLowerPartial2PitchOffset(int s) { patch_.set_lower_partial2_pitch_offset(s); }
+    int upperPartial1PitchOffset() const { return patch_.upper_partial1_pitch_offset(); }
+    int upperPartial2PitchOffset() const { return patch_.upper_partial2_pitch_offset(); }
+    int lowerPartial1PitchOffset() const { return patch_.lower_partial1_pitch_offset(); }
+    int lowerPartial2PitchOffset() const { return patch_.lower_partial2_pitch_offset(); }
     // Hz and dB behind those indices, for the display.
     float eqLowHz() const;
     float eqHighHz() const;

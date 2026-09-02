@@ -225,6 +225,44 @@ inline bool install_loop_ram(const int16_t* blob, int16_t* ram, uint32_t cap) {
     return true;
 }
 
+// d110-vst-emulator addition, no upstream equivalent: per-PCM-wave root
+// pitch corrections, in semitones, applied on top of kPcmSamples[wave]'s own
+// root_hz. Not a code fix for a shared bug - each wave's root_hz was either
+// "measured, snapped to 32000/2^k" (the attacks - see UPSTREAM_README.md's
+// own "Root pitch of the attack samples" caveat) or resolved from a
+// wrap-continuity/bit-exact-repetition proof (the sustained loops, believed
+// solid by upstream - see d50/tools/d5_extract/README.md upstream) that
+// nonetheless still measures wrong for Spect2 specifically. Confirmed by
+// ear against a real D-50 (Alan, 2026-09-02): Fantasia's lower Partial 2
+// (Spect2) needed -36 semitones to match, while lower Partial 1 (Synth,
+// untouched by this table) needed none; "Pipe Solo" (tone 22)'s lower
+// Partial 1/2 (Breath/FluteH, both PCM attacks) both needed +24. Whether a
+// single correction per wave holds across every patch that reuses it, or
+// some tones need a different amount, is exactly what surfacing this table
+// is for - see d50/README.md's own note on this investigation once it's
+// written up there.
+struct PcmPitchCorrection {
+    int wave1based;   // Roland's own Table 2 numbering (PartialPanel's PCM
+                       // Wave slider convention), not the 0-based array index
+    float semitones;
+};
+constexpr PcmPitchCorrection kPcmPitchCorrections[] = {
+    {69, -36.0f},  // Spect2 - Fantasia (I-1), lower Partial 2
+    {32, +24.0f},  // Breath - Pipe Solo (III-6), lower Partial 1
+    {34, +24.0f},  // FluteH - Pipe Solo (III-6), lower Partial 2
+    {44, -24.0f},  // Cello (superseded 2026-09-02: first pass said 0, a closer listen found -24)
+    {46, +24.0f},  // Violns
+    {40,   0.0f},  // Lips2 - checked by ear against a real D-50, already correct
+    {41, +24.0f},  // Trumpt
+};
+
+inline float pcm_pitch_correction_semitones(int wave0based) {
+    const int wave1based = wave0based + 1;
+    for (const auto& c : kPcmPitchCorrections)
+        if (c.wave1based == wave1based) return c.semitones;
+    return 0.0f;
+}
+
 inline void map_partial(const uint8_t* p, int index, VoiceSpec& v,
                         const int16_t* blob) {
     // ---- wave generator
@@ -257,7 +295,14 @@ inline void map_partial(const uint8_t* p, int index, VoiceSpec& v,
         }
         r.length = smp.length;
         r.looped = smp.looped;
-        r.root_hz = smp.root_hz;
+        // root_hz divides into the target frequency (d5_pcm_voice.h's
+        // note_on: rate_ = f / root_hz), so RAISING pitch by `corr`
+        // semitones means DIVIDING root_hz - the pow() below is the
+        // reciprocal of the note-offset convention the debug pitch slider
+        // uses (D50Editor's "PCM Pitch (debug)", n += semitones). A wave
+        // with no correction gets corr=0 and pow(2,0)=1, i.e. unchanged.
+        const float corr = pcm_pitch_correction_semitones(wave);
+        r.root_hz = smp.root_hz * std::pow(2.0f, -corr / 12.0f);
     }
 
     // ---- TVF: cutoff, resonance and its envelope

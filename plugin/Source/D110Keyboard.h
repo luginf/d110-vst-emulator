@@ -43,12 +43,14 @@ public:
 	// calls this, so both keep behaving exactly as before). One octave exists for the Android
 	// app's own Options menu (Alan's request, 2026-08-22): a phone-portrait keyboard drawn
 	// with two octaves' worth of keys crammed into that width leaves each key too narrow for a
-	// finger, and only one octave fits comfortably. Clamped to [1,2] - nothing in rebuildKeys()
-	// (the trailing-C guard, the tracker PC-keyboard mapping, which spans a fixed semitone
-	// range independent of how many are actually drawn) assumes a particular count, but nor
-	// does anything need more than these two.
+	// finger, and only one octave fits comfortably. Four exists for showContextMenu()'s own
+	// "4-octave keyboard" toggle (Alan's request, 2026-09-02, for PCM listening tests in the
+	// D-50 editor that span a wider range than two octaves comfortably reach). Clamped to
+	// [1,4] - nothing in rebuildKeys() (the trailing-C
+	// guard, the tracker PC-keyboard mapping, which spans a fixed semitone range independent
+	// of how many are actually drawn) assumes a particular count.
 	void setNumOctaves(int n) {
-		n = juce::jlimit(1, 2, n);
+		n = juce::jlimit(1, 4, n);
 		if (n == numOctaves) return;
 		numOctaves = n;
 		rebuildKeys();

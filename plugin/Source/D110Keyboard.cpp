@@ -105,6 +105,10 @@ void D110Keyboard::showContextMenu(int noteForHold) {
 	m.addSeparator();
 	m.addItem(4000, "PC keyboard input (tracker-style)", true, pcKeyboardEnabled);
 	m.addSubMenu("PC keyboard layout", layoutMenu, pcKeyboardEnabled);
+	m.addSeparator();
+	// Session-only, not persisted (unlike the settings above) - same status as octaveShift,
+	// which also resets to 0 on every relaunch rather than being written back through `host`.
+	m.addItem(6000, "4-octave keyboard (wide)", true, numOctaves == 4);
 
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
 	                 [this, noteForHold](int result) {
@@ -134,6 +138,10 @@ void D110Keyboard::showContextMenu(int noteForHold) {
 		if (result == 2002) {
 			pcLayout = PcLayout::azerty;
 			host.setKeyboardPcLayout(1);
+			return;
+		}
+		if (result == 6000) {
+			setNumOctaves(numOctaves == 4 ? 2 : 4);
 			return;
 		}
 	});

@@ -101,6 +101,27 @@ public:
         if (bridgeReady) bridge.setLowerPartial2Mute(m);
     }
 
+    // Per-partial PCM pitch offset (debug), -48..+48 semitones - see
+    // D5_Bridge::setUpperPartial1PitchOffset()'s own comment. Same
+    // listening-aid status as the mutes just above: not persisted, not a
+    // real D-50 panel control.
+    int getUpperPartial1PitchOffset() const { return bridgeReady ? bridge.upperPartial1PitchOffset() : 0; }
+    void setUpperPartial1PitchOffset(int s) {
+        if (bridgeReady) bridge.setUpperPartial1PitchOffset(s);
+    }
+    int getUpperPartial2PitchOffset() const { return bridgeReady ? bridge.upperPartial2PitchOffset() : 0; }
+    void setUpperPartial2PitchOffset(int s) {
+        if (bridgeReady) bridge.setUpperPartial2PitchOffset(s);
+    }
+    int getLowerPartial1PitchOffset() const { return bridgeReady ? bridge.lowerPartial1PitchOffset() : 0; }
+    void setLowerPartial1PitchOffset(int s) {
+        if (bridgeReady) bridge.setLowerPartial1PitchOffset(s);
+    }
+    int getLowerPartial2PitchOffset() const { return bridgeReady ? bridge.lowerPartial2PitchOffset() : 0; }
+    void setLowerPartial2PitchOffset(int s) {
+        if (bridgeReady) bridge.setLowerPartial2PitchOffset(s);
+    }
+
     // Raw access to the sounding patch's 448 bytes (see d50/d5_engine/
     // d5_patch_map.h for what each offset means - PatchBlock enum times 64
     // gives a block's base offset, then that file's map_partial()/map_common()

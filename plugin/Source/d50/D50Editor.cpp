@@ -57,10 +57,13 @@ using ToneParam = D50Editor::ToneParam;
 // Per-partial: the compact PartialPanel above already covers waveform (6),
 // PCM wave (7), pulse width (8), cutoff (13) and resonance (14) - everything
 // else map_partial() reads from these 64 bytes lives here.
+// PW Velocity/LFO/AT Range are pulse-width modulation depth controls - the
+// D-50's pulse width only exists on a synth WG waveform, so a PCM partial
+// never reads these four (see D50Editor::updatePartialApplicability()).
 constexpr ToneParam kWgExtra[] = {
     {"Pitch Coarse", 0, 72},   {"Pitch Fine", 1, 100},   {"Pitch Keyfollow", 2, 16},
-    {"Bender Mode", 5, 2},     {"Pitch Env Mode", 4, 2}, {"PW Velocity", 9, 14},
-    {"PW LFO Select", 10, 5},  {"PW LFO Depth", 11, 100}, {"PW AT Range", 12, 14},
+    {"Bender Mode", 5, 2},     {"Pitch Env Mode", 4, 2}, {"PW Velocity", 9, 14, true},
+    {"PW LFO Select", 10, 5, true},  {"PW LFO Depth", 11, 100, true}, {"PW AT Range", 12, 14, true},
 };
 constexpr ToneParam kTvfFull[] = {
     {"Cutoff Keyfollow", 15, 14}, {"Bias Point", 16, 127},   {"Bias Level", 17, 14},
@@ -167,6 +170,20 @@ D50Editor::PartialPanel::PartialPanel(D50AudioProcessor &proc, int blockBase, co
     setupSlider(cutoffSlider, cutoffLabel, "Cutoff", 100.0, 13);
     setupSlider(resonanceSlider, resonanceLabel, "Resonance", 30.0, 14);
     setupSlider(pulseWidthSlider, pulseWidthLabel, "Pulse Width", 100.0, 8);
+
+    // Debug-only, not a real patch byte - see setDebugPitchAccessors()'s own
+    // comment. Sits right under PCM Wave, per Alan's request (2026-09-02),
+    // to A/B a suspected octave-transposition bug on real PCM samples.
+    debugPitchLabel.setText("PCM Pitch (debug)", juce::dontSendNotification);
+    debugPitchLabel.setFont(juce::Font(juce::FontOptions(13.0f)));
+    addAndMakeVisible(debugPitchLabel);
+    debugPitchSlider.setSliderStyle(juce::Slider::LinearHorizontal);
+    debugPitchSlider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 45, 22);
+    debugPitchSlider.setRange(-48.0, 48.0, 1.0);
+    addAndMakeVisible(debugPitchSlider);
+    debugPitchSlider.onValueChange = [this] {
+        if (setDebugPitch) setDebugPitch(static_cast<int>(debugPitchSlider.getValue()));
+    };
 }
 
 void D50Editor::PartialPanel::refresh() {
@@ -177,6 +194,7 @@ void D50Editor::PartialPanel::refresh() {
     cutoffSlider.setValue(processor.getPatchByte(base + 13), juce::dontSendNotification);
     resonanceSlider.setValue(processor.getPatchByte(base + 14), juce::dontSendNotification);
     pulseWidthSlider.setValue(processor.getPatchByte(base + 8), juce::dontSendNotification);
+    if (getDebugPitch) debugPitchSlider.setValue(getDebugPitch(), juce::dontSendNotification);
 }
 
 void D50Editor::PartialPanel::resized() {
@@ -194,6 +212,7 @@ void D50Editor::PartialPanel::resized() {
     };
     row(waveformLabel, waveformBox);
     row(pcmLabel, pcmSlider);
+    row(debugPitchLabel, debugPitchSlider);
     row(cutoffLabel, cutoffSlider);
     row(resonanceLabel, resonanceSlider);
     row(pulseWidthLabel, pulseWidthSlider);
@@ -201,7 +220,7 @@ void D50Editor::PartialPanel::resized() {
 
 // ---- ParamColumn: one titled group of raw-byte sliders from a ToneParam table.
 D50Editor::ParamColumn::ParamColumn(D50AudioProcessor &proc, int columnBase, const juce::String &title,
-                                     const ToneParam *params, int count)
+                                     const ToneParam *params, int count, bool wholeColumnSynthOnly)
     : processor(proc), base(columnBase) {
     titleLabel.setText(title, juce::dontSendNotification);
     titleLabel.setFont(juce::Font(juce::FontOptions(13.0f, juce::Font::bold)));
@@ -224,6 +243,7 @@ D50Editor::ParamColumn::ParamColumn(D50AudioProcessor &proc, int columnBase, con
             processor.setPatchByte(base + offset, static_cast<int>(slider->getValue()));
         };
         offsets.push_back(offset);
+        synthOnly.push_back(wholeColumnSynthOnly || params[i].synthOnly);
     }
 }
 
@@ -405,6 +425,7 @@ D50Editor::D50Editor(D50AudioProcessor &p)
     addAndMakeVisible(structureBox);
     structureBox.onChange = [this] {
         processor.setPatchByte(currentCommonBase + kStructureOffset, structureBox.getSelectedId() - 1);
+        updatePartialApplicability();
     };
 
     balanceLabel.setText("Balance", juce::dontSendNotification);
@@ -431,25 +452,31 @@ D50Editor::D50Editor(D50AudioProcessor &p)
     // within the block - the three LFOs share one table at three different
     // offsets), and patch-common (never moves - addColumn() below, not
     // wrapped by either helper).
-    auto addColumn = [this](int columnBase, const juce::String &title, const ToneParam *params, int count) {
-        auto *col = toneColumns.add(new ParamColumn(processor, columnBase, title, params, count));
+    auto addColumn = [this](int columnBase, const juce::String &title, const ToneParam *params, int count,
+                             bool wholeColumnSynthOnly = false) {
+        auto *col = toneColumns.add(new ParamColumn(processor, columnBase, title, params, count, wholeColumnSynthOnly));
         toneViewportContent.addAndMakeVisible(col);
         return col;
     };
-    auto addPartial1Column = [&](const juce::String &title, const ToneParam *params, int count) {
-        partial1ScopedColumns.push_back(addColumn(kUpperP1Base, title, params, count));
+    auto addPartial1Column = [&](const juce::String &title, const ToneParam *params, int count,
+                                  bool wholeColumnSynthOnly = false) {
+        partial1ScopedColumns.push_back(addColumn(kUpperP1Base, title, params, count, wholeColumnSynthOnly));
     };
-    auto addPartial2Column = [&](const juce::String &title, const ToneParam *params, int count) {
-        partial2ScopedColumns.push_back(addColumn(kUpperP2Base, title, params, count));
+    auto addPartial2Column = [&](const juce::String &title, const ToneParam *params, int count,
+                                  bool wholeColumnSynthOnly = false) {
+        partial2ScopedColumns.push_back(addColumn(kUpperP2Base, title, params, count, wholeColumnSynthOnly));
     };
     auto addCommonColumn = [&](int relativeOffset, const juce::String &title, const ToneParam *params, int count) {
         commonScopedColumns.push_back({addColumn(kUpperCommonBase + relativeOffset, title, params, count), relativeOffset});
     };
     addPartial1Column("Partial 1: WG", kWgExtra, static_cast<int>(std::size(kWgExtra)));
-    addPartial1Column("Partial 1: TVF", kTvfFull, static_cast<int>(std::size(kTvfFull)));
+    // Whole column, not per-row: a PCM partial has no TVF stage at all
+    // (see d5_voice.h's Voice::next()), so none of kTvfFull's ~19 rows
+    // apply, not just some of them.
+    addPartial1Column("Partial 1: TVF", kTvfFull, static_cast<int>(std::size(kTvfFull)), true);
     addPartial1Column("Partial 1: TVA", kTvaFull, static_cast<int>(std::size(kTvaFull)));
     addPartial2Column("Partial 2: WG", kWgExtra, static_cast<int>(std::size(kWgExtra)));
-    addPartial2Column("Partial 2: TVF", kTvfFull, static_cast<int>(std::size(kTvfFull)));
+    addPartial2Column("Partial 2: TVF", kTvfFull, static_cast<int>(std::size(kTvfFull)), true);
     addPartial2Column("Partial 2: TVA", kTvaFull, static_cast<int>(std::size(kTvaFull)));
     addCommonColumn(0, "Pitch Envelope", kPenv, static_cast<int>(std::size(kPenv)));
     addCommonColumn(25, "LFO 1", kLfo, static_cast<int>(std::size(kLfo)));
@@ -559,6 +586,15 @@ void D50Editor::setToneScope(bool lower) {
 
     partial1.setBase(p1Base);
     partial2.setBase(p2Base);
+    // Re-point the debug PCM pitch accessors at whichever of the four
+    // upper/lower x P1/P2 slots this panel now shows - see PartialPanel::
+    // setDebugPitchAccessors()'s own comment.
+    partial1.setDebugPitchAccessors(
+        [this, lower] { return lower ? processor.getLowerPartial1PitchOffset() : processor.getUpperPartial1PitchOffset(); },
+        [this, lower](int v) { if (lower) processor.setLowerPartial1PitchOffset(v); else processor.setUpperPartial1PitchOffset(v); });
+    partial2.setDebugPitchAccessors(
+        [this, lower] { return lower ? processor.getLowerPartial2PitchOffset() : processor.getUpperPartial2PitchOffset(); },
+        [this, lower](int v) { if (lower) processor.setLowerPartial2PitchOffset(v); else processor.setUpperPartial2PitchOffset(v); });
     for (auto *col : partial1ScopedColumns) col->setBase(p1Base);
     for (auto *col : partial2ScopedColumns) col->setBase(p2Base);
     for (auto &binding : commonScopedColumns) binding.first->setBase(currentCommonBase + binding.second);
@@ -573,6 +609,22 @@ void D50Editor::setToneScope(bool lower) {
                                     juce::dontSendNotification);
         balanceSlider.setValue(processor.getPatchByte(currentCommonBase + kBalanceOffset), juce::dontSendNotification);
     }
+    updatePartialApplicability();
+}
+
+void D50Editor::updatePartialApplicability() {
+    if (!processor.isReady()) return;
+    const int raw = processor.getPatchByte(currentCommonBase + kStructureOffset);
+    // Same clamp as Voice::structure() (d5_voice.h) - an out-of-range byte
+    // (e.g. no patch loaded yet) falls back to Structure 1, both partials
+    // Synth, rather than reading past the table.
+    const int idx = (raw < 0 || raw > 6) ? 0 : raw;
+    const bool p1Pcm = d5::kStructures[idx].p1 == d5::PartialType::kPcm;
+    const bool p2Pcm = d5::kStructures[idx].p2 == d5::PartialType::kPcm;
+    partial1.setPcmActive(p1Pcm);
+    partial2.setPcmActive(p2Pcm);
+    for (auto *col : partial1ScopedColumns) col->setPartialIsPcm(p1Pcm);
+    for (auto *col : partial2ScopedColumns) col->setPartialIsPcm(p2Pcm);
 }
 
 void D50Editor::refreshPatchList() {
@@ -605,6 +657,10 @@ void D50Editor::timerCallback() {
         partial1.refresh();
         partial2.refresh();
         for (auto *col : toneColumns) col->refresh();
+        // Catches Structure changes from anywhere that isn't structureBox's
+        // own onChange or setToneScope() - a patch switch, a bank import, a
+        // SysEx write from elsewhere.
+        updatePartialApplicability();
         toneSectionLabel.setText((showingLowerTone ? juce::String("Tone (lower): ") : juce::String("Tone (upper): ")) +
                                       decodeToneName(processor, currentCommonBase),
                                   juce::dontSendNotification);
@@ -707,8 +763,8 @@ void D50Editor::resized() {
     area.removeFromTop(10);
 
     const int half = area.getWidth() / 2;
-    // PartialPanel needs title(20) + 4px gap + 5 rows*(26+4) = 174.
-    auto compactRow = area.removeFromTop(174);
+    // PartialPanel needs title(20) + 4px gap + 6 rows*(26+4) = 204.
+    auto compactRow = area.removeFromTop(204);
     partial1.setBounds(compactRow.removeFromLeft(half).withTrimmedRight(8));
     partial2.setBounds(compactRow.withTrimmedLeft(8));
     area.removeFromTop(10);

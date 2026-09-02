@@ -2,6 +2,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <functional>
 #include <utility>
 #include <vector>
 
@@ -48,6 +49,14 @@ public:
         const char *name;
         int offset;
         int hi;
+        // Grayed out when this partial's Structure-determined type doesn't
+        // read this byte at all - a pulse-width row on a partial currently
+        // playing a PCM sample, say. See D50Editor::updatePartialApplicability()
+        // and d5_voice.h's own kStructures/PartialType (Alan, 2026-09-02:
+        // asked for this after confirming Pipe Solo's octave bug is PCM-
+        // pitch-specific, not structure-wide - localizing which controls can
+        // possibly be at fault helps narrow the rest down).
+        bool synthOnly = false;
     };
 
 private:
@@ -57,6 +66,14 @@ private:
     void importSyxBank();
     void exportCurrentPatch();
     void exportBank();
+    // Reads the currently-shown tone's Structure byte and grays out whatever
+    // each partial's resulting type (PCM or Synth, d5_voice.h's kStructures)
+    // doesn't use - see PartialPanel::setPcmActive()/ParamColumn::
+    // setPartialIsPcm(). Called after anything that can change which tone is
+    // shown or what its Structure is: setToneScope(), structureBox.onChange,
+    // and every timerCallback() tick (patch switches/imports/SysEx writes
+    // change the byte without going through either of the first two).
+    void updatePartialApplicability();
     // Re-targets partial1/partial2 and every tone-scoped ParamColumn (WG/TVF/
     // TVA per partial, P-ENV, the three LFOs, EQ/Chorus) at the lower tone's
     // blocks instead of the upper tone's, or back - the D-50 has two of these
@@ -103,13 +120,52 @@ private:
             refresh();
         }
 
+        // Debug PCM pitch offset (-48..+48 semitones, see D50AudioProcessor::
+        // setUpperPartial1PitchOffset()'s own comment) - this panel is reused
+        // for all four upper/lower x P1/P2 combinations via setBase(), so it
+        // doesn't own that state itself; D50Editor::setToneScope() re-points
+        // these accessors at whichever of the four the panel currently shows,
+        // the same way it re-points setBase().
+        void setDebugPitchAccessors(std::function<int()> getter, std::function<void(int)> setter) {
+            getDebugPitch = std::move(getter);
+            setDebugPitch = std::move(setter);
+            refresh();
+        }
+
+        // Grays out whichever half of this panel the current Structure
+        // doesn't actually use for this partial - Waveform/Cutoff/Resonance/
+        // Pulse Width when it's playing a PCM sample (no WG waveform or TVF
+        // at all, see d5_voice.h's Voice::next()), or PCM Wave/PCM Pitch
+        // (debug) when it's a synth waveform partial instead. Driven by
+        // D50Editor::updatePartialApplicability() from the tone-common
+        // Structure byte, not owned here (same reasoning as setBase()/
+        // setDebugPitchAccessors() - this panel doesn't know which of the
+        // four upper/lower x P1/P2 slots it currently shows).
+        void setPcmActive(bool isPcm) {
+            for (auto *c : {static_cast<juce::Component *>(&waveformBox), static_cast<juce::Component *>(&cutoffSlider),
+                            static_cast<juce::Component *>(&resonanceSlider),
+                            static_cast<juce::Component *>(&pulseWidthSlider)}) {
+                c->setEnabled(!isPcm);
+                c->setAlpha(!isPcm ? 1.0f : 0.4f);
+            }
+            for (auto *l : {&waveformLabel, &cutoffLabel, &resonanceLabel, &pulseWidthLabel})
+                l->setAlpha(!isPcm ? 1.0f : 0.4f);
+            for (auto *c : {static_cast<juce::Component *>(&pcmSlider), static_cast<juce::Component *>(&debugPitchSlider)}) {
+                c->setEnabled(isPcm);
+                c->setAlpha(isPcm ? 1.0f : 0.4f);
+            }
+            for (auto *l : {&pcmLabel, &debugPitchLabel}) l->setAlpha(isPcm ? 1.0f : 0.4f);
+        }
+
     private:
         D50AudioProcessor &processor;
         int base;
         juce::Label titleLabel;
-        juce::Label waveformLabel, pcmLabel, cutoffLabel, resonanceLabel, pulseWidthLabel;
+        juce::Label waveformLabel, pcmLabel, cutoffLabel, resonanceLabel, pulseWidthLabel, debugPitchLabel;
         juce::ComboBox waveformBox;
-        juce::Slider pcmSlider, cutoffSlider, resonanceSlider, pulseWidthSlider;
+        juce::Slider pcmSlider, cutoffSlider, resonanceSlider, pulseWidthSlider, debugPitchSlider;
+        std::function<int()> getDebugPitch;
+        std::function<void(int)> setDebugPitch;
     };
 
     // One titled group of raw-byte sliders, built from a ToneParam table -
@@ -118,8 +174,12 @@ private:
     // another group later is a new table, not new layout code.
     class ParamColumn : public juce::Component {
     public:
+        // wholeColumnSynthOnly marks every row synthOnly regardless of what
+        // the table says - for the TVF columns, where that's true of the
+        // whole thing (a PCM partial has no filter stage at all), without
+        // having to repeat `true` on all ~19 rows of kTvfFull.
         ParamColumn(D50AudioProcessor &proc, int base, const juce::String &title, const ToneParam *params,
-                    int count);
+                    int count, bool wholeColumnSynthOnly = false);
         void resized() override;
         void refresh();
         int preferredHeight() const;
@@ -130,6 +190,17 @@ private:
             refresh();
         }
 
+        // See PartialPanel::setPcmActive()'s own comment - same idea, for
+        // whichever rows of this column are synthOnly.
+        void setPartialIsPcm(bool isPcm) {
+            for (int i = 0; i < sliders.size(); ++i) {
+                const bool disabled = isPcm && synthOnly[static_cast<size_t>(i)];
+                sliders[i]->setEnabled(!disabled);
+                sliders[i]->setAlpha(disabled ? 0.4f : 1.0f);
+                paramLabels[i]->setAlpha(disabled ? 0.4f : 1.0f);
+            }
+        }
+
     private:
         D50AudioProcessor &processor;
         int base;
@@ -137,6 +208,7 @@ private:
         juce::OwnedArray<juce::Label> paramLabels;
         juce::OwnedArray<juce::Slider> sliders;
         std::vector<int> offsets;
+        std::vector<bool> synthOnly;
     };
 
     D50AudioProcessor &processor;

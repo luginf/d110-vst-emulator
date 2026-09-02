@@ -290,7 +290,8 @@ public:
             }
 
             if (isPcm) {
-                pcm_[i].note_on(spec_.pcm[i], n,
+                const float nPcm = n + static_cast<float>(debug_pitch_semitones_[i]);
+                pcm_[i].note_on(spec_.pcm[i], nPcm,
                                 syn.env_from_bytes ? 1.0f : vel,
                                 spec_.pcm_env[i], sample_rate, detune);
             } else {
@@ -542,6 +543,17 @@ public:
         if (i == 0 || i == 1) debug_mute_[i] = m;
     }
 
+    // d110-vst-emulator addition, no real-panel equivalent: a per-partial PCM
+    // pitch offset in semitones, for A/B-testing sample-transposition bugs
+    // (Alan, 2026-09-02 - "Pipe Solo" tone 22's lower breath/FluteH attacks
+    // sounding ~2 octaves low against a real unit). Unlike debug_mute_ this
+    // must be set BEFORE note_on() runs, not after: it feeds the PCM voice's
+    // target frequency, computed once at note-on and fixed for the note's
+    // life - see Tone::note_on()'s own call order.
+    void set_debug_pitch_semitones(int i, int semis) {
+        if (i == 0 || i == 1) debug_pitch_semitones_[i] = semis;
+    }
+
 private:
     static float lfo_value(const float l[3], const LfoRoute& r) {
         const int i = (r.lfo < 0 || r.lfo > 2) ? 0 : r.lfo;
@@ -577,6 +589,7 @@ private:
     float glide_pos_[2] = {0.0f, 0.0f};
     float glide_tgt_[2] = {0.0f, 0.0f};
     bool debug_mute_[2] = {false, false};
+    int debug_pitch_semitones_[2] = {0, 0};
     float glide_step_[2] = {0.0f, 0.0f};
     bool glide_warm_[2] = {false, false};
     float sr_ = 32000.0f;

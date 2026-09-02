@@ -114,6 +114,11 @@ public:
             lfo_[0].retrigger();
         }
         voices_[slot].bind_lfos(lfo_);
+        // Pitch offsets go in BEFORE note_on(), unlike the mutes just below -
+        // note_on() reads them immediately to build the PCM voice's target
+        // frequency (see Voice::set_debug_pitch_semitones()'s own comment).
+        voices_[slot].set_debug_pitch_semitones(0, partial1_debug_pitch_);
+        voices_[slot].set_debug_pitch_semitones(1, partial2_debug_pitch_);
         voices_[slot].note_on(spec_.voice, note, velocity, sr_);
         voices_[slot].set_debug_mute(0, partial1_debug_muted_);
         voices_[slot].set_debug_mute(1, partial2_debug_muted_);
@@ -166,6 +171,22 @@ public:
     }
     bool partial1_debug_muted() const { return partial1_debug_muted_; }
     bool partial2_debug_muted() const { return partial2_debug_muted_; }
+
+    // d110-vst-emulator addition, no real-panel equivalent: per-partial PCM
+    // pitch offset in semitones (-48..+48), for A/B-testing sample-
+    // transposition bugs - see Voice::set_debug_pitch_semitones()'s own
+    // comment. Only affects a partial actually playing a PCM sample; a
+    // synth-waveform partial ignores it.
+    void set_partial1_debug_pitch(int semis) {
+        partial1_debug_pitch_ = semis;
+        for (int i = 0; i < kVoices; ++i) voices_[i].set_debug_pitch_semitones(0, semis);
+    }
+    void set_partial2_debug_pitch(int semis) {
+        partial2_debug_pitch_ = semis;
+        for (int i = 0; i < kVoices; ++i) voices_[i].set_debug_pitch_semitones(1, semis);
+    }
+    int partial1_debug_pitch() const { return partial1_debug_pitch_; }
+    int partial2_debug_pitch() const { return partial2_debug_pitch_; }
 
     // Mono fold takes the left side, the L/MONO jack: the chorus wet is
     // anti-phase on the right, so a plain average would silence it.
@@ -311,6 +332,7 @@ private:
     int age_[kVoices] = {};
     bool active_[kVoices] = {};
     bool partial1_debug_muted_ = false, partial2_debug_muted_ = false;
+    int partial1_debug_pitch_ = 0, partial2_debug_pitch_ = 0;
 };
 
 enum class KeyMode : uint8_t { kWhole = 0, kDual = 1, kSplit = 2 };
@@ -461,6 +483,17 @@ public:
     bool upper_partial2_muted() const { return upper_.partial2_debug_muted(); }
     bool lower_partial1_muted() const { return lower_.partial1_debug_muted(); }
     bool lower_partial2_muted() const { return lower_.partial2_debug_muted(); }
+
+    // Per-partial PCM pitch offset (semitones), same reasoning/forwarding as
+    // the mutes just above - see Tone::set_partial1_debug_pitch().
+    void set_upper_partial1_pitch_offset(int s) { upper_.set_partial1_debug_pitch(s); }
+    void set_upper_partial2_pitch_offset(int s) { upper_.set_partial2_debug_pitch(s); }
+    void set_lower_partial1_pitch_offset(int s) { lower_.set_partial1_debug_pitch(s); }
+    void set_lower_partial2_pitch_offset(int s) { lower_.set_partial2_debug_pitch(s); }
+    int upper_partial1_pitch_offset() const { return upper_.partial1_debug_pitch(); }
+    int upper_partial2_pitch_offset() const { return upper_.partial2_debug_pitch(); }
+    int lower_partial1_pitch_offset() const { return lower_.partial1_debug_pitch(); }
+    int lower_partial2_pitch_offset() const { return lower_.partial2_debug_pitch(); }
 
     // Sixteen voices plus a reverb tail can ask for more than full scale, and
     // a converter answers that with hard clipping. This stays linear below
