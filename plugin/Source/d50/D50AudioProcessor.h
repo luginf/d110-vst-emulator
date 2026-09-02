@@ -62,6 +62,7 @@ public:
     void setPatch(int index) {
         if (bridgeReady) bridge.selectPatch(index);
     }
+    juce::String pcmWaveName(int waveNumber0to99) const { return juce::String(D5_Bridge::pcmWaveName(waveNumber0to99)); }
     int getVolumePercent() const { return volumePercent; }
     void setVolumePercent(int v);
     int getReverbPercent() const { return bridgeReady ? bridge.reverbBalance() : 0; }
@@ -72,6 +73,95 @@ public:
     void setChorusPercent(int v) {
         if (bridgeReady) bridge.setChorus(v);
     }
+    // Solo/mute any one of the four partials for auditioning - see
+    // D5_Bridge::setUpperPartial1Mute()'s own comment. Not real D-50 panel
+    // controls, not persisted with the patch: a listening aid only.
+    // TVF ENV DEPTH keyfollow direction, as a one-click A/B (see
+    // D5_Bridge::setTvfKeyfollowFixed()). Unlike the mutes this is NOT just a
+    // listening aid - it changes what the instrument sounds like - so it does
+    // persist with the rest of the state. Engine-global, hence no bridgeReady
+    // guard: it is meaningful before a ROM ever loads.
+    bool getTvfKeyfollowFixed() const { return D5_Bridge::tvfKeyfollowFixed(); }
+    void setTvfKeyfollowFixed(bool fixed) { D5_Bridge::setTvfKeyfollowFixed(fixed); }
+
+    bool getUpperPartial1Muted() const { return bridgeReady && bridge.upperPartial1Muted(); }
+    void setUpperPartial1Muted(bool m) {
+        if (bridgeReady) bridge.setUpperPartial1Mute(m);
+    }
+    bool getUpperPartial2Muted() const { return bridgeReady && bridge.upperPartial2Muted(); }
+    void setUpperPartial2Muted(bool m) {
+        if (bridgeReady) bridge.setUpperPartial2Mute(m);
+    }
+    bool getLowerPartial1Muted() const { return bridgeReady && bridge.lowerPartial1Muted(); }
+    void setLowerPartial1Muted(bool m) {
+        if (bridgeReady) bridge.setLowerPartial1Mute(m);
+    }
+    bool getLowerPartial2Muted() const { return bridgeReady && bridge.lowerPartial2Muted(); }
+    void setLowerPartial2Muted(bool m) {
+        if (bridgeReady) bridge.setLowerPartial2Mute(m);
+    }
+
+    // Raw access to the sounding patch's 448 bytes (see d50/d5_engine/
+    // d5_patch_map.h for what each offset means - PatchBlock enum times 64
+    // gives a block's base offset, then that file's map_partial()/map_common()
+    // comments give the per-byte meaning within it). Written through
+    // D5_Bridge::sysexWriteTemp(), the same call a real SysEx parameter edit
+    // would make - takes effect on the sounding voice immediately, matching
+    // this project's own convention of editors writing through a real
+    // protocol path rather than poking engine state directly (CLAUDE.md).
+    int getPatchByte(int offset) const {
+        return (bridgeReady && offset >= 0 && offset < D5_Bridge::kPatchBytes) ? bridge.tempPatch()[offset] : 0;
+    }
+    void setPatchByte(int offset, int value) {
+        if (!bridgeReady) return;
+        const auto v = static_cast<uint8_t>(juce::jlimit(0, 127, value));
+        bridge.sysexWriteTemp(offset, &v, 1);
+    }
+
+    // Loads a real D-50 SysEx bulk dump from disk, replacing whatever bank is
+    // currently active - same parser/validation as the ROM-folder auto-load
+    // (D5SyxLoader), just user-triggered instead of found automatically at
+    // startup. Returns a message for the caller to show (success or why not).
+    juce::String importSyxBank(const juce::File &file);
+    // Writes the currently-sounding 448 bytes (see getPatchByte()'s own
+    // comment - includes whatever the Tone section has edited) as a single
+    // DT1 SysEx message, address 02-00-00 (internal memory slot 0) - the
+    // same address a real bulk dump's first patch uses, so this file can be
+    // dropped straight into d50/roms/ or re-imported through the button next
+    // to it. Returns false if there is no sounding patch to export yet.
+    bool exportCurrentPatch(const juce::File &file) const;
+    // Writes every patch in the active bank (patchCount() of them, address
+    // 02-00-00 upward - the same bulk-dump shape importSyxBank()/the ROM-
+    // folder auto-load already parse) - a real "save my edits" export, not
+    // just the one patch: the currently SOUNDING slot is written from
+    // tempPatch() (so a live Tone-tab edit is actually in the file), every
+    // other slot from storedPatch() (unedited, or whatever an earlier
+    // received bulk dump/overlay entry already holds for it). Returns false
+    // if there is no bank loaded yet.
+    bool exportBank(const juce::File &file) const;
+
+    // --- Send to a real, physically-connected D-50 over external MIDI Out ---
+    // Same shape as D110AudioProcessor's own MIDI Out picker/sender (Alan,
+    // 2026-09-02: wants to A/B a patch's current bytes - including whatever
+    // the Tone tab has live-edited - against his real unit, to tell a SysEx
+    // decode bug from a synthesis-engine one). One processor-owned
+    // juce::MidiOutput, reused by every "send" feature rather than one per
+    // feature; opened/closed only from setMidiOutputDevice().
+    static juce::Array<juce::MidiDeviceInfo> midiOutputs() { return juce::MidiOutput::getAvailableDevices(); }
+    void setMidiOutputDevice(const juce::String &identifier);
+    juce::String getMidiOutputId() const { return selOutputId; }
+    bool hasExternalMidiOutput() const {
+        const juce::ScopedLock lock(osMidiLock);
+        return osMidiOut != nullptr;
+    }
+    // Writes the currently-sounding 448 bytes (see getPatchByte()'s own
+    // comment) to the real D-50's TEMPORARY area (address 00-00-00, not
+    // 02-00-00/internal memory - see D5_Midi.cpp's own `kTempBase` comment
+    // upstream) - the same live "what's actually sounding" area our own
+    // sysexWriteTemp() models, so this takes effect on the real unit at once
+    // and never overwrites one of its 64 stored patches. Returns false if
+    // there is no sounding patch or no MIDI Out device selected.
+    bool sendPatchToExternalMidi() const;
 
     // --- D110KeyboardHost ----------------------------------------------------
     // The bridge is monotimbral and does not look at MIDI channel at all (unlike
@@ -126,6 +216,11 @@ private:
     bool keyboardPcInputEnabled = false;
     int keyboardPcLayout = 0;
     std::array<std::atomic<bool>, 128> noteActiveFlags{};
+
+    // See setMidiOutputDevice()'s own comment.
+    std::unique_ptr<juce::MidiOutput> osMidiOut;
+    juce::String selOutputId;
+    juce::CriticalSection osMidiLock;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D50AudioProcessor)
 };

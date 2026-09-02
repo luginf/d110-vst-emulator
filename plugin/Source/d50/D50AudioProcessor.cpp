@@ -85,6 +85,93 @@ void D50AudioProcessor::loadPatchBank() {
     }
 }
 
+juce::String D50AudioProcessor::importSyxBank(const juce::File &file) {
+    auto result = d5::loadBankFromSyx(file.getFullPathName().toStdString());
+    if (!result.ok) return "Import failed: " + juce::String(result.message);
+    bridge.loadBank(std::move(result.patches), std::move(result.names));
+    status = "D-50 ready (bank replaced: " + juce::String(result.message) + ")";
+    return juce::String(result.message);
+}
+
+namespace {
+// One Roland DT1 message: F0 41 00 14 12 <addr 3x7-bit> <448 data> <checksum> F7.
+// `addr` is the flat address (aa*16384 + bb*128 + cc) - see D5SyxLoader.cpp's
+// own parse_sysex() for the matching decode.
+void appendDt1Patch(juce::MemoryOutputStream &out, uint32_t addr, const uint8_t *patch) {
+    out.writeByte(static_cast<char>(0xF0));
+    out.writeByte(0x41);  // Roland
+    out.writeByte(0x00);  // device ID
+    out.writeByte(0x14);  // D-50 model ID
+    out.writeByte(0x12);  // DT1
+    const uint8_t aa = static_cast<uint8_t>((addr >> 14) & 0x7F);
+    const uint8_t bb = static_cast<uint8_t>((addr >> 7) & 0x7F);
+    const uint8_t cc = static_cast<uint8_t>(addr & 0x7F);
+    out.writeByte(static_cast<char>(aa));
+    out.writeByte(static_cast<char>(bb));
+    out.writeByte(static_cast<char>(cc));
+    uint32_t sum = aa + bb + cc;
+    for (int i = 0; i < D5_Bridge::kPatchBytes; ++i) {
+        out.writeByte(static_cast<char>(patch[i]));
+        sum += patch[i];
+    }
+    out.writeByte(static_cast<char>((128 - sum % 128) % 128));
+    out.writeByte(static_cast<char>(0xF7));
+}
+constexpr uint32_t kPatchBaseAddr = 0x8000;  // 02-00-00, internal memory slot 0
+// 00-00-00: the D-50's own "temporary area" - the 448 bytes actually
+// sounding, same address D5_Midi.cpp's own `kTempBase` writes through for a
+// live parameter edit. Writing here (not kPatchBaseAddr) is what makes
+// sendPatchToExternalMidi() take effect on a real unit at once without
+// touching any of its 64 stored patches.
+constexpr uint32_t kTempAreaAddr = 0x000000;
+}  // namespace
+
+bool D50AudioProcessor::exportCurrentPatch(const juce::File &file) const {
+    if (!bridgeReady) return false;
+    juce::MemoryOutputStream out;
+    // Address 02-00-00: internal memory slot 0 - the same address a real
+    // bulk dump's first patch uses, so this file loads back in through
+    // either this app's own importSyxBank()/ROM-folder auto-load or a real
+    // D-50's bulk receive.
+    appendDt1Patch(out, kPatchBaseAddr, bridge.tempPatch());
+    return file.replaceWithData(out.getData(), out.getDataSize());
+}
+
+bool D50AudioProcessor::exportBank(const juce::File &file) const {
+    if (!bridgeReady) return false;
+    const int count = bridge.patchCount();
+    if (count <= 0) return false;
+    juce::MemoryOutputStream out;
+    for (int i = 0; i < count; ++i) {
+        // The sounding slot's live edits only ever land in tempPatch() -
+        // sysexWriteTemp() never writes them back into the bank/overlay - so
+        // without this substitution a bank export would silently drop
+        // whatever the Tone tab just changed for the patch actually playing.
+        const uint8_t *src = (i == bridge.patch()) ? bridge.tempPatch() : bridge.storedPatch(i);
+        if (src == nullptr) continue;
+        appendDt1Patch(out, kPatchBaseAddr + static_cast<uint32_t>(i) * D5_Bridge::kPatchBytes, src);
+    }
+    return file.replaceWithData(out.getData(), out.getDataSize());
+}
+
+void D50AudioProcessor::setMidiOutputDevice(const juce::String &identifier) {
+    std::unique_ptr<juce::MidiOutput> opened;
+    if (identifier.isNotEmpty()) opened = juce::MidiOutput::openDevice(identifier);
+    const juce::ScopedLock lock(osMidiLock);
+    osMidiOut = std::move(opened);
+    selOutputId = osMidiOut ? identifier : juce::String();
+}
+
+bool D50AudioProcessor::sendPatchToExternalMidi() const {
+    if (!bridgeReady) return false;
+    const juce::ScopedLock lock(osMidiLock);
+    if (osMidiOut == nullptr) return false;
+    juce::MemoryOutputStream out;
+    appendDt1Patch(out, kTempAreaAddr, bridge.tempPatch());
+    osMidiOut->sendMessageNow(juce::MidiMessage(out.getData(), static_cast<int>(out.getDataSize())));
+    return true;
+}
+
 void D50AudioProcessor::prepareToPlay(double sampleRate, int /*samplesPerBlock*/) {
     hostSampleRate = sampleRate;
     resamplerL.reset();
@@ -177,6 +264,17 @@ void D50AudioProcessor::renderInternal(int numOutSamples, float *outL, float *ou
 }
 
 void D50AudioProcessor::injectTestNote(int channel, int note, float velocity, bool on) {
+    // D110Keyboard::sendNote() broadcasts each key across all 16 MIDI channels
+    // when "MIDI Remap" is off (its default), because on the multitimbral
+    // D-110 it cannot know which channel the part it should reach listens on.
+    // The D-50 bridge is monotimbral and ignores the channel entirely (see
+    // this class's own D110KeyboardHost comment), so 15 of those 16 are pure
+    // duplicates: each one used to consume another of the engine's 16 voice
+    // slots, so one key could empty the pool and the rest of a chord fell
+    // silent. Collapsed here, at the point the duplicates are created, rather
+    // than by making a repeat note-on a no-op down in D5_Bridge::noteOn() -
+    // that cure cost the retrigger a held sustain pedal depends on.
+    if (!midiRemap && channel != 1) return;
     auto message = on ? juce::MidiMessage::noteOn(channel, note, velocity)
                        : juce::MidiMessage::noteOff(channel, note, velocity);
     // Timestamped against Time::getMillisecondCounter()'s base, what
@@ -213,13 +311,15 @@ juce::AudioProcessorEditor *D50AudioProcessor::createEditor() { return new D50Ed
 
 void D50AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
     juce::MemoryOutputStream out(destData, true);
-    out.writeInt(2);  // format version
+    out.writeInt(4);  // format version
     out.writeInt(bridgeReady ? bridge.patch() : 0);
     out.writeInt(volumePercent);
     out.writeInt(keyboardMidiChannel);
     out.writeBool(midiRemap);
     out.writeBool(keyboardPcInputEnabled);
     out.writeInt(keyboardPcLayout);
+    out.writeString(selOutputId);  // by identifier, not display name - see setMidiOutputDevice()
+    out.writeBool(D5_Bridge::tvfKeyfollowFixed());
 }
 
 void D50AudioProcessor::setStateInformation(const void *data, int sizeInBytes) {
@@ -232,6 +332,18 @@ void D50AudioProcessor::setStateInformation(const void *data, int sizeInBytes) {
         midiRemap = in.readBool();
         keyboardPcInputEnabled = in.readBool();
         keyboardPcLayout = in.readInt();
+    }
+    if (version >= 3) {
+        // If this identifier isn't present on the current machine,
+        // openDevice() just returns null and we silently fall back to no
+        // external output - same as D110AudioProcessor's own handling.
+        setMidiOutputDevice(in.readString());
+    }
+    if (version >= 4) {
+        // Older states predate the switch and were all written by a build
+        // that had the corrected direction hard-coded, so the default the
+        // engine already holds is the right one to keep for them.
+        D5_Bridge::setTvfKeyfollowFixed(in.readBool());
     }
     if (bridgeReady) {
         bridge.selectPatch(patch);

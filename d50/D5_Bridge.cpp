@@ -72,12 +72,21 @@ constexpr bool kHaveCompiledBank = false;
 
 void D5_Bridge::init(const int16_t* pcmBlob) {
     pcmBlob_ = pcmBlob;
-#ifdef D5_HAVE_BANK
     // The sustained cycles move to RAM before the first patch is built, so
     // every PcmSampleRef the mapping hands out already points there.
+    //
+    // Upstream guards this with `#ifdef D5_HAVE_BANK` because on the Pico the
+    // only alternative to a compiled-in bank is the eight built-in presets.
+    // Here a real bank also arrives at RUNTIME (D5SyxLoader -> loadBank()),
+    // which is in fact the intended shipping configuration - so the guard was
+    // left behind by the same conversion that turned every other D5_HAVE_BANK
+    // test in this file into `hasRuntimeBank() || kHaveCompiledBank`. The copy
+    // is a read-speed optimisation and the data is identical either way, so
+    // nothing sounded different; it is unconditional now simply so the two
+    // build configurations stop diverging in a way that has to be reasoned
+    // about every time somebody reads init().
     static int16_t loopRam[d5::loop_ram_words()];
     d5::install_loop_ram(pcmBlob_, loopRam, d5::loop_ram_words());
-#endif
     applyPatch();
 }
 
@@ -234,6 +243,11 @@ const char* D5_Bridge::structureName() const {
     return kStructureNames[i];
 }
 
+const char* D5_Bridge::pcmWaveName(int waveNumber0to99) {
+    if (waveNumber0to99 < 0 || waveNumber0to99 >= d5::kPcmCount) return "";
+    return d5::kPcmSamples[waveNumber0to99].name;
+}
+
 void D5_Bridge::selectPatch(int index) {
     // Against patchCount(), not against kPresetCount: with a converted bank
     // there are 64 of them, and clamping to the 8 built-in presets made the
@@ -365,24 +379,24 @@ void D5_Bridge::setPortamentoTime(int percent) {
 void D5_Bridge::noteOn(uint8_t note, uint8_t velocity) {
     if (note > 127) return;
     ++noteOnTotal_;
-    // d110-vst-emulator port: a repeat note-on for an already-held note is a
-    // no-op, not a retrigger. Tone::note_on() (d5_patch.h) has no "already
-    // active" check at all - faithful to the real firmware, where a second
-    // note-on for a key already down without a note-off between physically
-    // cannot happen from a MIDI keyboard - so every call unconditionally pops
-    // a fresh slot from the free list. That assumption breaks on OUR side:
-    // D110Keyboard::sendNote() (D110Keyboard.cpp), shared with the
-    // multitimbral D-110, broadcasts each key across all 16 MIDI channels
-    // whenever "MIDI Remap" is off (its default) so SOME D-110 part - whose
-    // channel it cannot know - hears it. This bridge doesn't look at channel
-    // at all, so before this guard a single physical key press meant sixteen
-    // redundant note_on() calls, each stealing a fresh voice slot - one key
-    // could empty most of the sixteen-slot pool by itself, and the rest of a
-    // chord then got silently dropped by the engine's own real "drop rather
-    // than steal" policy. Reported by Alan: a chord on the PC tracker
-    // keyboard played only one note.
-    if (held_[note]) return;
-    if (activeVoices_ >= noteLimit()) {
+    // Upstream semantics, restored 2026-09-02. A repeat note-on for a key
+    // that is already down DOES retrigger - striking a key again over a held
+    // sustain pedal is ordinary playing, and a DAW track with overlapping
+    // same-note events asks for the same thing. Only a genuinely new note may
+    // steal, or full-polyphony retriggers eat a neighbour for nothing.
+    //
+    // This used to read `if (held_[note]) return;`, added to stop
+    // D110Keyboard::sendNote() (shared with the multitimbral D-110) from
+    // spending sixteen voice slots on one key: with "MIDI Remap" off it
+    // broadcasts each key across all 16 MIDI channels so SOME D-110 part
+    // hears it, and this bridge is channel-blind, so a single key press
+    // arrived here sixteen times. That guard cured the symptom in the wrong
+    // place: noteOff() deliberately leaves held_[note] set while the sustain
+    // pedal is down (see its own comment), so with the pedal held EVERY
+    // repeat strike of a key was silently dropped - no sound at all. The
+    // duplicate broadcast is now collapsed where it is actually created, in
+    // D50AudioProcessor::injectTestNote().
+    if (activeVoices_ >= noteLimit() && !held_[note]) {
         // The tone steals internally, but the governor's limit is ours: past
         // it we drop the oldest held note first so the count stays honest.
         for (int n = 0; n < 128; ++n) {
@@ -390,7 +404,7 @@ void D5_Bridge::noteOn(uint8_t note, uint8_t velocity) {
         }
     }
     patch_.note_on(note, velocity * (1.0f / 127.0f));
-    ++activeVoices_;
+    if (!held_[note]) ++activeVoices_;
     held_[note] = 1;
 }
 

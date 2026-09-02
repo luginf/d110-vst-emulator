@@ -115,6 +115,8 @@ public:
         }
         voices_[slot].bind_lfos(lfo_);
         voices_[slot].note_on(spec_.voice, note, velocity, sr_);
+        voices_[slot].set_debug_mute(0, partial1_debug_muted_);
+        voices_[slot].set_debug_mute(1, partial2_debug_muted_);
         note_[slot] = note;
         active_[slot] = true;
         key_[slot] = true;
@@ -149,6 +151,21 @@ public:
     void set_wheel(float w) {
         for (int i = 0; i < kVoices; ++i) voices_[i].set_wheel(w);
     }
+
+    // Per-partial audition mute (see Voice::next()'s own comment) - kept
+    // here, not just pushed straight to every voice, because note_on() also
+    // needs it to arm a FRESH voice the instant it starts, not just the
+    // ones already sounding when the button was pressed.
+    void set_partial1_debug_mute(bool m) {
+        partial1_debug_muted_ = m;
+        for (int i = 0; i < kVoices; ++i) voices_[i].set_debug_mute(0, m);
+    }
+    void set_partial2_debug_mute(bool m) {
+        partial2_debug_muted_ = m;
+        for (int i = 0; i < kVoices; ++i) voices_[i].set_debug_mute(1, m);
+    }
+    bool partial1_debug_muted() const { return partial1_debug_muted_; }
+    bool partial2_debug_muted() const { return partial2_debug_muted_; }
 
     // Mono fold takes the left side, the L/MONO jack: the chorus wet is
     // anti-phase on the right, so a plain average would silence it.
@@ -293,6 +310,7 @@ private:
     int note_[kVoices] = {};
     int age_[kVoices] = {};
     bool active_[kVoices] = {};
+    bool partial1_debug_muted_ = false, partial2_debug_muted_ = false;
 };
 
 enum class KeyMode : uint8_t { kWhole = 0, kDual = 1, kSplit = 2 };
@@ -428,6 +446,21 @@ public:
         l = saturate(l * spec_.volume);
         r = saturate(r * spec_.volume);
     }
+
+    // Per-partial audition mute, one button per partial of each tone (see
+    // Voice::next()'s own comment) - a listening/debugging aid, not patch
+    // data or a real panel control. Forwarded straight to the two Tone
+    // instances, which are what actually keep the state (so it survives
+    // patch_from_bytes() reconfiguring everything else, and arms voices the
+    // instant they start - see Tone::set_partial1_debug_mute()).
+    void set_upper_partial1_mute(bool m) { upper_.set_partial1_debug_mute(m); }
+    void set_upper_partial2_mute(bool m) { upper_.set_partial2_debug_mute(m); }
+    void set_lower_partial1_mute(bool m) { lower_.set_partial1_debug_mute(m); }
+    void set_lower_partial2_mute(bool m) { lower_.set_partial2_debug_mute(m); }
+    bool upper_partial1_muted() const { return upper_.partial1_debug_muted(); }
+    bool upper_partial2_muted() const { return upper_.partial2_debug_muted(); }
+    bool lower_partial1_muted() const { return lower_.partial1_debug_muted(); }
+    bool lower_partial2_muted() const { return lower_.partial2_debug_muted(); }
 
     // Sixteen voices plus a reverb tail can ask for more than full scale, and
     // a converter answers that with hard clipping. This stays linear below

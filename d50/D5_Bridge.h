@@ -46,6 +46,15 @@ public:
     void loadBank(std::vector<std::vector<uint8_t>> patches, std::vector<std::string> names);
     bool hasRuntimeBank() const { return !bank_.empty(); }
 
+    // d110-vst-emulator port addition: the PCM wave name for the panel's own
+    // "PCM" parameter (0..99, see d5_engine/d5_patch_map.h's map_partial()) -
+    // the frozen sample table (tools/d5_extract/d5_sample_table.json, baked
+    // into d5_pcm_table.h at configure time) names each one regardless of
+    // whether a ROM ever decoded successfully at runtime, so this needs no
+    // instance state - kept here rather than in the editor so nothing above
+    // D5_Bridge has to know d5_pcm_table.h exists at all.
+    static const char* pcmWaveName(int waveNumber0to99);
+
     void selectPatch(int index);
     int patch() const { return patchIndex_; }
     // The rest of the firmware counts patches through here rather than
@@ -105,6 +114,30 @@ public:
     void setEqHighQ(int v);         int eqHighQ() const     { return eqHiQ_; }
     void setEqHighGain(int v);      int eqHighGain() const  { return eqHiG_; }
     void setToneBalance(int v);     int toneBalance() const { return toneBal_; }
+    // d110-vst-emulator addition, no real-panel equivalent: audition any one
+    // of the four partials alone (Alan, 2026-09-02, tracking down a
+    // per-note artifact - one mute button per tone wasn't precise enough to
+    // tell which of a tone's two partials was responsible). Voices/
+    // envelopes on a muted partial keep running (see d5_patch.h's
+    // Voice::next()) - this only silences its contribution to the mix, so
+    // unmuting mid-note doesn't restart anything.
+    // d110-vst-emulator addition: the TVF ENV DEPTH keyfollow direction, as a
+    // live A/B switch (Alan, 2026-09-02 - the question is which one a real
+    // D-50 sounds like, and only listening can answer it). Engine-global, not
+    // per-instance, because it lives in the header-only engine; read once per
+    // note, so it takes effect on the next key struck. See
+    // d5_synth_voice.h's g_tvf_depth_kf_fixed for what the two directions are.
+    static void setTvfKeyfollowFixed(bool fixed) { d5::g_tvf_depth_kf_fixed = fixed; }
+    static bool tvfKeyfollowFixed() { return d5::g_tvf_depth_kf_fixed; }
+
+    void setUpperPartial1Mute(bool m) { patch_.set_upper_partial1_mute(m); }
+    void setUpperPartial2Mute(bool m) { patch_.set_upper_partial2_mute(m); }
+    void setLowerPartial1Mute(bool m) { patch_.set_lower_partial1_mute(m); }
+    void setLowerPartial2Mute(bool m) { patch_.set_lower_partial2_mute(m); }
+    bool upperPartial1Muted() const { return patch_.upper_partial1_muted(); }
+    bool upperPartial2Muted() const { return patch_.upper_partial2_muted(); }
+    bool lowerPartial1Muted() const { return patch_.lower_partial1_muted(); }
+    bool lowerPartial2Muted() const { return patch_.lower_partial2_muted(); }
     // Hz and dB behind those indices, for the display.
     float eqLowHz() const;
     float eqHighHz() const;

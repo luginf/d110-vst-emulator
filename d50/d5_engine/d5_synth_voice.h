@@ -38,6 +38,23 @@
 
 namespace d5 {
 
+// d110-vst-emulator addition, no upstream equivalent: which way KEYFOLLOW
+// pushes TVF ENV DEPTH. Upstream subtracts, verbatim from a disassembly of
+// D50-v1.06.bin (confirmed by that file's own embedded boot string, "D-50
+// Ver 1.06"). The D-50 Service Notes' firmware changelog says ROM 1.04-1.06
+// had "the effect of KEYFOLLOW on TVF ENV DEPTH... opposite to what
+// designed", fixed in 1.07 - so a faithful 1.06 disassembly reproduces a bug
+// that was corrected in the field, on patches that were voiced for the
+// corrected direction.
+//
+// Which of the two a real D-50 actually sounds like is a question for ears,
+// not for documents, and nobody has run that test yet - so it is a runtime
+// switch rather than a decision baked into the build. Read once per note in
+// note_on (here and in d5_voice.h's own copy of the same formula), so
+// flipping it takes effect on the next key struck, not on notes already
+// sounding. Default true = the Service Notes' corrected direction.
+inline bool g_tvf_depth_kf_fixed = true;
+
 enum class Waveform : uint8_t { kSquare = 0, kSawtooth = 1 };
 
 struct SynthSpec {
@@ -126,7 +143,13 @@ public:
         float velUnits = 109.0f + vel127 * sens * (1.0f / 64.0f) - sens;
         if (spec.tvf_depth_kf != 0) {
             const int kf = spec.tvf_depth_kf > 4 ? 4 : spec.tvf_depth_kf;
-            velUnits -= static_cast<float>(key_rel60 >> (4 - kf));
+            // Direction switchable at runtime - see g_tvf_depth_kf_fixed at
+            // the top of this file. Upstream (a verbatim ROM 1.06
+            // disassembly) subtracts; the Service Notes' 1.07 correction
+            // adds. d5_voice.h carries the same formula a second time and
+            // must stay in sync with this one.
+            const float kfUnits = static_cast<float>(key_rel60 >> (4 - kf));
+            velUnits += g_tvf_depth_kf_fixed ? kfUnits : -kfUnits;
         }
         float velTerm = velUnits * (1.0f / 109.0f);
         if (velTerm < 0.0f) velTerm = 0.0f;

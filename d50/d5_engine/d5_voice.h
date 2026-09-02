@@ -262,7 +262,15 @@ public:
                 const int v127 = static_cast<int>(vel127);
                 const int sens = static_cast<int>(syn.tvf_velo * 100.0f);
                 int bias = 109 - sens + ((sens * v127) >> 6);
-                if (syn.tvf_depth_kf) bias -= key >> (4 - syn.tvf_depth_kf);
+                // Direction switchable at runtime - see g_tvf_depth_kf_fixed
+                // in d5_synth_voice.h, which carries this same formula a
+                // second time and must stay in sync with it. Upstream (a
+                // verbatim ROM 1.06 disassembly) subtracts; the Service
+                // Notes' 1.07 correction adds.
+                if (syn.tvf_depth_kf) {
+                    const int kfUnits = key >> (4 - syn.tvf_depth_kf);
+                    bias += g_tvf_depth_kf_fixed ? kfUnits : -kfUnits;
+                }
                 bias = bias < 0 ? 0 : (bias > 255 ? 255 : bias);
                 const int depth = static_cast<int>(syn.tvf_env_depth * 100.0f);
                 int D = (depth * bias) >> 6;
@@ -445,6 +453,17 @@ public:
                                                : synth_[0].next(mod_[0]);
         float b = (st.p2 == PartialType::kPcm) ? pcm_[1].next(mod_[1])
                                                : synth_[1].next(mod_[1]);
+        float dca = (st.p1 == PartialType::kPcm) ? 0.0f : synth_[0].dc();
+        float dcb = (st.p2 == PartialType::kPcm) ? 0.0f : synth_[1].dc();
+        // d110-vst-emulator addition, no real panel equivalent: a per-
+        // partial audition mute for isolating one partial while debugging a
+        // patch (Alan, 2026-09-02). Unlike spec_.partials_on just below,
+        // this is applied BEFORE a_raw/b_raw are captured, so a ring
+        // structure's product genuinely goes silent too - the point is to
+        // hear this partial completely alone, not to reproduce the real
+        // panel's own "hide the carrier, keep the metallic product" trick.
+        if (debug_mute_[0]) { a = 0.0f; dca = 0.0f; }
+        if (debug_mute_[1]) { b = 0.0f; dcb = 0.0f; }
         // The asymmetric pulses carry a DC as large as the duty imbalance.
         // Inside the chip that DC is real -- the pair's ring mod multiplies
         // the raw partials -- but the D-50's line out is AC-coupled and
@@ -454,8 +473,6 @@ public:
         // copy of the other partial, which the coupling keeps.
         const float a_raw = a;                    // ring reads pre-mute values:
         const float b_raw = b;                    // the mute buttons gate the
-        float dca = (st.p1 == PartialType::kPcm) ? 0.0f : synth_[0].dc();
-        float dcb = (st.p2 == PartialType::kPcm) ? 0.0f : synth_[1].dc();
         const float dca_raw = dca, dcb_raw = dcb; // direct terms only
         if (!(spec_.partials_on & 0x1)) { a = 0.0f; dca = 0.0f; }
         if (!(spec_.partials_on & 0x2)) { b = 0.0f; dcb = 0.0f; }
@@ -519,6 +536,12 @@ public:
         return kStructures[i];
     }
 
+    // See next()'s own comment on debug_mute_ - a per-partial audition mute,
+    // set (and kept in sync across notes) by Tone::set_partial_debug_mute().
+    void set_debug_mute(int i, bool m) {
+        if (i == 0 || i == 1) debug_mute_[i] = m;
+    }
+
 private:
     static float lfo_value(const float l[3], const LfoRoute& r) {
         const int i = (r.lfo < 0 || r.lfo > 2) ? 0 : r.lfo;
@@ -553,6 +576,7 @@ private:
     // next note always starts the glide where the last one stopped moving.
     float glide_pos_[2] = {0.0f, 0.0f};
     float glide_tgt_[2] = {0.0f, 0.0f};
+    bool debug_mute_[2] = {false, false};
     float glide_step_[2] = {0.0f, 0.0f};
     bool glide_warm_[2] = {false, false};
     float sr_ = 32000.0f;
