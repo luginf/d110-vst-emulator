@@ -27,10 +27,23 @@ jobs:
       - name: Checkout d110-vst-emulator
         uses: actions/checkout@v4
 
+      # toolset 14.44, not whatever's newest on the runner: MSVC 14.50 (shipped with the
+      # VC++ tools that came with VS "2026") dropped the CreateFileW fallback in the
+      # Microsoft STL's own std::filesystem internals (__vcp_CreateFile, stl/src/
+      # filesystem.cpp) and calls CreateFile2 unconditionally instead - a Windows 8+-only
+      # kernel32 export. Anything in this binary that touches std::filesystem (JUCE's own
+      # file handling, transitively) then fails to even LOAD on Windows 7 ("the procedure
+      # entry point CreateFile2 could not be located in KERNEL32.dll"), regardless of any
+      # _WIN32_WINNT/WINAPI_FAMILY macro on our side - the STL's internals aren't gated by
+      # those at all. Confirmed the same regression (and the same fix) independently hit
+      # mesa-dist-win: https://github.com/pal1000/mesa-dist-win/issues/233. 14.44 is the
+      # last toolset before the STL dropped the fallback; GitHub's windows-latest runners
+      # carry several toolset versions side by side for exactly this scenario.
       - name: Set up MSVC dev environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+          toolset: 14.44
 
       - name: Cache JUCE FetchContent checkout
         uses: actions/cache@v4
