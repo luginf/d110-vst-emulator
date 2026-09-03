@@ -48,10 +48,18 @@ jobs:
       # -march=native, no NEON/SSE intrinsics anywhere in plugin/CMakeLists.txt
       # or munt's own CMake) - plain portable C++ throughout, so there is no
       # reason this ever needs two separate jobs.
+      # CMAKE_OSX_DEPLOYMENT_TARGET must be set explicitly - left unset, CMake
+      # embeds the runner's own (very recent) SDK default as the minimum
+      # supported macOS version, so the resulting binary is Gatekeeper-refused
+      # ("You can't use this version of the application with this version of
+      # macOS") on anything older, e.g. Ventura 13.7 - reported by a user on
+      # a fresh universal-binary build, 2026-09-03. 11.0 (Big Sur) is the
+      # practical floor for a universal binary: arm64 Macs don't exist on
+      # anything older, so there's no point targeting lower for the x86_64 slice.
       - name: Configure plugin
         working-directory: plugin
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
 
       - name: "Build D110EmulatorNative (VST3 + Standalone + AU)"
         working-directory: plugin
