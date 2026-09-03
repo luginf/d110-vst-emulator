@@ -11,6 +11,8 @@
 
 #include "../../../d50/D5_Bridge.h"
 #include "../D110KeyboardHost.h"
+#include "../sequencer/D110SequencerEngine.h"
+#include "../sequencer/D110SequencerHost.h"
 
 // The D-50 plugin's AudioProcessor. Unlike D110AudioProcessor this owns no
 // firmware/CPU emulation at all - d50/D5_Bridge.h is Michi71's reimplemented
@@ -22,7 +24,7 @@
 // dump) is never compiled into this binary - loaded from disk at runtime,
 // same reasoning as the D-110 firmware ROMs never being embedded either. See
 // loadPcmBlob()'s own comment for the search path.
-class D50AudioProcessor : public juce::AudioProcessor, public D110KeyboardHost {
+class D50AudioProcessor : public juce::AudioProcessor, public D110KeyboardHost, public D110SequencerHost {
 public:
     D50AudioProcessor();
     ~D50AudioProcessor() override;
@@ -197,9 +199,36 @@ public:
     void setKeyboardPcInputEnabled(bool enabled) override { keyboardPcInputEnabled = enabled; }
     int getKeyboardPcLayout() const override { return keyboardPcLayout; }
     void setKeyboardPcLayout(int layout) override { keyboardPcLayout = layout; }
+    int getKeyboardNumOctaves() const override { return keyboardNumOctaves; }
+    void setKeyboardNumOctaves(int numOctaves) override { keyboardNumOctaves = numOctaves; }
+
+    // Normal/Big text and control size - see UiTheme.h's own d110ui::FontScale comment for why
+    // actually applying it (juce::Desktop::getInstance().setGlobalScaleFactor()) is D50Editor's
+    // job, Standalone builds only. Just the persisted preference here, same pattern as the
+    // keyboard config above.
+    bool getUiFontScaleBig() const { return uiFontScaleBig; }
+    void setUiFontScaleBig(bool big) { uiFontScaleBig = big; }
     bool isNoteActive(int note) const override {
         return note >= 0 && note < 128 && noteActiveFlags[static_cast<size_t>(note)].load(std::memory_order_relaxed);
     }
+
+    // --- D110SequencerHost -----------------------------------------------------
+    // Mono-timbral first cut (Alan, 2026-09-03): unlike the D-110's 9 tracks mapped onto 8
+    // real Parts + Rhythm, the D-50 plays exactly ONE patch at a time regardless of MIDI
+    // channel (see injectTestNote()'s own comment - the bridge is channel-blind, and
+    // injectTestNote() itself already collapses the on-screen keyboard's broadcast onto
+    // channel 1 unless MIDI Remap points it elsewhere). So every track here shares the
+    // same sound; channel only matters for MIDI file export/import readability, not for
+    // anything the engine does with it. A real per-track independent patch (something no
+    // actual D-50 ever had) is a bigger follow-up Alan explicitly deferred - see
+    // D110SequencerHost.h's own optional accessors, none of which are overridden here yet
+    // (supportsProgramChange() and friends all default to false/no-op).
+    d110seq::D110SequencerEngine &getSequencer() override { return sequencerEngine; }
+    void exportSequencerSongs(const juce::File &file) override;
+    void importSequencerSongs(const juce::File &file) override;
+    void midiPanic() override;
+    juce::File getLastDialogDir() const override { return lastDialogDir; }
+    void setLastDialogDir(const juce::File &dir) override { lastDialogDir = dir; }
 
 private:
     bool loadPcmBlob();
@@ -236,7 +265,23 @@ private:
     bool midiRemap = false;
     bool keyboardPcInputEnabled = false;
     int keyboardPcLayout = 0;
+    int keyboardNumOctaves = 2;
+    bool uiFontScaleBig = false;
     std::array<std::atomic<bool>, 128> noteActiveFlags{};
+
+    // The sequencer - see the D110SequencerHost overrides above for how it's wired in.
+    // 9 tracks fixed (kNumTracks), same as the D-110 plugin's own engine instance - never
+    // enables extra tracks (supportsExtraTracks() stays false, the default), see
+    // D110SequencerEngine.h's own comment on why kMaxTracks exists at all (Nonet Sequencer
+    // only).
+    d110seq::D110SequencerEngine sequencerEngine;
+    juce::File lastDialogDir;
+    // Metronome click synthesis state, carried across blocks so its ~30ms decay doesn't
+    // reset/glitch at a block boundary - see processBlock()'s own comment, ported verbatim
+    // from D110AudioProcessor's identically-shaped code.
+    int metronomeSamplesRemaining = 0;
+    double metronomePhase = 0.0;
+    double metronomeFreq = 1000.0;
 
     // See setMidiOutputDevice()'s own comment.
     std::unique_ptr<juce::MidiOutput> osMidiOut;

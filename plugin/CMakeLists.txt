@@ -2314,6 +2314,9 @@ if(_d50_rom_files)
             Source/D110Keyboard.cpp
             Source/UiTheme.cpp
             Source/DotMatrixFont.cpp
+            Source/sequencer/D110SequencerEngine.cpp
+            Source/sequencer/D110SequencerSongsFile.cpp
+            Source/sequencer/D110SequencerPanel.cpp
         )
         target_include_directories(D50Emulator PRIVATE ${_d50_dir} ${_d50_gen})
         target_compile_definitions(D50Emulator PUBLIC
@@ -2368,7 +2371,10 @@ if(_d50_rom_files)
             ../d50/D5SyxLoader.cpp
             Source/D110Keyboard.cpp
             Source/UiTheme.cpp
-            Source/DotMatrixFont.cpp)
+            Source/DotMatrixFont.cpp
+            Source/sequencer/D110SequencerEngine.cpp
+            Source/sequencer/D110SequencerSongsFile.cpp
+            Source/sequencer/D110SequencerPanel.cpp)
         target_include_directories(d50_processor_probe PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}" ${_d50_dir} ${_d50_gen})
         target_compile_definitions(d50_processor_probe PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)

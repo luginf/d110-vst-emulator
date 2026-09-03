@@ -3,6 +3,7 @@
 #include <iterator>
 
 #include "../DotMatrixFont.h"
+#include "../UiTheme.h"
 
 #if JucePlugin_Build_Standalone
 // StandaloneFilterWindow.h assumes AudioProcessorPlayer/AudioDeviceSelectorComponent
@@ -289,12 +290,54 @@ void D50Editor::LcdReadout::paint(juce::Graphics &g) {
     dotmatrix::drawDotText(g, line2, area, juce::Justification::centredLeft, charPx);
 }
 
+void D50Editor::FoldHandle::paint(juce::Graphics &g) {
+    const auto &pal = d110ui::palette();
+    const auto band = getLocalBounds().toFloat();
+    g.setColour(pal.handleBg);
+    g.fillRect(band);
+    g.setColour(pal.handleBar);
+    g.fillRect(band.reduced(0.0f, band.getHeight() * 0.28f));
+
+    // Chevron points away from the block's current resting edge - down when it's open (there's
+    // more to reveal below), up when folded - same convention PluginEditor.cpp's own drawer
+    // handles use.
+    const float cx = band.getCentreX() - 60.0f;
+    const float cy = band.getCentreY();
+    const float a = juce::jmax(3.0f, band.getHeight() * 0.22f);
+    const float dir = folded ? 1.0f : -1.0f;
+    juce::Path chevron;
+    chevron.startNewSubPath(cx - a * 1.6f, cy - a * 0.5f * dir);
+    chevron.lineTo(cx, cy + a * 0.5f * dir);
+    chevron.lineTo(cx + a * 1.6f, cy - a * 0.5f * dir);
+    g.setColour(pal.handleChevron);
+    g.strokePath(chevron, juce::PathStrokeType(juce::jmax(1.5f, a * 0.35f)));
+
+    g.setFont(juce::FontOptions(juce::jlimit(9.0f, 13.0f, band.getHeight() * 0.55f)));
+    g.setColour(pal.handleLabel);
+    g.drawText(folded ? "PATCH EDIT (click to reopen)" : "PATCH EDIT", band, juce::Justification::centred);
+}
+
+void D50Editor::FoldHandle::mouseDown(const juce::MouseEvent &) {
+    folded = !folded;
+    repaint();
+    if (onToggle) onToggle();
+}
+
 D50Editor::D50Editor(D50AudioProcessor &p)
     : juce::AudioProcessorEditor(p),
       processor(p),
       partial1(p, kUpperP1Base, "Partial 1"),
       partial2(p, kUpperP2Base, "Partial 2"),
-      keyboard(p) {
+      keyboard(p),
+      sequencerPanel(p) {
+    // Synced here, not just read lazily, so a project loaded with the big font size looks
+    // right from the very first paint - see UiTheme.h's own d110ui::FontScale comment on why
+    // the Desktop-global call is Standalone-only.
+    d110ui::setFontScale(p.getUiFontScaleBig() ? d110ui::FontScale::Big : d110ui::FontScale::Normal);
+#if JucePlugin_Build_Standalone
+    juce::Desktop::getInstance().setGlobalScaleFactor(p.getUiFontScaleBig() ? d110ui::kBigScaleFactor : 1.0f);
+#endif
+
     titleLabel.setText("D-50 Emulator (early port)", juce::dontSendNotification);
     titleLabel.setFont(juce::Font(juce::FontOptions(18.0f, juce::Font::bold)));
     titleLabel.setJustificationType(juce::Justification::centredLeft);
@@ -308,6 +351,16 @@ D50Editor::D50Editor(D50AudioProcessor &p)
     addAndMakeVisible(audioSettingsButton);
     audioSettingsButton.onClick = [] {
         if (auto *holder = juce::StandalonePluginHolder::getInstance()) holder->showAudioSettingsDialog();
+    };
+
+    addAndMakeVisible(fontScaleButton);
+    fontScaleButton.setButtonText(processor.getUiFontScaleBig() ? "Font: Big" : "Font: Normal");
+    fontScaleButton.onClick = [this] {
+        const bool big = !processor.getUiFontScaleBig();
+        processor.setUiFontScaleBig(big);
+        d110ui::setFontScale(big ? d110ui::FontScale::Big : d110ui::FontScale::Normal);
+        juce::Desktop::getInstance().setGlobalScaleFactor(big ? d110ui::kBigScaleFactor : 1.0f);
+        fontScaleButton.setButtonText(big ? "Font: Big" : "Font: Normal");
     };
 #endif
 
@@ -341,6 +394,7 @@ D50Editor::D50Editor(D50AudioProcessor &p)
         });
     };
 
+    patchBox.setLookAndFeel(&patchBoxLnf);
     addAndMakeVisible(patchBox);
     patchBox.onChange = [this] {
         const int id = patchBox.getSelectedId();
@@ -369,6 +423,20 @@ D50Editor::D50Editor(D50AudioProcessor &p)
     configureKnob(chorusSlider).setValue(processor.getChorusPercent(), juce::dontSendNotification);
     chorusSlider.onValueChange = [this] { processor.setChorusPercent(static_cast<int>(chorusSlider.getValue())); };
     addAndMakeVisible(chorusSlider);
+
+    addAndMakeVisible(patchEditFold);
+    patchEditFold.onToggle = [this] {
+        // setSize() triggers resized() on its own, same as D110AudioProcessorEditor's own
+        // drawer resize - see its applySize()'s own comment.
+        updatePatchEditFoldVisibility();
+        setSize(getWidth(), computeContentHeight());
+    };
+
+    addAndMakeVisible(sequencerFold);
+    sequencerFold.onToggle = [this] {
+        updateSequencerFoldVisibility();
+        setSize(getWidth(), computeContentHeight());
+    };
 
     toneSectionLabel.setFont(juce::Font(juce::FontOptions(15.0f, juce::Font::bold)));
     addAndMakeVisible(toneSectionLabel);
@@ -490,17 +558,25 @@ D50Editor::D50Editor(D50AudioProcessor &p)
 
     addAndMakeVisible(keyboard);
 
+    addAndMakeVisible(sequencerPanel);
+    // Closed by default - see sequencerFold's own member comment.
+    sequencerFold.setFolded(true);
+    updateSequencerFoldVisibility();
+
     setResizable(true, true);
-    // Minimum matches what the fixed-height rows above actually need (title,
-    // status, patch box, knobs, tone section, keyboard) - the scrolling
-    // ParamColumn grid below that has no minimum of its own, it just scrolls.
-    setResizeLimits(620, 600, 1400, 1100);
-    setSize(760, 760);
+    // Minimum is whatever's needed with both FoldHandles folded (title, status, patch box,
+    // knobs, both fold handles, keyboard - see computeContentHeight()); maximum is generous
+    // enough for both unfolded at once plus some resize headroom for the scrolling grid.
+    setResizeLimits(620, 480, 1400, 1600);
+    setSize(760, computeContentHeight());
     startTimerHz(4);
     timerCallback();
 }
 
-D50Editor::~D50Editor() { stopTimer(); }
+D50Editor::~D50Editor() {
+    stopTimer();
+    patchBox.setLookAndFeel(nullptr);  // patchBoxLnf is about to be destroyed with us
+}
 
 void D50Editor::importSyxBank() {
     fileChooser = std::make_unique<juce::FileChooser>("Import a D-50 SysEx bank", juce::File(), "*.syx");
@@ -627,6 +703,47 @@ void D50Editor::updatePartialApplicability() {
     for (auto *col : partial2ScopedColumns) col->setPartialIsPcm(p2Pcm);
 }
 
+void D50Editor::updatePatchEditFoldVisibility() {
+    const bool visible = !patchEditFold.isFolded();
+    for (auto *c : {static_cast<juce::Component *>(&toneScopeToggle), static_cast<juce::Component *>(&keyfollowFixButton),
+                    static_cast<juce::Component *>(&lowerP1OnButton), static_cast<juce::Component *>(&lowerP2OnButton),
+                    static_cast<juce::Component *>(&upperP1OnButton), static_cast<juce::Component *>(&upperP2OnButton),
+                    static_cast<juce::Component *>(&toneSectionLabel), static_cast<juce::Component *>(&structureLabel),
+                    static_cast<juce::Component *>(&structureBox), static_cast<juce::Component *>(&balanceLabel),
+                    static_cast<juce::Component *>(&balanceSlider), static_cast<juce::Component *>(&partial1),
+                    static_cast<juce::Component *>(&partial2), static_cast<juce::Component *>(&toneViewport)})
+        c->setVisible(visible);
+}
+
+void D50Editor::updateSequencerFoldVisibility() { sequencerPanel.setVisible(!sequencerFold.isFolded()); }
+
+// Fixed default the scrolling ParamColumn grid gets whenever patchEditFold is open - see this
+// method's own declaration in D50Editor.h for the trade-off (a user's own resize of that area
+// doesn't survive a fold/unfold round trip).
+namespace {
+constexpr int kToneViewportDefaultH = 220;
+}
+
+int D50Editor::computeContentHeight() const {
+    // Mirrors resized()'s own reservations exactly, top to bottom: margins(12+12) + title(26)
+    // + status(20) + gap(8) + patchRow(28) + gap(8) + lcd(46) + gap(16) + knobs(110).
+    int h = 24 + 26 + 20 + 8 + 28 + 8 + 46 + 16 + 110;
+    h += 20;  // patchEditFold's own handle
+    if (!patchEditFold.isFolded()) {
+        // gap(6) + toneHeaderRow(20) + structRow(28) + gap(10) + compactRow(204) + gap(10)
+        // + the scrolling grid's own default height.
+        h += 6 + 20 + 28 + 10 + 204 + 10 + kToneViewportDefaultH;
+    }
+    h += 10;                                          // gap before the keyboard
+    h += static_cast<int>(D110Keyboard::kRefH);        // keyboard
+    h += 10;                                           // gap before sequencerFold
+    h += 20;                                           // sequencerFold's own handle
+    if (!sequencerFold.isFolded()) {
+        h += 6 + static_cast<int>(D110SequencerPanel::kRefH);
+    }
+    return h;
+}
+
 void D50Editor::refreshPatchList() {
     patchBox.clear(juce::dontSendNotification);
     if (!processor.isReady()) {
@@ -681,8 +798,6 @@ void D50Editor::timerCallback() {
 
 void D50Editor::paint(juce::Graphics &g) {
     g.fillAll(juce::Colour(0xff2a2a2e));
-    g.setColour(juce::Colour(0xff44444a));
-    g.drawHorizontalLine(toneSectionLabel.getY() - 6, 12.0f, static_cast<float>(getWidth() - 12));
 }
 
 void D50Editor::layoutToneColumns() {
@@ -714,6 +829,8 @@ void D50Editor::resized() {
 #if JucePlugin_Build_Standalone
     audioSettingsButton.setBounds(titleRow.removeFromRight(160));
     titleRow.removeFromRight(8);
+    fontScaleButton.setBounds(titleRow.removeFromRight(100));
+    titleRow.removeFromRight(8);
 #endif
     titleLabel.setBounds(titleRow);
     statusLabel.setBounds(area.removeFromTop(20));
@@ -736,43 +853,58 @@ void D50Editor::resized() {
     layout(knobs.removeFromLeft(w), reverbLabel, reverbSlider);
     layout(knobs, chorusLabel, chorusSlider);
 
+    // Sequencer drawer, bottom-most - same stacking order the D-110 plugin uses (EditorPane,
+    // Keyboard, Sequencer). Reserved from the bottom BEFORE the keyboard area below, so it
+    // ends up under the keyboard rather than under the patch-edit block.
+    if (!sequencerFold.isFolded()) {
+        auto seqArea = area.removeFromBottom(static_cast<int>(D110SequencerPanel::kRefH));
+        sequencerPanel.setBounds(seqArea);
+        area.removeFromBottom(6);
+    }
+    sequencerFold.setBounds(area.removeFromBottom(20));
+    area.removeFromBottom(10);
+
     auto keyboardArea = area.removeFromBottom(static_cast<int>(D110Keyboard::kRefH));
     area.removeFromBottom(10);
 
-    area.removeFromTop(14);  // room for paint()'s divider line above the label
-    auto toneHeaderRow = area.removeFromTop(20);
-    toneScopeToggle.setBounds(toneHeaderRow.removeFromRight(140));
-    toneHeaderRow.removeFromRight(8);
-    keyfollowFixButton.setBounds(toneHeaderRow.removeFromRight(76));
-    toneHeaderRow.removeFromRight(10);
-    upperP2OnButton.setBounds(toneHeaderRow.removeFromRight(50));
-    toneHeaderRow.removeFromRight(4);
-    upperP1OnButton.setBounds(toneHeaderRow.removeFromRight(50));
-    toneHeaderRow.removeFromRight(6);
-    lowerP2OnButton.setBounds(toneHeaderRow.removeFromRight(50));
-    toneHeaderRow.removeFromRight(4);
-    lowerP1OnButton.setBounds(toneHeaderRow.removeFromRight(50));
-    toneHeaderRow.removeFromRight(8);
-    toneSectionLabel.setBounds(toneHeaderRow);
-    auto structRow = area.removeFromTop(28);
-    structureLabel.setBounds(structRow.removeFromLeft(70));
-    structureBox.setBounds(structRow.removeFromLeft(130));
-    structRow.removeFromLeft(16);
-    balanceLabel.setBounds(structRow.removeFromLeft(60));
-    balanceSlider.setBounds(structRow);
-    area.removeFromTop(10);
+    patchEditFold.setBounds(area.removeFromTop(20));
 
-    const int half = area.getWidth() / 2;
-    // PartialPanel needs title(20) + 4px gap + 6 rows*(26+4) = 204.
-    auto compactRow = area.removeFromTop(204);
-    partial1.setBounds(compactRow.removeFromLeft(half).withTrimmedRight(8));
-    partial2.setBounds(compactRow.withTrimmedLeft(8));
-    area.removeFromTop(10);
+    if (!patchEditFold.isFolded()) {
+        area.removeFromTop(6);
+        auto toneHeaderRow = area.removeFromTop(20);
+        toneScopeToggle.setBounds(toneHeaderRow.removeFromRight(140));
+        toneHeaderRow.removeFromRight(8);
+        keyfollowFixButton.setBounds(toneHeaderRow.removeFromRight(76));
+        toneHeaderRow.removeFromRight(10);
+        upperP2OnButton.setBounds(toneHeaderRow.removeFromRight(50));
+        toneHeaderRow.removeFromRight(4);
+        upperP1OnButton.setBounds(toneHeaderRow.removeFromRight(50));
+        toneHeaderRow.removeFromRight(6);
+        lowerP2OnButton.setBounds(toneHeaderRow.removeFromRight(50));
+        toneHeaderRow.removeFromRight(4);
+        lowerP1OnButton.setBounds(toneHeaderRow.removeFromRight(50));
+        toneHeaderRow.removeFromRight(8);
+        toneSectionLabel.setBounds(toneHeaderRow);
+        auto structRow = area.removeFromTop(28);
+        structureLabel.setBounds(structRow.removeFromLeft(70));
+        structureBox.setBounds(structRow.removeFromLeft(130));
+        structRow.removeFromLeft(16);
+        balanceLabel.setBounds(structRow.removeFromLeft(60));
+        balanceSlider.setBounds(structRow);
+        area.removeFromTop(10);
 
-    // Everything else, scrolling - whatever height/width is left, which is
-    // the part that actually grows when the window is resized.
-    toneViewport.setBounds(area);
-    layoutToneColumns();
+        const int half = area.getWidth() / 2;
+        // PartialPanel needs title(20) + 4px gap + 6 rows*(26+4) = 204.
+        auto compactRow = area.removeFromTop(204);
+        partial1.setBounds(compactRow.removeFromLeft(half).withTrimmedRight(8));
+        partial2.setBounds(compactRow.withTrimmedLeft(8));
+        area.removeFromTop(10);
+
+        // Everything else, scrolling - whatever height/width is left, which is
+        // the part that actually grows when the window is resized.
+        toneViewport.setBounds(area);
+        layoutToneColumns();
+    }
 
     keyboard.setBounds(keyboardArea);
 }

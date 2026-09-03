@@ -2926,11 +2926,14 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	xml->setAttribute("kbMidiRemap", midiRemap ? 1 : 0);
 	xml->setAttribute("kbPcInput", keyboardPcInput ? 1 : 0);
 	xml->setAttribute("kbPcLayout", keyboardPcLayout);
+	xml->setAttribute("kbNumOctaves", keyboardNumOctaves);
 
 	// Utility tab's THEME toggle - see getUiThemeLight().
 	xml->setAttribute("uiThemeLight", uiThemeLight ? 1 : 0);
 	// See getUiThemeFollowSystem().
 	xml->setAttribute("uiThemeFollowSystem", uiThemeFollowSystem ? 1 : 0);
+	// See getUiFontScaleBig().
+	xml->setAttribute("uiFontScaleBig", uiFontScaleBig ? 1 : 0);
 	// See getSequencerRetroMode().
 	xml->setAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0);
 	// See getCompactPanelMode().
@@ -3101,9 +3104,11 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 		setMidiRemap(xml->getIntAttribute("kbOmni", midiRemap ? 0 : 1) == 0);
 	setKeyboardPcInputEnabled(xml->getIntAttribute("kbPcInput", keyboardPcInput ? 1 : 0) != 0);
 	setKeyboardPcLayout(xml->getIntAttribute("kbPcLayout", keyboardPcLayout));
+	setKeyboardNumOctaves(xml->getIntAttribute("kbNumOctaves", keyboardNumOctaves));
 
 	setUiThemeLight(xml->getIntAttribute("uiThemeLight", uiThemeLight ? 1 : 0) != 0);
 	setUiThemeFollowSystem(xml->getIntAttribute("uiThemeFollowSystem", uiThemeFollowSystem ? 1 : 0) != 0);
+	setUiFontScaleBig(xml->getIntAttribute("uiFontScaleBig", uiFontScaleBig ? 1 : 0) != 0);
 	setSequencerRetroMode(xml->getIntAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0) != 0);
 	setCompactPanelMode(xml->getIntAttribute("compactPanelMode", compactPanelMode ? 1 : 0) != 0);
 	setRetroKeyBindings(xml->getStringAttribute("retroKeyBindings", retroKeyBindings));

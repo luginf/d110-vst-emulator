@@ -62,6 +62,23 @@ const Palette &palette();
 ThemeMode getThemeMode();
 void setThemeMode(ThemeMode mode);
 
+// UI text/control size preference (Alan's request, 2026-09-03: an HDPI screen with no OS-level
+// scaling leaves every label/knob uncomfortably small). Normal is 1:1, unchanged from before
+// this existed; Big renders everything - text AND every component's own size, since scaling
+// only the font would leave labels overflowing the small fixed-size boxes this UI lays them
+// into - through juce::Desktop::getGlobalScaleFactor() at kBigScaleFactor. Pure state here,
+// palette()-independent; actually APPLYING it (Desktop::getInstance().setGlobalScaleFactor())
+// is the caller's job, and only ever safe to do from a Standalone build (JucePlugin_Build_
+// Standalone) - the Desktop's global scale factor is process-wide, and a VST3/AU instance
+// shares its process with the host and every other plugin's window, so calling it there would
+// visibly resize the DAW itself. D110AudioProcessorEditor/D50Editor both gate the actual call
+// behind that macro; getFontScale()/setFontScale() themselves have no such restriction; they're
+// just the persisted preference.
+enum class FontScale { Normal, Big };
+inline constexpr float kBigScaleFactor = 1.35f;
+FontScale getFontScale();
+void setFontScale(FontScale scale);
+
 // A juce::LookAndFeel driven by palette() - keeps stock JUCE components (AlertWindow,
 // AudioDeviceSelectorComponent, PopupMenu, ComboBox, ...) themed consistently with the
 // hand-painted parts of the UI, which read palette() directly in their own paint()

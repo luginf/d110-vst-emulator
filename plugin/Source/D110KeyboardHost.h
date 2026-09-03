@@ -29,6 +29,13 @@ public:
 	// 0 = QWERTY, 1 = AZERTY.
 	virtual int getKeyboardPcLayout() const = 0;
 	virtual void setKeyboardPcLayout(int layout) = 0;
+	// How many octaves showContextMenu()'s "4-octave keyboard (wide)" toggle currently shows -
+	// 2 (the long-standing default) or 4 (Alan's request, 2026-09-02, for D-50 PCM listening
+	// tests spanning a wider range than two octaves comfortably reach). Persisted the same way
+	// as the settings above, added 2026-09-03 once Alan asked for it to survive a relaunch
+	// rather than reset to 2 every time.
+	virtual int getKeyboardNumOctaves() const = 0;
+	virtual void setKeyboardNumOctaves(int numOctaves) = 0;
 
 	// For the on-screen keyboard's own activity LEDs: true if `note` (0-127, any channel) is
 	// currently sounding anywhere in the app - external MIDI In, sequencer playback, or (in

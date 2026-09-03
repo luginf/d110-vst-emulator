@@ -1841,6 +1841,18 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 	}
 	area.removeFromTop(18.0f);
 
+	labels.push_back({ area.removeFromTop(15.0f), "FONT SIZE", true });
+	{
+		auto row = area.removeFromTop(28.0f);
+		buttons.push_back({ row.removeFromLeft(150.0f), processor.getUiFontScaleBig() ? "BIG" : "NORMAL", 26 });
+		labels.push_back({ row.reduced(12.0f, 0.0f),
+		                   "click to switch every label and control between normal size and "
+		                   "a larger one for HDPI screens with no OS-level scaling - "
+		                   "Standalone only, a VST3/AU host window can't be resized this way",
+		                   false });
+	}
+	area.removeFromTop(18.0f);
+
 	labels.push_back({ area.removeFromTop(15.0f), "SEQUENCER", true });
 	{
 		auto row = area.removeFromTop(28.0f);
@@ -3007,6 +3019,15 @@ void D110EditorPane::buttonPressed(int id) {
 		if (onThemeChanged) onThemeChanged();
 		return;
 	}
+	if (id == 26) {
+		const bool big = !processor.getUiFontScaleBig();
+		processor.setUiFontScaleBig(big);
+		d110ui::setFontScale(big ? d110ui::FontScale::Big : d110ui::FontScale::Normal);
+		if (onFontScaleChanged) onFontScaleChanged();
+		layout();
+		repaint();
+		return;
+	}
 	if (id == 12) {
 		processor.setDebugModeEnabled(!processor.getDebugModeEnabled());
 		layout();
@@ -3848,6 +3869,15 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 	// with the light theme should look right the moment this editor appears, including on
 	// the very first paint.
 	d110ui::setTheme(p.getUiThemeLight() ? d110ui::Theme::Light : d110ui::Theme::Dark);
+	// Same idea for the FONT SIZE toggle - see UiTheme.h's own comment on why the actual
+	// Desktop-global call only ever happens in a Standalone build: a VST3/AU instance shares
+	// its process with the host and every other plugin, so setGlobalScaleFactor() there would
+	// resize the DAW itself, not just this editor.
+	d110ui::setFontScale(p.getUiFontScaleBig() ? d110ui::FontScale::Big : d110ui::FontScale::Normal);
+#if JucePlugin_Build_Standalone
+	juce::Desktop::getInstance().setGlobalScaleFactor(
+		p.getUiFontScaleBig() ? d110ui::kBigScaleFactor : 1.0f);
+#endif
 	// Same idea for the editor pane's own height - read before totalRefHeight() is first
 	// called just below, so a project saved with a resized drawer opens already that size.
 	editorPaneRefH = juce::jlimit(kMinPaneRefH, kMaxPaneRefH, p.getEditorPaneRefH());
@@ -3928,6 +3958,15 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 		sequencerPanel.repaint();
 		sequencerRetroPanel.repaint();
 		repaint();
+	};
+
+	// The FONT SIZE toggle's actual effect - process-wide, Standalone-only, see UiTheme.h's
+	// own comment on why a VST3/AU build never calls this.
+	editorPane.onFontScaleChanged = [this] {
+#if JucePlugin_Build_Standalone
+		juce::Desktop::getInstance().setGlobalScaleFactor(
+			processor.getUiFontScaleBig() ? d110ui::kBigScaleFactor : 1.0f);
+#endif
 	};
 
 	// No ROMs found on this launch (or the auto-scan failed for some other reason) - offer

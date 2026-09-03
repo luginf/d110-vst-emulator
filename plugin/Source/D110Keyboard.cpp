@@ -43,6 +43,7 @@ D110Keyboard::D110Keyboard(D110KeyboardHost &h) : host(h) {
 	midiRemap = host.getMidiRemap();
 	pcKeyboardEnabled = host.getKeyboardPcInputEnabled();
 	pcLayout = host.getKeyboardPcLayout() == 1 ? PcLayout::azerty : PcLayout::qwerty;
+	numOctaves = juce::jlimit(1, 4, host.getKeyboardNumOctaves());
 
 	pcKeyDown.assign(trackerKeys().size(), false);
 	setWantsKeyboardFocus(true);
@@ -106,8 +107,8 @@ void D110Keyboard::showContextMenu(int noteForHold) {
 	m.addItem(4000, "PC keyboard input (tracker-style)", true, pcKeyboardEnabled);
 	m.addSubMenu("PC keyboard layout", layoutMenu, pcKeyboardEnabled);
 	m.addSeparator();
-	// Session-only, not persisted (unlike the settings above) - same status as octaveShift,
-	// which also resets to 0 on every relaunch rather than being written back through `host`.
+	// Persisted through `host` since 2026-09-03 (Alan's request) - unlike octaveShift, which
+	// stays session-only and resets to 0 on every relaunch.
 	m.addItem(6000, "4-octave keyboard (wide)", true, numOctaves == 4);
 
 	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
@@ -142,6 +143,7 @@ void D110Keyboard::showContextMenu(int noteForHold) {
 		}
 		if (result == 6000) {
 			setNumOctaves(numOctaves == 4 ? 2 : 4);
+			host.setKeyboardNumOctaves(numOctaves);
 			return;
 		}
 	});
@@ -335,6 +337,22 @@ void D110Keyboard::paint(juce::Graphics &g) {
 	for (const auto &k : blackKeys) {
 		g.setColour(isLit(k.note) ? pal.keyBlackHeld : pal.keyBlack);
 		g.fillRect(k.bounds);
+	}
+
+	// "C3"/"C4"/... above every C key, so a keyboard spanning several octaves (see
+	// setNumOctaves()) can be read at a glance rather than counted - Alan's request,
+	// 2026-09-03, from doing PCM listening tests on the D-50's 4-octave keyboard where
+	// telling two C's apart otherwise means counting white keys. Same octave-numbering
+	// convention already used elsewhere in this file (showContextMenu()'s "Hold note" item):
+	// octaveNumForMiddleC = 4, so note 60 is "C4". Left-aligned rather than centred: a C key's
+	// right edge often sits under the neighbouring black key (see rebuildKeys()), which would
+	// otherwise clip a centred label.
+	g.setFont(juce::FontOptions(juce::jlimit(8.0f, 11.0f, keysBounds.getHeight() * 0.12f)));
+	for (const auto &k : whiteKeys) {
+		if (k.note % 12 != 0) continue;
+		g.setColour((isLit(k.note) ? pal.keyWhiteHeld : pal.keyWhite).contrasting(0.7f));
+		g.drawText("C" + juce::String(k.note / 12 - 1), k.bounds.withTrimmedLeft(3.0f).removeFromTop(13.0f),
+		           juce::Justification::centredLeft);
 	}
 
 	// Always shown, not just when shifted: it's the only hint of what -/+ actually do.

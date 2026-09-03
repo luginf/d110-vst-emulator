@@ -335,6 +335,8 @@ public:
 	// enum, so this header doesn't need to know that type exists.
 	int getKeyboardPcLayout() const override { return keyboardPcLayout; }
 	void setKeyboardPcLayout(int layout) override { keyboardPcLayout = juce::jlimit(0, 1, layout); }
+	int getKeyboardNumOctaves() const override { return keyboardNumOctaves; }
+	void setKeyboardNumOctaves(int numOctaves) override { keyboardNumOctaves = juce::jlimit(1, 4, numOctaves); }
 	// See D110KeyboardHost.h and handleIncomingMidiMessage(const juce::MidiMessage &)'s own
 	// comment for where remoteNoteActive actually gets written.
 	bool isNoteActive(int note) const override {
@@ -355,6 +357,15 @@ public:
 	// as before (uiThemeLight alone, follow defaulting off) - see setStateInformation().
 	bool getUiThemeFollowSystem() const { return uiThemeFollowSystem; }
 	void setUiThemeFollowSystem(bool follow) { uiThemeFollowSystem = follow; }
+
+	// Normal/Big text and control size (Utility tab -> FONT SIZE) - Alan's request,
+	// 2026-09-03, for HDPI screens with no OS-level scaling. Just the persisted preference,
+	// same status as uiThemeLight above; actually applying it (d110ui::setFontScale() plus
+	// juce::Desktop::getInstance().setGlobalScaleFactor(), Standalone-only - see UiTheme.h's
+	// own comment on why) is D110AudioProcessorEditor's job, done once at construction and
+	// again on every toggle.
+	bool getUiFontScaleBig() const { return uiFontScaleBig; }
+	void setUiFontScaleBig(bool big) { uiFontScaleBig = big; }
 
 	// Whether the sequencer drawer shows the classic graphical panel or the D-20-style
 	// LCD+9-button retro view - see D110SequencerRetroPanel.h. Toggled from D110Panel's
@@ -968,6 +979,7 @@ private:
 	bool midiRemap = false;
 	bool keyboardPcInput = false;
 	int keyboardPcLayout = 0;
+	int keyboardNumOctaves = 2;
 
 	// See isNoteActive() above - one flag per MIDI note number, written from the audio thread
 	// (handleIncomingMidiMessage(const juce::MidiMessage&), the single point every note
@@ -979,6 +991,8 @@ private:
 	bool uiThemeLight = false;
 	// See getUiThemeFollowSystem()/setUiThemeFollowSystem() above.
 	bool uiThemeFollowSystem = false;
+	// See getUiFontScaleBig()/setUiFontScaleBig() above.
+	bool uiFontScaleBig = false;
 
 	// See getSoundbankDatabase() above.
 	d110bank::Database soundbankDb;

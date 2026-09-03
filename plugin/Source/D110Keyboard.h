@@ -48,7 +48,10 @@ public:
 	// D-50 editor that span a wider range than two octaves comfortably reach). Clamped to
 	// [1,4] - nothing in rebuildKeys() (the trailing-C
 	// guard, the tracker PC-keyboard mapping, which spans a fixed semitone range independent
-	// of how many are actually drawn) assumes a particular count.
+	// of how many are actually drawn) assumes a particular count. Only ever called from
+	// showContextMenu() below and from the constructor's restore of host.getKeyboardNumOctaves()
+	// - callers that don't go through the host's persisted value (Android's Options menu, still
+	// session-only) pass n directly without touching that accessor.
 	void setNumOctaves(int n) {
 		n = juce::jlimit(1, 4, n);
 		if (n == numOctaves) return;

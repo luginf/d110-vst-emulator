@@ -122,6 +122,8 @@ public:
 	void setKeyboardPcInputEnabled(bool enabled) override { keyboardPcInput = enabled; }
 	int getKeyboardPcLayout() const override { return keyboardPcLayout; }
 	void setKeyboardPcLayout(int layout) override { keyboardPcLayout = juce::jlimit(0, 1, layout); }
+	int getKeyboardNumOctaves() const override { return keyboardNumOctaves; }
+	void setKeyboardNumOctaves(int numOctaves) override { keyboardNumOctaves = juce::jlimit(1, 4, numOctaves); }
 	// See D110KeyboardHost.h and advance()'s own comment for where remoteNoteActive actually
 	// gets written.
 	bool isNoteActive(int note) const override {
@@ -262,6 +264,7 @@ private:
 	bool midiRemap = true;
 	bool keyboardPcInput = false;
 	int keyboardPcLayout = 0;
+	int keyboardNumOctaves = 2;
 
 	bool uiThemeLight = false;
 	bool sequencerRetroMode = false;

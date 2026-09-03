@@ -7,9 +7,15 @@
 
 #include "../../../d50/D5RomLoader.h"
 #include "../../../d50/D5SyxLoader.h"
+#include "../sequencer/D110SequencerSongsFile.h"
 
 D50AudioProcessor::D50AudioProcessor()
     : juce::AudioProcessor(BusesProperties().withOutput("Output", juce::AudioChannelSet::stereo(), true)) {
+    // Purely cosmetic/export-only, same reasoning as the class comment on the
+    // D110SequencerHost overrides - the bridge itself never looks at channel. A plain
+    // trackIndex+1 keeps each track's MIDI-file representation on its own channel without
+    // implying any D-110-style Part/Rhythm meaning the D-50 doesn't have.
+    sequencerEngine.setChannelSource([](int trackIndex) { return juce::jlimit(1, 16, trackIndex + 1); });
 }
 
 D50AudioProcessor::~D50AudioProcessor() = default;
@@ -297,6 +303,45 @@ void D50AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mid
         for (const auto metadata : fromKeyboard) midiMessages.addEvent(metadata.getMessage(), metadata.samplePosition);
     }
 
+    // Sequencer capture: accepts ANY incoming channel while a track is armed, not just
+    // whatever channelForTrack(armed) happens to be - unlike D110AudioProcessor's own
+    // equivalent, which matches channel because several D-110 Parts can arrive at once
+    // over their own distinct channels from a DAW. That doesn't apply here: the bridge is
+    // channel-blind (see injectTestNote()'s own comment), and injectTestNote() itself
+    // already collapses the on-screen keyboard's broadcast onto channel 1 unless MIDI
+    // Remap points it elsewhere, so matching the armed track's own channel would silently
+    // break recording from the keyboard for every track but the first. Same reasoning
+    // NonetSeqHost's own single-controller setup uses.
+    const double beatsPerSample = (sequencerEngine.getTempo() / 60.0) / hostSampleRate;
+    const double windowStartBeats = sequencerEngine.getPositionBeats();
+    const int armed = sequencerEngine.isRecording() ? sequencerEngine.getArmedTrack() : -1;
+    if (armed >= 0) {
+        for (const auto meta : midiMessages) {
+            const auto &msg = meta.getMessage();
+            if (msg.isNoteOnOrOff())
+                sequencerEngine.captureEvent(
+                    msg, windowStartBeats + static_cast<double>(meta.samplePosition) * beatsPerSample);
+        }
+    }
+    const int stepArmed = sequencerEngine.isStepRecording() ? sequencerEngine.getArmedTrack() : -1;
+    if (stepArmed >= 0) {
+        for (const auto meta : midiMessages) {
+            const auto &msg = meta.getMessage();
+            if (msg.isNoteOn()) sequencerEngine.stepNoteOn(msg.getNoteNumber(), msg.getVelocity());
+            else if (msg.isNoteOff()) sequencerEngine.stepNoteOff(msg.getNoteNumber());
+        }
+    }
+
+    // Rendered into its own buffer first, then merged into midiMessages - same reasoning as
+    // PluginProcessor.cpp's identically-shaped block (keeps sequencer-played notes visibly
+    // separate from host/keyboard input until the point they're merged, in case a later
+    // change here wants to tell them apart again).
+    std::vector<d110seq::D110SequencerEngine::MetronomeClick> sequencerClicks;
+    juce::MidiBuffer sequencerOut;
+    sequencerEngine.renderInto(sequencerOut, numSamples, hostSampleRate,
+                                sequencerEngine.getMetronomeEnabled() ? &sequencerClicks : nullptr);
+    for (const auto meta : sequencerOut) midiMessages.addEvent(meta.getMessage(), meta.samplePosition);
+
     for (const auto metadata : midiMessages) handleMidiMessage(metadata.getMessage());
 
     if (buffer.getNumChannels() >= 2) {
@@ -305,13 +350,53 @@ void D50AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mid
         std::vector<float> scratchR(static_cast<size_t>(numSamples));
         renderInternal(numSamples, buffer.getWritePointer(0), scratchR.data());
     }
+
+    // Metronome click, mixed straight into the buffer AFTER the synth has rendered into it -
+    // same short decaying-sine math as PluginProcessor.cpp's identically-shaped block (see
+    // its own comment for why metronomeSamplesRemaining is checked even on blocks with no
+    // NEW click - the ~30ms decay usually outlives one audio block). Skipped when the
+    // metronome is routed through the rhythm channel instead - that real note (already
+    // inside sequencerOut, merged above) IS the click sound in that mode.
+    if ((!sequencerClicks.empty() || metronomeSamplesRemaining > 0) && !sequencerEngine.getMetronomeUseChannel10()) {
+        constexpr double kClickSeconds = 0.03;
+        const int clickTotalSamples = juce::jmax(1, static_cast<int>(hostSampleRate * kClickSeconds));
+        const float volume = sequencerEngine.getMetronomeVolume();
+        const int numOutChannels = buffer.getNumChannels();
+        int cursor = 0;
+        auto ringUpTo = [&](int endSample) {
+            for (int i = cursor; i < endSample; ++i) {
+                if (metronomeSamplesRemaining <= 0) continue;
+                const float amp = static_cast<float>(metronomeSamplesRemaining) / static_cast<float>(clickTotalSamples);
+                const float s = static_cast<float>(std::sin(metronomePhase)) * amp * 0.25f * volume;
+                metronomePhase += juce::MathConstants<double>::twoPi * metronomeFreq / hostSampleRate;
+                for (int ch = 0; ch < numOutChannels; ++ch) buffer.addSample(ch, i, s);
+                --metronomeSamplesRemaining;
+            }
+        };
+        for (const auto &click : sequencerClicks) {
+            ringUpTo(click.samplePosition);
+            cursor = click.samplePosition;
+            metronomeSamplesRemaining = clickTotalSamples;
+            metronomeFreq = click.downbeat ? 1500.0 : 1000.0;
+            metronomePhase = 0.0;
+        }
+        ringUpTo(numSamples);
+    }
+}
+
+void D50AudioProcessor::exportSequencerSongs(const juce::File &file) { d110seq::exportSongsFile(sequencerEngine, file); }
+void D50AudioProcessor::importSequencerSongs(const juce::File &file) { d110seq::importSongsFile(sequencerEngine, file); }
+
+void D50AudioProcessor::midiPanic() {
+    bridge.allNotesOff();
+    for (auto &flag : noteActiveFlags) flag.store(false, std::memory_order_relaxed);
 }
 
 juce::AudioProcessorEditor *D50AudioProcessor::createEditor() { return new D50Editor(*this); }
 
 void D50AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
     juce::MemoryOutputStream out(destData, true);
-    out.writeInt(4);  // format version
+    out.writeInt(7);  // format version
     out.writeInt(bridgeReady ? bridge.patch() : 0);
     out.writeInt(volumePercent);
     out.writeInt(keyboardMidiChannel);
@@ -320,6 +405,24 @@ void D50AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
     out.writeInt(keyboardPcLayout);
     out.writeString(selOutputId);  // by identifier, not display name - see setMidiOutputDevice()
     out.writeBool(D5_Bridge::tvfKeyfollowFixed());
+    out.writeInt(keyboardNumOctaves);
+    out.writeBool(uiFontScaleBig);
+
+    // The sequencer's 4 song slots (tempo/time-signature/all 9 tracks each) - see
+    // D110SequencerSongsFile.h. Embedded as an XML string blob since this state format is
+    // otherwise flat binary; parsed back the same way on load. A handful of engine-wide
+    // settings a session would otherwise lose ride along the same way - NOT the full set
+    // D110AudioProcessor persists (no record mode/step grid/precount/punch range yet, see
+    // project memory) - this is the mono-timbral first cut, kept deliberately small.
+    {
+        juce::XmlElement seqXml("SEQ");
+        d110seq::writeSongsXml(sequencerEngine, seqXml);
+        seqXml.setAttribute("metronomeEnabled", sequencerEngine.getMetronomeEnabled() ? 1 : 0);
+        seqXml.setAttribute("metronomeVolume", static_cast<double>(sequencerEngine.getMetronomeVolume()));
+        seqXml.setAttribute("quantizeMode", static_cast<int>(sequencerEngine.getQuantizeMode()));
+        seqXml.setAttribute("loopMode", static_cast<int>(sequencerEngine.getLoopMode()));
+        out.writeString(seqXml.toString());
+    }
 }
 
 void D50AudioProcessor::setStateInformation(const void *data, int sizeInBytes) {
@@ -344,6 +447,24 @@ void D50AudioProcessor::setStateInformation(const void *data, int sizeInBytes) {
         // that had the corrected direction hard-coded, so the default the
         // engine already holds is the right one to keep for them.
         D5_Bridge::setTvfKeyfollowFixed(in.readBool());
+    }
+    if (version >= 5) {
+        keyboardNumOctaves = in.readInt();
+    }
+    if (version >= 6) {
+        uiFontScaleBig = in.readBool();
+    }
+    if (version >= 7) {
+        std::unique_ptr<juce::XmlElement> seqXml(juce::XmlDocument::parse(in.readString()));
+        if (seqXml != nullptr) {
+            d110seq::readSongsXml(sequencerEngine, *seqXml);
+            sequencerEngine.setMetronomeEnabled(seqXml->getIntAttribute("metronomeEnabled", 1) != 0);
+            sequencerEngine.setMetronomeVolume(
+                static_cast<float>(seqXml->getDoubleAttribute("metronomeVolume", 1.0)));
+            sequencerEngine.setQuantizeMode(
+                static_cast<d110seq::QuantizeMode>(seqXml->getIntAttribute("quantizeMode", 0)));
+            sequencerEngine.setLoopMode(static_cast<d110seq::LoopMode>(seqXml->getIntAttribute("loopMode", 0)));
+        }
     }
     if (bridgeReady) {
         bridge.selectPatch(patch);

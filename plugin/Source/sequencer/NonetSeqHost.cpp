@@ -475,6 +475,7 @@ void NonetSeqHost::loadSettings() {
 		midiRemap = xml->getIntAttribute("kbdOmni", midiRemap ? 0 : 1) == 0;
 	keyboardPcInput = xml->getIntAttribute("kbdPcInput", keyboardPcInput ? 1 : 0) != 0;
 	keyboardPcLayout = juce::jlimit(0, 1, xml->getIntAttribute("kbdPcLayout", keyboardPcLayout));
+	keyboardNumOctaves = juce::jlimit(1, 4, xml->getIntAttribute("kbdNumOctaves", keyboardNumOctaves));
 	uiThemeLight = xml->getIntAttribute("uiThemeLight", uiThemeLight ? 1 : 0) != 0;
 	sequencerRetroMode = xml->getIntAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0) != 0;
 	retroKeyBindings = xml->getStringAttribute("retroKeyBindings", retroKeyBindings);
@@ -527,6 +528,7 @@ void NonetSeqHost::saveSettings() const {
 	xml.setAttribute("kbdMidiRemap", midiRemap ? 1 : 0);
 	xml.setAttribute("kbdPcInput", keyboardPcInput ? 1 : 0);
 	xml.setAttribute("kbdPcLayout", keyboardPcLayout);
+	xml.setAttribute("kbdNumOctaves", keyboardNumOctaves);
 	xml.setAttribute("uiThemeLight", uiThemeLight ? 1 : 0);
 	xml.setAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0);
 	xml.setAttribute("retroKeyBindings", retroKeyBindings);

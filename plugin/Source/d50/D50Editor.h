@@ -8,6 +8,7 @@
 
 #include "D50AudioProcessor.h"
 #include "../D110Keyboard.h"
+#include "../sequencer/D110SequencerPanel.h"
 
 // D-50 editor: patch picker, the panel's own three balance knobs (volume/
 // reverb/chorus), a first slice of real sound-parameter editing (structure
@@ -74,6 +75,21 @@ private:
     // and every timerCallback() tick (patch switches/imports/SysEx writes
     // change the byte without going through either of the first two).
     void updatePartialApplicability();
+    // FoldHandle::onToggle's target - shows/hides every component the fold covers (see
+    // FoldHandle's own comment) to match its current state. Called once from the constructor's
+    // wiring and again on every click.
+    void updatePatchEditFoldVisibility();
+    void updateSequencerFoldVisibility();
+    // What the window's total height should be for the CURRENT state of both FoldHandles -
+    // every toggle's onToggle calls setSize(getWidth(), computeContentHeight()) with this,
+    // rather than measuring/replaying a delta off whatever the layout happened to be a moment
+    // ago (fragile once two independent folds can each change size on their own). The
+    // scrolling ParamColumn grid's own height (when patchEditFold is open) is given a fixed
+    // reasonable default here, same as its initial constructed size - a user who resizes the
+    // window bigger to see more of it keeps that height until the NEXT fold toggle, which
+    // resets it back to this default (a known, minor trade-off for not tracking that
+    // separately - see FoldHandle's own comment on why this whole approach was chosen).
+    int computeContentHeight() const;
     // Re-targets partial1/partial2 and every tone-scoped ParamColumn (WG/TVF/
     // TVA per partial, P-ENV, the three LFOs, EQ/Chorus) at the lower tone's
     // blocks instead of the upper tone's, or back - the D-50 has two of these
@@ -97,6 +113,36 @@ private:
 
     private:
         juce::String line1, line2;
+    };
+
+    // Folds a whole block of the editor out of the way AND shrinks the window to match, so
+    // whatever sits below rides up rather than leaving blank space - Alan's request,
+    // 2026-09-03, "comme pour le D110": the extended editor drawer there (D110EditorPane, see
+    // PluginEditor.h) does the same. That one animates the resize and can be dragged too; this
+    // is the plain-click version - a click just flips visible/hidden and jumps straight to the
+    // new size (see D50Editor::computeContentHeight(), which every toggle calls into via
+    // setSize()) with no animation or drag-resize. Two independent instances -
+    // D50Editor::patchEditFold (Structure/Balance/PartialPanels/the scrolling ParamColumn
+    // grid) and ::sequencerFold (the D110SequencerPanel drawer) - hence the constructor-time
+    // label rather than a hardcoded one. Session-only, like D110EditorPane's own open/closed
+    // state (see D110AudioProcessorEditor::setExpanded()'s own comment - only its HEIGHT is
+    // persisted, never whether it's open) - both reset to their own default (patchEditFold
+    // open, sequencerFold closed - see D50Editor's own constructor) on every relaunch.
+    class FoldHandle : public juce::Component {
+    public:
+        explicit FoldHandle(juce::String label) : label_(std::move(label)) {}
+        void paint(juce::Graphics &g) override;
+        void mouseDown(const juce::MouseEvent &) override;
+        void setFolded(bool f) {
+            folded = f;
+            repaint();
+        }
+        bool isFolded() const { return folded; }
+        std::function<void()> onToggle;
+
+    private:
+        juce::String label_;
+        bool folded = false;
     };
 
     // One partial's sound-shaping controls: WG Waveform, PCM wave number,
@@ -221,17 +267,37 @@ private:
     // Settings access. Always constructed (a plain TextButton costs nothing
     // unused) but only wired up and shown for JucePlugin_Build_Standalone.
     juce::TextButton audioSettingsButton{"Audio/MIDI Settings..."};
+    // Normal/Big text and control size - see UiTheme.h's own d110ui::FontScale comment.
+    // Standalone only, same reasoning as audioSettingsButton just above: the Desktop-global
+    // scale call this drives would resize the DAW itself from inside a shared VST3/AU process.
+    juce::TextButton fontScaleButton{"Font: Normal"};
     // Import a whole bank (any real D-50 SysEx bulk dump) or export just the
     // currently-sounding patch, with whatever edits the Tone section above
     // made to it, as a single-patch SysEx file someone else's D-50 - or this
     // app, later - can load back in. See importSyxBank()/exportCurrentPatch().
     juce::TextButton patchMenuButton{"Patch..."};
     std::unique_ptr<juce::FileChooser> fileChooser;
+    // stock juce::LookAndFeel_V2::getOptionsForComboBoxPopupMenu() pins every ComboBox popup to
+    // a single column (PopupMenu::Options::withMaximumNumColumns(1)), so a multi-bank patch list
+    // (up to 384 entries, see D50AudioProcessor::importSyxBank()) opens as one long scrolling
+    // column - Alan's request, 2026-09-03: let it wrap into several side by side instead, the
+    // way PopupMenu already knows how to when there's room. Scoped to patchBox alone (setLook
+    // AndFeel() on the component, not the app-wide default) so no other combo box - all a
+    // handful of items - is affected.
+    class WideComboLnf : public juce::LookAndFeel_V4 {
+        juce::PopupMenu::Options getOptionsForComboBoxPopupMenu(juce::ComboBox &box, juce::Label &label) override {
+            return juce::LookAndFeel_V2::getOptionsForComboBoxPopupMenu(box, label).withMaximumNumColumns(4);
+        }
+    };
+    WideComboLnf patchBoxLnf;
     juce::ComboBox patchBox;
     LcdReadout lcd;
     juce::Label volumeLabel, reverbLabel, chorusLabel;
     juce::Slider volumeSlider, reverbSlider, chorusSlider;
 
+    // See FoldHandle's own comment - sits right where the divider line used to be drawn,
+    // above toneSectionLabel, and now draws that divider itself (see D50Editor::paint()).
+    FoldHandle patchEditFold{"PATCH EDIT"};
     juce::Label toneSectionLabel, structureLabel, balanceLabel;
     juce::TextButton toneScopeToggle{"Switch to Lower"};
     // Solo/mute for auditioning, one button per PARTIAL rather than one per
@@ -274,6 +340,14 @@ private:
     std::vector<std::pair<ParamColumn *, int>> commonScopedColumns;
 
     D110Keyboard keyboard;
+
+    // The sequencer - added 2026-09-03, Alan's request, mono-timbral first cut (see
+    // D50AudioProcessor's own D110SequencerHost overrides). Stacked below the keyboard, same
+    // drawer order the D-110 plugin uses (EditorPane, Keyboard, Sequencer, each one below the
+    // previous) - closed by default, same convention D110SequencerPanel's own class comment
+    // in PluginEditor.h documents for the D-110 plugin.
+    FoldHandle sequencerFold{"SEQUENCER"};
+    D110SequencerPanel sequencerPanel;
 
     bool wasReady = false;
     bool nativeTitleBarApplied = false;

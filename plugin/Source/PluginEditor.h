@@ -331,6 +331,11 @@ public:
 	// happens to redraw next.
 	std::function<void()> onThemeChanged;
 
+	// Utility tab's FONT SIZE toggle - fired after processor.getUiFontScaleBig() has already
+	// flipped. Only D110AudioProcessorEditor can act on it (juce::Desktop::getInstance().
+	// setGlobalScaleFactor() is process-wide, Standalone-only - see UiTheme.h's own comment).
+	std::function<void()> onFontScaleChanged;
+
 	// Utility tab's SEQUENCER toggle mirrors D110Panel's own right-click Options entry (same
 	// processor.getSequencerRetroMode() flag) - this callback exists so the owner can swap
 	// which sequencer drawer view is visible, same as D110Panel::onSequencerModeChanged does

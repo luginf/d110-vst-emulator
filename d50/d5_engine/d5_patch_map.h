@@ -335,8 +335,14 @@ inline void map_partial(const uint8_t* p, int index, VoiceSpec& v,
     s.bias_note_rel = static_cast<int8_t>((p[16] & 0x3F) - 27);
     s.bias_above = (p[16] >> 6) & 1;
     const int bias_lv = p[17] > 14 ? 14 : p[17];
+    // /64, not /128: same accumulator as the base cutoff and keyfollow below
+    // (d5_synth_voice.h's SynthPartial::note_on()), 0x081B-0x0830. Halving
+    // this (upstream PR #145, part 2 of issue #142/#142, 2026-09-03) was the
+    // firmware-disassembly correction to a same-era guess that split the
+    // difference against the keyfollow's 21/16 units/semitone - the real
+    // ratio is 85/64, not 21/16 either, see note_on()'s own comment.
     s.bias_slope = (bias_lv < 7 ? -1.0f : 1.0f)
-                   * kBiasMag[bias_lv] * (1.0f / 128.0f);
+                   * kBiasMag[bias_lv] * (1.0f / 64.0f);
 
     // ---- modulation routes
     // WG Mod LFO Mode, offset 3: OFF, (+), (-), A&L. The magnitude is not

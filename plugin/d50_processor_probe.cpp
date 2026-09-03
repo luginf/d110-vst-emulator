@@ -592,5 +592,57 @@ int main(int argc, char **argv) {
         }
         std::printf("OK: the TVF keyfollow direction switch audibly changes the sound and reads back\n");
     }
+
+    // Sequencer, added 2026-09-03 (Alan's request, mono-timbral first cut - see
+    // D50AudioProcessor's own D110SequencerHost overrides). The engine's own record/playback
+    // timing is already proven correct in isolation by sequencer_probe.cpp - what's specific
+    // to THIS class and worth checking here is that processBlock() actually wires it into the
+    // real audio path: a note captured while armed/recording, then played back with no live
+    // MIDI input at all, has to reach the bridge and come out as real audio.
+    {
+        D50AudioProcessor procSeq;
+        procSeq.setPlayConfigDetails(0, 2, sampleRate, blockSize);
+        procSeq.prepareToPlay(sampleRate, blockSize);
+        if (!procSeq.isReady()) {
+            std::fprintf(stderr, "SEQUENCER: processor not ready\n");
+            return 1;
+        }
+        auto &eng = procSeq.getSequencer();
+        eng.setTempo(120.0);
+        eng.armTrack(0);
+        eng.startRecording();
+        eng.captureEvent(juce::MidiMessage::noteOn(1, 60, (juce::uint8)100), 0.0);
+        eng.captureEvent(juce::MidiMessage::noteOff(1, 60), 2.0);  // 1 second at 120 BPM
+        eng.stopRecording();
+        eng.gotoBar(1);
+        eng.play();
+
+        juce::AudioBuffer<float> seqBuffer(2, blockSize);
+        juce::MidiBuffer noInput;
+        double sumSq = 0.0;
+        int64_t n = 0;
+        const int seqBlocks = static_cast<int>(sampleRate * 1.5 / blockSize);  // covers the 1s note
+        for (int b = 0; b < seqBlocks; ++b) {
+            seqBuffer.clear();
+            procSeq.processBlock(seqBuffer, noInput);
+            for (int ch = 0; ch < seqBuffer.getNumChannels(); ++ch) {
+                const float *d = seqBuffer.getReadPointer(ch);
+                for (int i = 0; i < seqBuffer.getNumSamples(); ++i) {
+                    sumSq += static_cast<double>(d[i]) * d[i];
+                    ++n;
+                }
+            }
+        }
+        const double seqRms = std::sqrt(sumSq / static_cast<double>(n));
+        std::printf("sequencer playback (no live MIDI input): rms=%.5f\n", seqRms);
+        if (seqRms < 1e-6) {
+            std::fprintf(stderr,
+                         "SEQUENCER SILENT: a captured note played back through processBlock() "
+                         "produced no audio - the record/playback wiring is broken\n");
+            return 1;
+        }
+        std::printf("OK: a note captured via the sequencer plays back through the real audio path, "
+                    "with no live MIDI input\n");
+    }
     return 0;
 }

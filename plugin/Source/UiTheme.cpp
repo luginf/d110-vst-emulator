@@ -183,4 +183,11 @@ LookAndFeel &sharedLookAndFeel() {
 	return laf;
 }
 
+namespace {
+FontScale currentFontScale = FontScale::Normal;
+}
+
+FontScale getFontScale() { return currentFontScale; }
+void setFontScale(FontScale scale) { currentFontScale = scale; }
+
 } // namespace d110ui
