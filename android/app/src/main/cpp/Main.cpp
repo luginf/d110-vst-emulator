@@ -28,37 +28,24 @@
 // Soundbanks view's own test-note button (Alan's request, 2026-08-30: no on-screen keyboard is
 // visible there - see resized()'s own comment on showingSoundbanks - so there was no way to
 // actually hear a browsed tone without leaving the screen). Plays while held, like a real piano
-// key (mouseDown -> note on, mouseUp -> note off) via onPress/onRelease; a long press instead
-// fires onLongPress (and releases whatever note onPress started, so it doesn't hang audibly
-// under the dialog that opens) - same gestureId-invalidation idiom SoundbankBrowser's own
-// long-press-to-context-menu uses, adapted to a single button rather than a list row.
+// key: mouseDown -> note on, mouseUp -> note off, nothing more - the pitch it plays is set
+// separately by the PITCH button next to it (wireUpSoundbankTestNote()'s own comment). This
+// used to also fire a long-press-to-open-a-dialog gesture, dropped 2026-09-03 (Alan: this
+// button is just "play continuously while held" now, no long press at all) once a dedicated
+// PITCH button took over changing the note.
 class HeldNoteButton : public juce::TextButton {
 public:
 	std::function<void()> onPress;
 	std::function<void()> onRelease;
-	std::function<void()> onLongPress;
 
 	void mouseDown(const juce::MouseEvent &e) override {
 		juce::TextButton::mouseDown(e);
-		longPressFired = false;
-		const int gestureId = ++gestureCounter;
 		if (onPress) onPress();
-		juce::Component::SafePointer<HeldNoteButton> safeThis(this);
-		juce::Timer::callAfterDelay(500, [safeThis, gestureId] {
-			if (safeThis == nullptr || gestureId != safeThis->gestureCounter) return;
-			safeThis->longPressFired = true;
-			if (safeThis->onLongPress) safeThis->onLongPress();
-		});
 	}
 	void mouseUp(const juce::MouseEvent &e) override {
 		juce::TextButton::mouseUp(e);
-		++gestureCounter; // invalidates any still-pending long-press callback for this gesture
-		if (!longPressFired && onRelease) onRelease();
+		if (onRelease) onRelease();
 	}
-
-private:
-	int gestureCounter = 0;
-	bool longPressFired = false;
 };
 
 class MainComponent : public juce::Component, private juce::Timer, private juce::MidiInputCallback {
@@ -340,12 +327,15 @@ public:
 			// after the hamburger was carved off its right side above.
 			testNoteButton.setVisible(showingSoundbanks);
 			holdButton.setVisible(showingSoundbanks);
+			pitchButton.setVisible(showingSoundbanks);
 			if (showingSoundbanks) {
 				constexpr int buttonH = 40;
 				const int btnW = juce::jmax(64, juce::roundToInt(transport.getWidth() * 0.16f));
 				testNoteButton.setBounds(transport.removeFromLeft(btnW).removeFromTop(buttonH));
 				transport.removeFromLeft(4);
 				holdButton.setBounds(transport.removeFromLeft(btnW).removeFromTop(buttonH));
+				transport.removeFromLeft(4);
+				pitchButton.setBounds(transport.removeFromLeft(btnW).removeFromTop(buttonH));
 			}
 			if (!inRetroSequencer && !showingSoundbanks) {
 				// Alan's request, 2026-08-28: Play/Stop used to split the WHOLE transport row
@@ -632,10 +622,13 @@ private:
 	}
 
 	// Soundbanks view's test-note (left, plays testNotePitch on the currently selected Part -
-	// see SoundbankBrowser::getSelectedPart()) and HOLD (right, sustains it and follows
-	// whichever tone is auditioned next) buttons - Alan's request, 2026-08-30: that view has no
-	// on-screen keyboard (see resized()'s own comment on showingSoundbanks), so there was
-	// otherwise no way to actually hear a browsed tone without leaving the screen.
+	// see SoundbankBrowser::getSelectedPart()), HOLD (sustains it and follows whichever tone is
+	// auditioned next) and PITCH (right, Alan's correction 2026-09-03: the trigger button itself
+	// no longer has any long-press gesture at all - it's just "play continuously while held",
+	// nothing more - and setting testNotePitch is this separate, dedicated button's whole job)
+	// buttons - Alan's original request, 2026-08-30: that view has no on-screen keyboard (see
+	// resized()'s own comment on showingSoundbanks), so there was otherwise no way to actually
+	// hear a browsed tone without leaving the screen.
 	void wireUpSoundbankTestNote() {
 		testNoteButton.setButtonText(juce::MidiMessage::getMidiNoteName(testNotePitch, true, true, 4));
 		testNoteButton.onPress = [this] {
@@ -651,13 +644,20 @@ private:
 			processor.injectTestNote(testButtonChannel, testButtonNote, 0.0f, false);
 			testButtonChannel = -1;
 		};
-		testNoteButton.onLongPress = [this] {
-			// The finger is still down and onPress already struck a note for it - release that
-			// now rather than leave it sounding under the modal dialog below.
-			if (testButtonChannel >= 0) {
-				processor.injectTestNote(testButtonChannel, testButtonNote, 0.0f, false);
-				testButtonChannel = -1;
-			}
+		addChildComponent(testNoteButton);
+
+		holdButton.setButtonText("HOLD");
+		holdButton.setClickingTogglesState(true);
+		holdButton.onClick = [this] {
+			if (holdButton.getToggleState()) startHeldTestNote();
+			else stopHeldTestNote();
+			updateHoldButtonColour();
+		};
+		addChildComponent(holdButton);
+		updateHoldButtonColour();
+
+		pitchButton.setButtonText("PITCH");
+		pitchButton.onClick = [this] {
 			auto *aw = new juce::AlertWindow("Test note pitch", {}, juce::AlertWindow::NoIcon);
 			// A real slider, Alan's own follow-up request, 2026-08-30 (replacing this dialog's
 			// first cut, a typed note name) - full MIDI range, its own text box shows the note
@@ -671,30 +671,12 @@ private:
 				return juce::MidiMessage::getMidiNoteName(int(v), true, true, 4);
 			};
 			slider->updateText();
-			// Live preview while dragging - strikes the note under the finger on the currently
-			// selected Part, same "test the sound" purpose as the button itself, so sliding to a
-			// pitch also tells you how it actually sounds there before you commit to it.
-			slider->onValueChange = [this, slider] {
-				if (testButtonChannel >= 0)
-					processor.injectTestNote(testButtonChannel, testButtonNote, 0.0f, false);
-				const int channel = processor.liveChannelForPart(soundbankBrowser.getSelectedPart());
-				if (channel < 0) {
-					testButtonChannel = -1;
-					return;
-				}
-				testButtonChannel = channel;
-				testButtonNote = int(slider->getValue());
-				processor.injectTestNote(channel, testButtonNote, 0.9f, true);
-			};
+			// No live audition while dragging (Alan, 2026-09-03: sounded artefacted) - the
+			// slider just picks the value, applied silently on "Set" below.
 			aw->addCustomComponent(slider);
 			aw->addButton("Set", 1, juce::KeyPress(juce::KeyPress::returnKey));
 			aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 			aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, slider](int result) {
-				// Whatever the live preview above left sounding - the dialog's closing either way.
-				if (testButtonChannel >= 0) {
-					processor.injectTestNote(testButtonChannel, testButtonNote, 0.0f, false);
-					testButtonChannel = -1;
-				}
 				if (result == 1) {
 					testNotePitch = int(slider->getValue());
 					testNoteButton.setButtonText(juce::MidiMessage::getMidiNoteName(testNotePitch, true, true, 4));
@@ -703,17 +685,7 @@ private:
 				delete aw;
 			}));
 		};
-		addChildComponent(testNoteButton);
-
-		holdButton.setButtonText("HOLD");
-		holdButton.setClickingTogglesState(true);
-		holdButton.onClick = [this] {
-			if (holdButton.getToggleState()) startHeldTestNote();
-			else stopHeldTestNote();
-			updateHoldButtonColour();
-		};
-		addChildComponent(holdButton);
-		updateHoldButtonColour();
+		addChildComponent(pitchButton);
 
 		// Alan's request, 2026-08-30: while HOLD is on, browsing to a different sound (double-
 		// tap, or any other way SoundbankBrowser auditions a tone) kills the currently-held note
@@ -767,6 +739,7 @@ private:
 		holdButton.setColour(juce::TextButton::textColourOffId, text);
 		holdButton.setColour(juce::TextButton::textColourOnId, text);
 	}
+
 
 	void chooseMidiFile() {
 		// Async dialog, so the chooser has to outlive this call - same trick as every
@@ -1181,6 +1154,11 @@ private:
 	// where they're laid out and wireUpSoundbankTestNote()'s own comment for the full behaviour.
 	HeldNoteButton testNoteButton;
 	juce::TextButton holdButton;
+	// PITCH - a third button beside HOLD, Alan's correction 2026-09-03: setting testNotePitch
+	// used to be a long-press gesture on the trigger button itself, but that's gone now (the
+	// trigger is just plain press-and-hold-to-play) - this dedicated button opens the same
+	// pitch-picker dialog on a plain click instead. See wireUpSoundbankTestNote()'s own comment.
+	juce::TextButton pitchButton;
 	int testNotePitch = 48; // C3 in this app's own convention (getMidiNoteName(n, true, true, 4))
 	// Which (channel, note) the test-note button itself last struck, if any (-1 = none) - its
 	// own press/release, independent of HOLD's own tracking below even though they usually

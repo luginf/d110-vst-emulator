@@ -305,6 +305,12 @@ public:
 	void mouseMove(const juce::MouseEvent &) override;
 	void mouseExit(const juce::MouseEvent &) override;
 	void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
+	// Arrow-key navigation: TONES tab walks the 64-slot grid the same way a click does
+	// (select + audition); PATCHES tab's PARTS OF PATCH nudges whichever cell was last
+	// clicked up/down the way the mouse wheel already does. Returns false for anything else
+	// so it bubbles up to D110AudioProcessorEditor::keyPressed() unchanged (retro sequencer
+	// D-pad, etc.) - see that method's own comment on the bubbling.
+	bool keyPressed(const juce::KeyPress &) override;
 
 	// Перечитывает память прибора. Обычно это делает таймер; отдельно вызывается снимком
 	// панели в файл, которому не на чем крутить очередь сообщений.
@@ -514,6 +520,14 @@ private:
 	int toneScroll = 0;
 	int patchSlot = 0;    // патч, чьи партии показаны на под-вкладке PARTS OF PATCH
 	int toneSlot = 0;     // выбранная ячейка памяти тонов
+	// Row count of the TONES grid's own 3 columns, as last computed by layoutTones() - kept
+	// around so keyPressed() can walk the grid without re-deriving it from tableArea/rowHeight.
+	int toneRows = 1;
+	// PATCHES tab's PARTS OF PATCH: index into `cells` of whichever field was last clicked,
+	// so Up/Down arrow keys can nudge it the same way the mouse wheel already does. -1 means
+	// nothing focused (cleared whenever a click misses every cell). Stable across repaints/
+	// timer refreshes since those never call layout() (which is what rebuilds `cells`).
+	int focusedPatchCell = -1;
 
 	// See PatchesSubTab's own comment.
 	PatchesSubTab patchesSubTab = PatchesSubTab::AllPatches;

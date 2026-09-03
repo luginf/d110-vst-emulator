@@ -1063,6 +1063,9 @@ const char *const kPcmBank2Names[128] = {
 
 D110EditorPane::D110EditorPane(D110AudioProcessor &p) : processor(p), soundbankBrowser(p) {
 	setOpaque(true);
+	// So arrow keys reach keyPressed() below right after a click here, the same pattern
+	// D110Keyboard already uses (grabs focus on every mouseDown, see its own comment).
+	setWantsKeyboardFocus(true);
 	ram.assign(D110CoreType::kRamSize, 0);
 
 	// Hidden until the SOUNDBANKS tab is selected (layout()'s own Tab::Soundbanks case) - a
@@ -1724,6 +1727,7 @@ void D110EditorPane::layoutTones(juce::Rectangle<float> area) {
 	tableArea = area;
 	rowHeight = juce::jlimit(18.0f, 26.0f, area.getHeight() / 12.0f);
 	const int rows = juce::jmax(1, int(area.getHeight() / rowHeight));
+	toneRows = rows;
 	toneScroll = juce::jlimit(0, juce::jmax(0, D110CoreType::kNumTones - rows * 3), toneScroll);
 	const float colW = w / 3.0f;
 	for (int col = 0; col < 3; ++col)
@@ -2798,7 +2802,8 @@ void D110EditorPane::paint(juce::Graphics &g) {
 			paintPartialMuteCell(g, c, int(i) == hovered);
 			continue;
 		}
-		drawBox(g, c.bounds, int(i) == hovered || int(i) == dragging);
+		drawBox(g, c.bounds, int(i) == hovered || int(i) == dragging
+		                     || (tab == Tab::Patches && int(i) == focusedPatchCell));
 		g.setColour(kEdValue());
 		g.drawText(textOf(c), c.bounds.reduced(6.0f, 0.0f), juce::Justification::centredLeft);
 	}
@@ -3427,6 +3432,7 @@ void D110EditorPane::showPcmWaveMenu(const Cell &pcmCell) {
 
 void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 	const auto p = e.position;
+	grabKeyboardFocus();
 	if (!optionsButtonBounds.isEmpty() && optionsButtonBounds.contains(p)) {
 		if (onOptionsButtonClicked) onOptionsButtonClicked();
 		return;
@@ -3629,6 +3635,10 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 	}
 
 	dragging = cellAt(p);
+	// PARTS OF PATCH: whatever cell the click landed on (or -1, clicking away clears it)
+	// becomes the target for Up/Down arrow-key nudges, mirroring the mouse wheel's own
+	// "whatever cell is under the cursor" reach - see keyPressed().
+	if (tab == Tab::Patches) focusedPatchCell = dragging;
 	if (dragging < 0) return;
 	dragStartY = p.y;
 	dragStartValue = valueOf(cells[(size_t)dragging]);
@@ -3694,6 +3704,51 @@ void D110EditorPane::mouseWheelMove(const juce::MouseEvent &e, const juce::Mouse
 	else return;
 	layout();
 	repaint();
+}
+
+bool D110EditorPane::keyPressed(const juce::KeyPress &key) {
+	const bool up = key.isKeyCode(juce::KeyPress::upKey);
+	const bool down = key.isKeyCode(juce::KeyPress::downKey);
+	const bool left = key.isKeyCode(juce::KeyPress::leftKey);
+	const bool right = key.isKeyCode(juce::KeyPress::rightKey);
+	if (!up && !down && !left && !right) return false;
+
+	// TONES: walk the 3-column grid built in layoutTones() - column-major, so col/r come
+	// from dividing the linear slot number by the row count, same math as that layout.
+	// Consumes the key even at a grid edge (nothing to move to) so it doesn't leak up to the
+	// retro sequencer's own D-pad handling while this tab is what the user is navigating.
+	if (tab == Tab::Tones) {
+		const int rows = juce::jmax(1, toneRows);
+		int col = (toneSlot - toneScroll) / rows;
+		int r = (toneSlot - toneScroll) % rows;
+		if (up)        { if (r > 0) --r; else return true; }
+		else if (down) { if (r < rows - 1) ++r; else return true; }
+		else if (left) { if (col > 0) --col; else return true; }
+		else           { if (col < 2) ++col; else return true; }
+		const int newSlot = toneScroll + col * rows + r;
+		if (newSlot < 0 || newSlot >= D110CoreType::kNumTones) return true;
+		// Same as clicking the slot Button in mouseDown()'s generic button loop - id 100+slot -
+		// select AND audition in one move.
+		toneSlot = newSlot;
+		processor.auditionTone(part, toneSlot);
+		layout();
+		repaint();
+		return true;
+	}
+
+	// PARTS OF PATCH: Up/Down nudges whichever cell was last clicked, the same as the mouse
+	// wheel already does to whatever cell is under the cursor.
+	if (tab == Tab::Patches && patchesSubTab == PatchesSubTab::PartsOfPatch
+	    && (up || down) && focusedPatchCell >= 0 && focusedPatchCell < int(cells.size())) {
+		const Cell &c = cells[(size_t)focusedPatchCell];
+		const int v = valueOf(c);
+		if (v < 0) return true;
+		setValue(c, v + (up ? 1 : -1));
+		repaint();
+		return true;
+	}
+
+	return false;
 }
 
 // ---------------------------------------------------------------------------
