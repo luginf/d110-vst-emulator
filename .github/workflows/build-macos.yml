@@ -35,10 +35,23 @@ jobs:
           path: plugin/build/_deps/juce-src
           key: juce-8.0.15-macos-native-v1
 
+      # Universal binary (arm64 + x86_64) in one build, on the same free
+      # standard macos-latest runner - Alan asked for Intel Mac support,
+      # 2026-09-03. macos-latest is Apple Silicon (arm64) now, and GitHub
+      # dropped free/standard Intel macOS runners entirely: the only Intel
+      # option left is a "large" runner SKU, billed per minute even on
+      # public repos (see docs/README's own note on this). Xcode's own
+      # toolchain on an arm64 host can already cross-compile the x86_64
+      # slice without any Intel hardware at all - CMAKE_OSX_ARCHITECTURES
+      # just asks the linker for both, `lipo`-ing them into one Mach-O.
+      # Confirmed nothing in this tree needs per-architecture code (no
+      # -march=native, no NEON/SSE intrinsics anywhere in plugin/CMakeLists.txt
+      # or munt's own CMake) - plain portable C++ throughout, so there is no
+      # reason this ever needs two separate jobs.
       - name: Configure plugin
         working-directory: plugin
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 
       - name: "Build D110EmulatorNative (VST3 + Standalone + AU)"
         working-directory: plugin
