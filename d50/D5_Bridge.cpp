@@ -266,10 +266,11 @@ void D5_Bridge::selectPatch(int index) {
 // mid-chord, which on hardware reads as a fault in the knob.
 void D5_Bridge::applyLevels() {
     patch_.set_volume(baseVolume_ * volume_ * 0.01f);
-    // Through the same curves the patch mapping uses, so the panel's number
-    // means what the D-50's own parameter means: the reverb balance rides
-    // the amount family (x^1.8), the chorus balance is linear.
-    patch_.set_reverb_balance(d5::kAmountCurve[reverb_ > 100 ? 100 : reverb_]);
+    // Linear, matching the patch mapping (upstream PR #150, 2026-09-03): the
+    // D-50's own crossfade law (wet up to full at balance 50, dry down from
+    // 50) lives in Reverb::process itself now, not in this panel-byte curve -
+    // see d5_patch_map.h's own comment on p.reverb.balance.
+    patch_.set_reverb_balance((reverb_ > 100 ? 100 : reverb_) * 0.01f);
     patch_.set_chorus_balance(chorus_ * 0.01f);
     patch_.set_master_cents(static_cast<float>(tune_));
 }
@@ -309,9 +310,9 @@ void D5_Bridge::setChorusRate(int v) {
 
 void D5_Bridge::setChorusDepth(int v) {
     choDepth_ = clampTo(v, 100);
-    // The depth family the whole machine uses: read linearly, a patch
-    // asking for a breath of chorus got half a semitone of it.
-    patch_.set_chorus_depth(d5::kDepthCurve[choDepth_]);
+    // Linear (upstream PR #147, 2026-09-03), not the pitch-mod depth curve -
+    // see d5_patch_map.h's own comment on tone.chorus.depth.
+    patch_.set_chorus_depth(choDepth_ * 0.01f);
 }
 
 void D5_Bridge::applyEq() {

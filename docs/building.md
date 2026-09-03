@@ -29,6 +29,17 @@ The built `.vst3` is copied automatically to the platform's shared VST3 folder
 (`C:\Program Files\Common Files\VST3` on Windows, `~/Library/Audio/Plug-Ins/VST3` on macOS,
 `~/.vst3` on Linux).
 
+### macOS: Intel (x86_64) and Apple Silicon (arm64)
+
+Building on an actual Intel Mac needs nothing special - the commands above already produce a
+binary for whatever Mac you run them on. The official release binaries, though, are built on
+an Apple Silicon CI runner; to also cover Intel Macs, add
+`-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"` to the `cmake -B build -S .` line above. Xcode's
+toolchain can cross-compile the x86_64 slice from an arm64 Mac (and vice versa) with no other
+hardware involved - the two slices are `lipo`-combined into one universal `.app`/`.vst3`
+automatically, which is exactly how the project's own release zips are built (see
+`.github/workflows/build-macos.yml`).
+
 ### Optional: JACK MIDI input port (Linux Standalone only)
 
 If libjack's dev headers are found at configure time (`libjack-dev`/`libjack-jackd2-dev`, or

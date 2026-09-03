@@ -131,25 +131,33 @@ private:
 
 // ------------------------------------------------------------------ chorus
 
-// The eight types differ in how many voices move, how far apart they sit and
-// whether the delayed signal is fed back; rate, depth and balance are the
-// panel's own controls on top.
+// The eight panel types by the Owner's Manual's names (p. 29): Chorus 1,
+// Chorus 2, Flanger 1, Flanger 2, Feedback Chorus, Tremolo, Chorus Tremolo,
+// Dimension. Two of them are measured on Roland's D-50 VST with one
+// sawtooth partial, chorus balance 100 (wet only), reverb off (03.09.2026):
+// type 1 is a single modulated delay whose two outputs sweep in opposite
+// directions and are each other's inverse (depth 0: L = -R exactly), and
+// type 6 is a stereo tremolo with no pitch modulation at all, its two
+// sides in counter-phase, about 15 dB deep at panel depth 50 and running
+// at twice the chorus LFO. The base delays, spreads, feedbacks and voice
+// counts of the other six are still by name only.
 struct ChorusType {
     float base_ms;
     float spread_ms;
-    int voices;
+    int voices;          // modulated delay reads; 0 = no delay at all
     float feedback;
+    bool tremolo;        // amplitude modulation on top (types 6 and 7)
 };
 
 inline constexpr ChorusType kChorusTypes[8] = {
-    {12.0f, 0.0f,  1, 0.00f},   // 1  single voice, gentle
-    {18.0f, 0.0f,  1, 0.20f},   // 2  deeper, a little feedback
-    {10.0f, 6.0f,  2, 0.00f},   // 3  two voices apart
-    {14.0f, 9.0f,  2, 0.15f},   // 4
-    { 8.0f, 5.0f,  3, 0.00f},   // 5  three voices, ensemble
-    {16.0f, 11.0f, 3, 0.10f},   // 6
-    { 3.5f, 1.5f,  2, 0.45f},   // 7  short and resonant, flanger-ish
-    { 2.0f, 0.8f,  2, 0.60f},   // 8
+    {12.0f, 0.0f,  1, 0.00f, false},   // 1  Chorus 1 (measured)
+    {18.0f, 0.0f,  1, 0.20f, false},   // 2  Chorus 2
+    { 2.0f, 0.0f,  1, 0.50f, false},   // 3  Flanger 1
+    { 3.5f, 0.0f,  1, 0.70f, false},   // 4  Flanger 2
+    {12.0f, 0.0f,  1, 0.45f, false},   // 5  Feedback Chorus
+    { 0.0f, 0.0f,  0, 0.00f, true },   // 6  Tremolo (measured)
+    {12.0f, 0.0f,  1, 0.00f, true },   // 7  Chorus Tremolo
+    { 8.0f, 5.0f,  2, 0.00f, false},   // 8  Dimension
 };
 
 struct ChorusSpec {
@@ -166,8 +174,7 @@ public:
         spec_ = spec;
         sr_ = sr;
         phase_ = 0.0f;
-        // 0.098 .. 20 Hz per the specification sheet's "CHORUS LFO"
-        inc_ = (0.098f * std::pow(20.0f / 0.098f, clamp01(spec.rate))) / sr;
+        inc_ = rate_hz(spec.rate) / sr;
         for (int i = 0; i < kMaxDelay; ++i) buf_[i] = 0.0f;
         write_ = 0;
     }
@@ -181,8 +188,21 @@ public:
     void set_depth(float d) { spec_.depth = clamp01(d); }
     void set_rate(float r) {
         spec_.rate = clamp01(r);
-        inc_ = (0.098f * std::pow(20.0f / 0.098f, spec_.rate)) / sr_;
+        inc_ = rate_hz(spec_.rate) / sr_;
     }
+
+    // Panel rate to Hz, from the VST's wet pitch modulation: 1.3-1.6 Hz at
+    // panel 50, 7.4 Hz at 100, about half a hertz at 0 -- an exponential of
+    // 0.28 Hz to 7.4 Hz. The specification sheet's 0.098-20 Hz that stood
+    // here was the chip's range, not the panel's.
+    static float rate_hz(float r) { return 0.28f * std::pow(26.0f, clamp01(r)); }
+    // Panel depth to the delay swing, linear: +-2.4 ms at 100, +-1.1 to
+    // 2.1 at 50 on the VST (rms of the wet's pitch track with the quiet
+    // moments dropped -- percentiles of that track count the spikes where
+    // the sweeping wet cancels, and read four times too much; that first
+    // reading turned Arco Strings into a swarm of bees). Through the
+    // pitch-mod depth curve it was 0.125 ms at 50.
+    static constexpr float kSwingMs = 2.4f;
 
     // Mono is the L/MONO jack of the real unit: dry + wet, exactly what the
     // left side carries. Averaging l and r would cancel the anti-phase wet
@@ -193,25 +213,46 @@ public:
         return l;
     }
 
-    // Stereo the way the Roland effects of the era do it: left gets
-    // dry + wet, right gets dry - wet. The same modulated wet, inverted --
-    // even a whisper of depth then opens the field around a steady center,
-    // which is the chorus width the instrument is known for. The mono path
-    // above takes the left side (dry + wet), identical to the fold a L/MONO
-    // jack hears on the real unit.
+    // Stereo the way the Roland effects of the era do it, and the way the
+    // VST measures: the left side takes dry + wet, the right side dry minus
+    // a second wet whose delay sweeps the other way. At depth 0 the two
+    // wets coincide and the sides are exact inverses (VST: correlation
+    // -1.00); with depth the sweeps pull them apart. The reverb no longer
+    // sees this pair -- it has its own mono send (Reverb::process) -- so
+    // the inversion can be exact without starving the room.
     void D5_HOT(process)(float x, float& l, float& r) {
         const ChorusType& t = kChorusTypes[clamp_index(spec_.type, 8)];
-        float wet = 0.0f;
-        for (int v = 0; v < t.voices; ++v) {
-            const float ph = phase_ + static_cast<float>(v) / t.voices;
-            const float ms = t.base_ms + t.spread_ms * v +
-                             clamp01(spec_.depth) * 4.0f * fast_sin(ph);   // wraps on its own
-            const float ds = ms * 0.001f * sr_;
-            wet += read(ms * 0.001f * sr_);
+        const float d = clamp01(spec_.depth);
+        float wl = 0.0f, wr = 0.0f;
+        if (t.voices == 0) {
+            wl = x;
+            wr = x;
+        } else {
+            const float swing = d * kSwingMs;
+            for (int v = 0; v < t.voices; ++v) {
+                const float ph = phase_ + static_cast<float>(v) / t.voices;   // wraps on its own
+                const float ms = t.base_ms + t.spread_ms * v;
+                // The right side sweeps 0.3 of a turn behind the left, not
+                // half: the VST's two pitch tracks correlate at -0.2 to -0.6
+                // across depths and rates, a pure counter-sweep would sit
+                // at -1 and coincide with the left twice per cycle.
+                wl += read((ms + swing * fast_sin(ph)) * 0.001f * sr_);
+                wr += read((ms + swing * fast_sin(ph + 0.3f)) * 0.001f * sr_);
+            }
+            wl /= static_cast<float>(t.voices);
+            wr /= static_cast<float>(t.voices);
         }
-        wet /= static_cast<float>(t.voices);
+        if (t.tremolo) {
+            // Counter-phased amplitude modulation at twice the LFO rate
+            // (VST type 6: 2.65 Hz at panel rate 50 against 1.26 Hz of
+            // pitch sweep on type 1), about 14 dB deep at panel depth 50.
+            const float m = d * 1.6f > 1.0f ? 1.0f : d * 1.6f;
+            const float sq = fast_sin(2.0f * phase_);
+            wl *= 1.0f - m * 0.5f * (1.0f + sq);
+            wr *= 1.0f - m * 0.5f * (1.0f - sq);
+        }
 
-        buf_[write_] = x + wet * t.feedback;
+        buf_[write_] = x + wl * t.feedback;
         if (++write_ >= kMaxDelay) write_ = 0;
 
         phase_ += inc_;
@@ -219,21 +260,8 @@ public:
 
         const float b = clamp01(spec_.balance);
         const float dry = x * (1.0f - b);
-        l = dry + wet * b;
-        // The right side takes the wet inverted, but NOT exactly: at a
-        // perfect inversion the two sides cancel the moment the dry is
-        // gone, and the reverb -- which folds its stereo input to mono the
-        // way the Boss chip does -- then receives nothing at all. Eighteen
-        // factory patches sit at chorus balance 100 (Griitttarr, Staccato
-        // Heaven, Calliope ...) with reverb balances of 36 to 50, so on the
-        // real machine a full-wet chorus certainly does reach the room --
-        // and such a patch would vanish entirely on a mono desk, which
-        // Roland would not ship. A real stereo chorus decorrelates its two
-        // sides rather than negating one; 0.7 keeps almost all of the width
-        // (-1.4 dB of side) while leaving the sum alive. The dry path of the
-        // left side is untouched; what does change there is the reverb's
-        // contribution, because the room now hears the chorus at all.
-        r = dry - wet * b * 0.7f;
+        l = dry + wl * b;
+        r = dry - wr * b;
     }
 
 private:
@@ -269,12 +297,22 @@ private:
 
 // The thirty-two panel types, mapped onto the Boss core of the sister
 // machine (see the file header) plus a tapped delay line for the delay
-// family. Type names follow the panel list; the T60 anchors measured from
-// the reference recordings (type 3 Large Hall 5.4 s, type 4 Chapel 3.6 s,
-// type 2 Medium Hall 3.2 s, type 9 1.6 s, type 32 6.0 s) pick the time
-// index inside each mode. The wet column normalizes the steady-state wet
-// level to a constant across time settings (measured on the model: -13.0
-// to -6.5 dBFS over time 0..7, normalized to -11).
+// family. Type names follow the panel list; rows are zero-based (pb30),
+// the panel shows row + 1. Decay times are calibrated on Roland's D-50
+// VST (one note, reverb balance 100, per type), as the slope of the late
+// tail 0.8 to 2.6 s after the note -- the same metric on both sides; an
+// energy-decay fit from the first 100 ms reads 30 % shorter on this
+// core: Small Hall 1.6 s, Medium Hall 2.9, Large Hall 3.2, Chapel 6.4,
+// Medium Large Room 2.0, Large Room 2.1 (its sides inverted, correlation
+// -0.95); the VST's tail decays alike in every band; the short rooms and the
+// gates hide under the source's own 55 dB/s release there, so they only
+// carry an upper bound of about a second. The delays showed the direct
+// copy on the right and the delayed tap on the left, at 0.35..0.5 of it,
+// Delay 248 with the left side inverted; the feedback follows the measured
+// tails (2.7 s at 248 ms, 2.4 s at 252 ms). The Boss loop is stable only
+// below fb 0.625 (DC loop gain fb/(1 - 0.375)); the wet column holds the
+// steady-state level of the wet part near -3 dB re the send at balance 1,
+// the delays' right side included.
 struct ReverbType {
     int mode;               // 0 room, 1 hall, 2 plate, 3 tapped delay
     int time;               // Boss feedback index 0..7 (modes 0..2)
@@ -289,41 +327,44 @@ struct ReverbType {
                             // decay anchors (measured tail dB/s of the
                             // reference recordings) land between them, so
                             // these interpolate while keeping the geometry.
+    float echo = 1.0f;      // mode 3: gain of the left (delayed) tap, sign =
+                            // its polarity; the right tap is the direct copy
+    float pol_r = 1.0f;     // polarity of the right wet side (-1 inverts)
 };
 
 inline constexpr ReverbType kReverbTypes[32] = {
-    {1, 1, 1.23f,   0,   0, 0.0f,   0.0f,   0.0f, 0.0000f}, //  1 Small Hall
-    {1, 6, 0.85f,   0,   0, 0.0f,   0.0f,   0.0f, 0.5469f}, //  2 Medium Hall  (anchor -10.5 dB/s, fb 8C)
-    {1, 5, 0.89f,   0,   0, 0.0f,   0.0f,   0.0f, 0.5312f}, //  3 Large Hall   (anchor -12 dB/s, fb 88)
-    {1, 5, 0.95f,   0,   0, 0.0f,   0.0f,   0.0f, 0.5078f}, //  4 Chapel       (T60 3.6, anchor 3.6, fb 82)
+    {1, 1, 1.23f,   0,   0, 0.0f,   0.0f,   0.0f, 0.3550f}, //  1 Small Hall   (VST late tail 1.6 s)
+    {1, 6, 0.85f,   0,   0, 0.0f,   0.0f,   0.0f, 0.4680f}, //  2 Medium Hall  (VST late tail 2.9 s)
+    {1, 5, 0.89f,   0,   0, 0.0f,   0.0f,   0.0f, 0.4830f}, //  3 Large Hall   (VST late tail 3.2 s)
+    {1, 5, 0.95f,   0,   0, 0.0f,   0.0f,   0.0f, 0.5620f}, //  4 Chapel       (VST late tail 6.4 s)
     {0, 0, 1.26f,   0,   0, 0.0f,   0.0f,   0.0f, 0.0000f}, //  5 Box
     {2, 2, 1.02f,   0,   0, 0.0f,   0.0f,   0.0f, 0.0000f}, //  6 Small Metal Room (plate ring)
     {0, 1, 1.20f,   0,   0, 0.0f,   0.0f,   0.0f, 0.0000f}, //  7 Small Room   (T60 0.9)
-    {0, 3, 1.00f,   0,   0, 0.0f,   0.0f,   0.0f, 0.4609f}, //  8 Medium Room  (anchor -28 dB/s, fb 76)
-    {1, 2, 1.15f,   0,   0, 0.0f,   0.0f,   0.0f, 0.0000f}, //  9 Medium Large Room (T60 1.65, anchor 1.6)
-    {0, 3, 0.92f,   0,   0, 0.0f,   0.0f,   0.0f, 0.5000f}, // 10 Large Room   (T60 2.8, fb 80)
-    {3, 0, 2.50f, 102, 102, 0.20f,  0.0f,   0.0f, 0.0000f}, // 11 Single Delay (102 ms)
-    {3, 0, 2.50f, 180, 360, 0.30f,  0.0f,   0.0f, 0.0000f}, // 12 Cross Delay (180 ms)
-    {3, 0, 2.50f, 224, 448, 0.30f,  0.0f,   0.0f, 0.0000f}, // 13 Cross Delay (224 ms)
-    {3, 0, 2.50f, 148, 296, 0.30f,  0.0f,   0.0f, 0.0000f}, // 14 Cross Delay (148/296 ms)
+    {0, 3, 1.00f,   0,   0, 0.0f,   0.0f,   0.0f, 0.3000f}, //  8 Medium Room  (VST: under the 55 dB/s source; 1.0 s)
+    {1, 2, 1.15f,   0,   0, 0.0f,   0.0f,   0.0f, 0.4000f}, //  9 Medium Large Room (VST late tail 2.0 s)
+    {0, 3, 0.92f,   0,   0, 0.0f,   0.0f,   0.0f, 0.4450f, 1.0f, -1.0f}, // 10 Large Room (VST late tail 2.1 s, sides inverted, corr -0.95)
+    {3, 0, 1.20f, 102,   0, 0.50f,  0.0f,   0.0f, 0.0000f, -0.5f}, // 11 Single Delay (102 ms; as 20)
+    {3, 0, 1.20f, 180,   0, 0.30f,  0.0f,   0.0f, 0.0000f,  0.35f}, // 12 Cross Delay (180 ms; VST: right direct, left 180, tail under the source)
+    {3, 0, 1.20f, 224,   0, 0.40f,  0.0f,   0.0f, 0.0000f,  0.40f}, // 13 Cross Delay (224 ms; as 23)
+    {3, 0, 1.20f, 148,   0, 0.40f,  0.0f,   0.0f, 0.0000f,  0.40f}, // 14 Cross Delay (148 ms; as 23)
     {1, 3, 1.05f,   0,   0, 0.0f, 200.0f,   0.0f, 0.0000f}, // 15 Short Gate (200 ms)
     {1, 3, 1.05f,   0,   0, 0.0f, 480.0f,   0.0f, 0.0000f}, // 16 Long Gate (480 ms)
-    {1, 5, 0.89f,   0,   0, 0.0f,   0.0f,   0.0f, 0.5312f}, // 17 Bright Hall (brighter injection, fb 88)
-    {1, 6, 0.80f,   0,   0, 0.0f,   0.0f,   0.0f, 0.0000f}, // 18 Large Cave (dark, long)
+    {1, 5, 0.89f,   0,   0, 0.0f,   0.0f,   0.0f, 0.5000f}, // 17 Bright Hall (2.7 s, easier damping)
+    {1, 6, 0.80f,   0,   0, 0.0f,   0.0f,   0.0f, 0.4600f}, // 18 Large Cave (dark: loop damping x1.25, T60 4.4; fb < 0.53 or it rings)
     {2, 5, 0.77f,   0,   0, 0.0f,   0.0f,   0.0f, 0.0000f}, // 19 Steel Pan (plate, metallic)
-    {3, 0, 2.50f, 248, 248, 0.25f,  0.0f,   0.0f, 0.0000f}, // 20 Delay (248 ms)
-    {3, 0, 2.50f, 338, 338, 0.25f,  0.0f,   0.0f, 0.0000f}, // 21 Delay (338 ms)
-    {3, 0, 2.50f, 157, 314, 0.30f,  0.0f,   0.0f, 0.0000f}, // 22 Cross Delay (157 ms)
-    {3, 0, 2.50f, 252, 504, 0.30f,  0.0f,   0.0f, 0.0000f}, // 23 Cross Delay (252 ms)
-    {3, 0, 2.50f, 274, 137, 0.30f,  0.0f,   0.0f, 0.0000f}, // 24 Cross Delay (274/137 ms)
+    {3, 0, 1.20f, 248,   0, 0.53f,  0.0f,   0.0f, 0.0000f, -0.5f}, // 20 Delay (248 ms; VST: right direct, left inverted, T60 2.7)
+    {3, 0, 1.20f, 338,   0, 0.53f,  0.0f,   0.0f, 0.0000f, -0.5f}, // 21 Delay (338 ms; as 20)
+    {3, 0, 1.20f, 157,   0, 0.40f,  0.0f,   0.0f, 0.0000f,  0.40f}, // 22 Cross Delay (157 ms; as 23)
+    {3, 0, 1.20f, 252,   0, 0.48f,  0.0f,   0.0f, 0.0000f,  0.45f}, // 23 Cross Delay (252 ms; VST: right direct, left 252 in phase, T60 2.4)
+    {3, 0, 1.20f, 274,   0, 0.40f,  0.0f,   0.0f, 0.0000f,  0.40f}, // 24 Cross Delay (274 ms; as 23)
     {1, 4, 0.98f,   0,   0, 0.0f, 300.0f,   0.0f, 0.0000f}, // 25 Gate Reverb
     {1, 4, 0.98f,   0,   0, 0.0f,   0.0f, 360.0f, 0.0000f}, // 26 Reverse Gate (360 ms)
     {1, 4, 0.98f,   0,   0, 0.0f,   0.0f, 480.0f, 0.0000f}, // 27 Reverse Gate (480 ms)
-    {3, 0, 2.50f,  80,  80, 0.00f,  0.0f,   0.0f, 0.0000f}, // 28 Slap Back (short)
-    {3, 0, 2.50f, 160, 160, 0.00f,  0.0f,   0.0f, 0.0000f}, // 29 Slap Back (mid)
-    {3, 0, 2.50f, 240, 240, 0.00f,  0.0f,   0.0f, 0.0000f}, // 30 Slap Back (long)
+    {3, 0, 1.20f,  80,   0, 0.00f,  0.0f,   0.0f, 0.0000f,  0.50f}, // 28 Slap Back (short)
+    {3, 0, 1.20f, 160,   0, 0.00f,  0.0f,   0.0f, 0.0000f,  0.50f}, // 29 Slap Back (mid)
+    {3, 0, 1.20f, 240,   0, 0.00f,  0.0f,   0.0f, 0.0000f,  0.50f}, // 30 Slap Back (long)
     {1, 7, 0.65f,   0,   0, 0.0f,   0.0f,   0.0f, 0.0000f}, // 31 Twisted Space (T60 ~14 s)
-    {1, 6, 0.84f,   0,   0, 0.0f,   0.0f,   0.0f, 0.5508f}, // 32 Space (T60 ~6.0, anchor 6.0, fb 8D)
+    {1, 6, 0.84f,   0,   0, 0.0f,   0.0f,   0.0f, 0.5600f}, // 32 Space (6.2 s)
 };
 
 struct ReverbSpec {
@@ -440,16 +481,23 @@ public:
         sr_ = sr;
         const ReverbType& t = kReverbTypes[clamp_index(spec.type, 32)];
         wet_ = t.wet;
+        echo_ = t.echo;
+        pol_r_ = t.pol_r;
         mode_ = t.mode < 3 ? t.mode : 3;
         age_ = 0;
+        follow_ = 0.0f;
+        hold_ = 0;
+        gain_ = 0.0f;
         gate_ = static_cast<int>(t.gate_ms * 0.001f * sr);
         reverse_ = static_cast<int>(t.reverse_ms * 0.001f * sr);
         if (mode_ < 3) {
             const BossMode& m = boss_mode(mode_);
-            // Types 17 and 18 tune the injection: the bright hall eases the
-            // entrance damping, the cave tightens the loop damping.
-            const float filt_scale = spec.type == 17 ? 0.85f
-                                   : (spec.type == 16 ? 1.25f : 1.0f);
+            // Panel types 17 and 18 (rows 16/17) tune the damping: the bright
+            // hall eases both, the cave tightens the loop. Rows, not panel
+            // numbers: the swapped comparison once gave Bright Hall the
+            // cave's damping, and it rang at 140 Hz forever.
+            const float filt_scale = spec.type == 16 ? 0.85f
+                                   : (spec.type == 17 ? 1.25f : 1.0f);
             const float lpf = (spec.type == 16 ? 0x80 : m.lpf_amp) / 256.0f;
             const float scale = sr / 32000.0f;  // geometry is 32 kHz native
             for (int a = 0; a < 3; ++a) {
@@ -469,8 +517,9 @@ public:
             boss_ = &m;
             sr_scale_ = scale;
         } else {
-            tap_l_ = static_cast<int>(t.tap_l_ms * 0.001f * sr);
-            tap_r_ = static_cast<int>(t.tap_r_ms * 0.001f * sr);
+            // at(1) is the word just written: a 0 ms tap is the direct copy
+            tap_l_ = static_cast<int>(t.tap_l_ms * 0.001f * sr) + 1;
+            tap_r_ = static_cast<int>(t.tap_r_ms * 0.001f * sr) + 1;
             tap_fb_ = t.fb;
             tap_line_.bind(pool_, 16200);
             tap_line_.clear();
@@ -479,40 +528,83 @@ public:
 
     void set_balance(float b) { spec_.balance = clamp01(b); }
 
+    // Rebind the three tail loops with another feedback, geometry and
+    // damping unchanged. Calibration and tests only: it clears the loops.
+    void set_feedback(float fb, float damp_scale = 1.0f) {
+        if (mode_ >= 3) return;
+        const BossMode& m = *boss_;
+        const float filt_scale = (spec_.type == 16 ? 0.85f : (spec_.type == 17 ? 1.25f : 1.0f)) * damp_scale;
+        for (int c = 0; c < 3; ++c) {
+            comb_[c].bind(pool_ + 6900 + 4600 * c,
+                          static_cast<int>(m.comb_sizes[1 + c] * sr_scale_),
+                          m.filter[1 + c] / 256.0f * filt_scale, fb);
+        }
+    }
+
     void note_activity() { age_ = 0; }      // a gate restarts with the note
 
     float D5_HOT(process)(float x) {
         float l, r;
-        process(x, x, l, r);
+        process(x, x, x, l, r);
         return l;
     }
 
     // The chip folds its stereo input to mono and builds the field of the
     // reverb from tap positions; the dry side passes straight through, so
     // the chorus width of the tones lives in the dry part of the mix.
-    void D5_HOT(process)(float xl, float xr, float& l, float& r) {
+    // `send` feeds the room (the tones' L/MONO signals, dry + chorus wet,
+    // summed by the patch); xl and xr are what passes to the outputs dry.
+    // The Boss chip folds to mono at its input, and so does this -- but
+    // from a send that cannot cancel, not from the stereo pair, whose
+    // chorus halves are exact inverses now.
+    void D5_HOT(process)(float send, float xl, float xr, float& l, float& r) {
         float wl, wr;
-        const float x = 0.25f * (xl + xr);
+        // 0.316: the VST's wet-only sits 7.5 dB under the dry alone (Medium
+        // Hall on a held C4, Arco Upper P1), which 0.595 reproduced -- at
+        // 262 Hz. Three combs at a loop gain near 0.75 give this core a
+        // steady-state gain that swings 22 dB between neighbouring
+        // frequencies (sines 50..1000 Hz: mean -2.4 dB, 262 Hz -7.9), so a
+        // one-note calibration lands on a dip; the send is set 5.5 dB lower
+        // to put the mean where the VST's C4 sits. A sweep of the loop
+        // length by a few samples did nothing to the ripple (the modes move
+        // 0.3 %); smoothing it would take tens of samples, audible chorusing.
+        const float x = 0.316f * send;
         if (mode_ < 3) {
             const BossMode& m = *boss_;
             entr_.process(x);
             float link = entr_.out_at(static_cast<int>(m.comb_sizes[0] * sr_scale_) - 1);
             link = ap_[0].process(link);
             link = ap_[1].process(link);
+            const float early_r = link;
             link = ap_[2].process(link);
             const float out_l1 = comb_[0].out_at(static_cast<int>(m.out_l[0] * sr_scale_) - 1);
             for (int c = 0; c < 3; ++c) comb_[c].process(link);
-            wl = 1.5f * (out_l1 + comb_[1].out_at(static_cast<int>(m.out_l[1] * sr_scale_)))
-                     + comb_[2].out_at(static_cast<int>(m.out_l[2] * sr_scale_));
-            wr = 1.5f * (comb_[0].out_at(static_cast<int>(m.out_r[0] * sr_scale_))
-                     + comb_[1].out_at(static_cast<int>(m.out_r[1] * sr_scale_)))
-                     + comb_[2].out_at(static_cast<int>(m.out_r[2] * sr_scale_));
+            // Early part plus tail. Roland's D-50 VST puts most of the wet
+            // energy into the first tens of milliseconds and keeps the
+            // diffuse tail some 20 dB below it (Medium Hall on a held Arco
+            // note: the wet follows the dry's own release for 0.4 s before
+            // the 20 dB/s tail shows; a plucked Jazz Guitar Duo leaves a
+            // tail 28 dB under its peak). The Boss core alone is all tail
+            // -- normalized to the same steady level it rang 15-20 dB too
+            // loud after every note. The early signal is the diffused
+            // input: after three allpasses on the left, two on the right.
+            wl = kTailMix * (1.5f * (out_l1 + comb_[1].out_at(static_cast<int>(m.out_l[1] * sr_scale_)))
+                             + comb_[2].out_at(static_cast<int>(m.out_l[2] * sr_scale_)))
+               + kEarlyMix * link;
+            wr = kTailMix * (1.5f * (comb_[0].out_at(static_cast<int>(m.out_r[0] * sr_scale_))
+                                     + comb_[1].out_at(static_cast<int>(m.out_r[1] * sr_scale_)))
+                             + comb_[2].out_at(static_cast<int>(m.out_r[2] * sr_scale_)))
+               + kEarlyMix * early_r;
+            // A type with an inverted right side sends the same wet to both
+            // outputs (the VST's Large Room: L/R correlation -0.95); the
+            // chip's own tap pairs are decorrelated and would stay so.
+            if (pol_r_ < 0.0f) wr = wl;
         } else {
             // Tapped delay: one line, two read positions, the left tap feeds
             // back so cross delays alternate sides.
             tap_line_.buf_[tap_line_.i_] = x + tap_fb_ * tap_line_.at(tap_l_);
             tap_line_.next();
-            wl = tap_line_.at(tap_l_);
+            wl = echo_ * tap_line_.at(tap_l_);
             wr = tap_line_.at(tap_r_);
         }
 
@@ -523,12 +615,28 @@ public:
         // one-sample cut of a sounding tail reads as a pop.
         float g = 1.0f;
         if (gate_ > 0) {
-            const int fade = static_cast<int>(sr_ * 0.005f);
-            g = age_ < gate_ ? 1.0f
-                : (age_ < gate_ + fade
-                       ? 1.0f - static_cast<float>(age_ - gate_) / fade
-                       : 0.0f);
-            ++age_;
+            // The gate follows the send, not the note: a gated reverb opens
+            // while its input is above the threshold and closes the gate
+            // time after it fell below. Intruder FX is the proof -- Long
+            // Gate at balance 100 (no dry at all) under an Upper tone that
+            // swells in over seconds and releases over more: cut 480 ms
+            // after the note starts, the patch was a half-second blip and
+            // then digital silence under the held key. Followed, the tail
+            // rides through, and the release is cut 480 ms after it sinks
+            // under the threshold -- the tone after the key that the VST
+            // plays. Threshold and hold are PLAUSIBLE, not measured.
+            const float a = x < 0.0f ? -x : x;
+            follow_ = a > follow_ ? a : follow_ * kFollowDecay;
+            if (follow_ > kGateThreshold) {
+                hold_ = gate_;
+            } else if (hold_ > 0) {
+                --hold_;
+            }
+            const float step = 1.0f / (sr_ * 0.005f);   // 5 ms ramps
+            const float target = hold_ > 0 ? 1.0f : 0.0f;
+            gain_ += gain_ < target ? (target - gain_ < step ? target - gain_ : step)
+                                    : (gain_ - target < step ? target - gain_ : -step);
+            g = gain_;
         } else if (reverse_ > 0) {
             const int fade = static_cast<int>(sr_ * 0.005f);
             g = age_ < reverse_ ? static_cast<float>(age_) / reverse_
@@ -538,13 +646,30 @@ public:
             ++age_;
         }
 
+        // The D-50's crossfade (EPROM page 2, the send rows at 0xB64C with
+        // R6 from the balance): below 50 the wet rises linearly and the dry
+        // stays, above 50 the dry falls linearly and the wet stays. Roland's
+        // D-50 VST measures the same, Medium Hall on one note: wet -6.8 dB
+        // at 25 re 50, dry -7 dB at 75 re 0, both flat on their other half.
+        // The old x^1.8 amount curve on a 1-b/b mix was 15 dB short of wet
+        // at 25 and 50 -- the bank's median balance is 40.
         const float b = clamp01(spec_.balance);
-        l = xl * (1.0f - b) + wl * b * wet_ * g;
-        r = xr * (1.0f - b) + wr * b * wet_ * g;
+        const float dry = b > 0.5f ? 2.0f * (1.0f - b) : 1.0f;
+        const float wet = b < 0.5f ? 2.0f * b : 1.0f;
+        l = xl * dry + wl * wet * wet_ * g;
+        r = xr * dry + pol_r_ * wr * wet * wet_ * g;
     }
 
 private:
     static constexpr int kPool = 21000;  // floats: 3x1950 allpass, 1050 entrance, 3x4600 combs (up to 20700), or 16.2k tap line
+#ifndef D5_REV_EARLY
+#define D5_REV_EARLY 2.2f
+#endif
+#ifndef D5_REV_TAIL
+#define D5_REV_TAIL 0.6f
+#endif
+    static constexpr float kEarlyMix = D5_REV_EARLY;
+    static constexpr float kTailMix = D5_REV_TAIL;
 
     static float clamp01(float v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
     static int clamp_index(int v, int n) { return v < 0 ? 0 : (v >= n ? n - 1 : v); }
@@ -557,6 +682,13 @@ private:
     int gate_ = 0;
     int reverse_ = 0;
     int age_ = 0;
+    // Gate follower state: rectified send with a 30 ms decay, the hold
+    // countdown, and the ramped gain.
+    static constexpr float kGateThreshold = 1e-5f;     // -100 dBFS on x: the VST's Long Gate cuts Intruder FX only at -106 dB, i.e. when the input is gone
+    static constexpr float kFollowDecay = 0.99896f;    // exp(-1/(0.03*32000))
+    float follow_ = 0.0f;
+    int hold_ = 0;
+    float gain_ = 0.0f;
 
     float pool_[kPool] = {};
     ReverbAllpass ap_[3];
@@ -566,6 +698,8 @@ private:
     ReverbLine tap_line_;
     int tap_l_ = 0, tap_r_ = 0;
     float tap_fb_ = 0.0f;
+    float echo_ = 1.0f;
+    float pol_r_ = 1.0f;
 };
 
 }  // namespace d5

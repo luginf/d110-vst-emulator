@@ -284,9 +284,20 @@ private:
     // way PopupMenu already knows how to when there's room. Scoped to patchBox alone (setLook
     // AndFeel() on the component, not the app-wide default) so no other combo box - all a
     // handful of items - is affected.
+    //
+    // Also overrides withMinimumWidth() (2026-09-03 follow-up, Alan: widening the window past a
+    // certain point collapsed it back to one column) - the stock implementation forces that
+    // minimum to box.getWidth(), which grows with the editor window; juce_PopupMenu.cpp's own
+    // column-fitting loop (insertColumnBreaks()) bails out at 1 column as soon as that forced
+    // minimum exceeds roughly half the screen's usable width, regardless of
+    // withMaximumNumColumns(). Capping it to a small fixed value instead keeps the popup's own
+    // natural (content-driven) width in charge of the column count, independent of how wide the
+    // combo box itself happens to be.
     class WideComboLnf : public juce::LookAndFeel_V4 {
         juce::PopupMenu::Options getOptionsForComboBoxPopupMenu(juce::ComboBox &box, juce::Label &label) override {
-            return juce::LookAndFeel_V2::getOptionsForComboBoxPopupMenu(box, label).withMaximumNumColumns(4);
+            return juce::LookAndFeel_V2::getOptionsForComboBoxPopupMenu(box, label)
+                .withMaximumNumColumns(4)
+                .withMinimumWidth(juce::jmin(box.getWidth(), 260));
         }
     };
     WideComboLnf patchBoxLnf;

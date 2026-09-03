@@ -9,6 +9,24 @@
 #include "../../../d50/D5SyxLoader.h"
 #include "../sequencer/D110SequencerSongsFile.h"
 
+// The engine's own per-tone level (d5_patch_map.h: 0.37, tuned against a measured
+// distortion budget so piled-up chords don't hit the internal saturator) combined with the
+// panel Volume knob's 80% default leaves roughly -10dB of headroom below full scale by
+// design - audibly quieter than the D-110, whose own masterVolume defaults to unity. Alan
+// confirmed by ear against the official Roland D-50 VST plugin (2026-09-03) that this app
+// played at roughly half the loudness. Applied here, after the engine and its saturator have
+// already done their job, rather than raising the 0.37/saturator constants directly - those
+// were tuned against a specific measured methodology (see d5_patch_map.h's own comment) that
+// a gain applied here doesn't disturb.
+//
+// 1.4, not 2.0: the same-day upstream chorus/reverb recalibration (see d5_effects.h's own
+// comments, PRs #147/#150) already raised the engine's own output by roughly 1.45x on its
+// own (measured via d50_processor_probe's RMS print, Arco Strings) before this constant is
+// even applied - stacking a full 2x on top of that would overshoot "about half as loud as
+// it should be" into "louder than the D-110 comparison ever asked for". 1.4x on top of that
+// 1.45x lands close to the doubling Alan described overall.
+static constexpr float kOutputMakeupGain = 1.4f;
+
 D50AudioProcessor::D50AudioProcessor()
     : juce::AudioProcessor(BusesProperties().withOutput("Output", juce::AudioChannelSet::stereo(), true)) {
     // Purely cosmetic/export-only, same reasoning as the class comment on the
@@ -257,8 +275,8 @@ void D50AudioProcessor::renderInternal(int numOutSamples, float *outL, float *ou
             // fillBufferI32 packs the sample in the upper 16 bits of each word
             // (see D5_Bridge.h's own comment) - an arithmetic right shift
             // recovers the signed 16-bit value.
-            pendingL.push_back(static_cast<float>(renderScratch[static_cast<size_t>(2 * i)] >> 16) / 32767.0f);
-            pendingR.push_back(static_cast<float>(renderScratch[static_cast<size_t>(2 * i + 1)] >> 16) / 32767.0f);
+            pendingL.push_back(static_cast<float>(renderScratch[static_cast<size_t>(2 * i)] >> 16) / 32767.0f * kOutputMakeupGain);
+            pendingR.push_back(static_cast<float>(renderScratch[static_cast<size_t>(2 * i + 1)] >> 16) / 32767.0f * kOutputMakeupGain);
         }
     }
 

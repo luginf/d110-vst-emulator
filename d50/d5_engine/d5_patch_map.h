@@ -440,12 +440,13 @@ inline void map_common(const uint8_t* c, ToneSpec& tone) {
     tone.eq.high_gain_db = static_cast<float>(c[41]) - 12.0f;
     tone.chorus.type = c[42];
     tone.chorus.rate = level01(c[43]);
-    // Chorus depth is another 0..100 "Depth" and takes the same law as the
-    // rest of that family. Linear reading left String Ensemble with +-10
-    // cents of coherent pitch wobble from the chorus alone -- the audible
-    // "eiern"; through the curve its setting of 53..58 becomes a few cents
-    // of shimmer.
-    tone.chorus.depth = kDepthCurve[c[44] > 100 ? 100 : c[44]];
+    // Chorus depth is linear, not the pitch-mod depth curve (upstream PR
+    // #147, 2026-09-03): on Roland's D-50 VST the delay swing at panel 50
+    // is about half of what it is at 100 (d5_effects.h). The curve had
+    // turned String Ensemble's 53..58 into a few cents of shimmer where the
+    // VST sweeps several milliseconds -- the earlier "eiern" was the single
+    // wet on both sides, which the counter-swept pair no longer produces.
+    tone.chorus.depth = level01(c[44]);
     tone.chorus.balance = level01(c[45]);
 
     v.partials_on = c[46] & 0x3;
@@ -494,13 +495,12 @@ inline PatchSpec patch_from_bytes(const uint8_t* patch, const int16_t* blob) {
     // 1.0, which 80 of the bank's partials do not use.
     p.upper.voice.key_shift = static_cast<int>(pb[22]) - 24;
     p.lower.voice.key_shift = static_cast<int>(pb[23]) - 24;
+    p.output_mode = pb[29] > 3 ? 3 : pb[29];   // see PatchSpec::output_mode
     p.reverb.type = pb[30];
-    // Reverb Balance is another panel value on the amount family, and the
-    // reference recordings vouch for it: through this curve Cathedral
-    // Organ's byte 58 puts the tail 6 dB under the playing (recorded: 7.4)
-    // and Pizzagogo's byte 33 puts it at 15 (recorded: 13.6). Read linearly
-    // they were both practically as loud as the notes.
-    p.reverb.balance = kAmountCurve[pb[31] > 100 ? 100 : pb[31]];
+    // Linear 0..1 of the panel byte (upstream PR #150, 2026-09-03); the
+    // mixer applies the D-50's own crossfade (wet up to full at 50, dry
+    // down to zero from 50) in Reverb::process.
+    p.reverb.balance = (pb[31] > 100 ? 100 : pb[31]) * 0.01f;
     p.volume = level01(pb[32]);
     p.balance = level01(pb[33]);
 
