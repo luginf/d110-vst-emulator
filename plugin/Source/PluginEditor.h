@@ -664,6 +664,12 @@ public:
 	static constexpr float kSequencerResizeGripRefH = 10.0f;
 	static constexpr float kMinSequencerPaneRefH = 200.0f;
 	static constexpr float kMaxSequencerPaneRefH = 1400.0f;
+	// Only relevant in a VST3/AU build (see kSequencerResizeGripRefH's own comment above) -
+	// the sequencer drawer is Standalone/Android only there (2026-09-04, Alan's request: a DAW
+	// host already comes with its own sequencer), which makes the keyboard the LAST drawer and
+	// gives it the same "resize-only grip below it" need the sequencer used to cover for it via
+	// the dual-role SEQUENCER handle band.
+	static constexpr float kKeyboardResizeGripRefH = 10.0f;
 
 private:
 	// Shown once from the constructor when no ROMs were found, so a fresh install can point
@@ -677,6 +683,8 @@ private:
 	juce::Rectangle<float> keyboardHandleBand() const;
 	juce::Rectangle<float> sequencerHandleBand() const;
 	juce::Rectangle<float> sequencerResizeBand() const;
+	// VST3/AU only - see kKeyboardResizeGripRefH.
+	juce::Rectangle<float> keyboardResizeBand() const;
 
 	// Needed directly (not just by the child components below, which each keep their own
 	// reference) for setEditorPaneRefH() - see mouseUp()'s use of it.
@@ -743,6 +751,11 @@ private:
 	float sequencerPaneRefH = D110SequencerPanel::kRefH;
 	bool sequencerResizeHandlePressed = false;
 	bool sequencerResizeHover = false;
+
+	// VST3/AU only (see kKeyboardResizeGripRefH) - mirrors sequencerResizeHandlePressed/Hover,
+	// but resizes keyboardPaneRefH instead: the keyboard is the last drawer there.
+	bool keyboardResizeHandlePressed = false;
+	bool keyboardResizeHover = false;
 
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D110AudioProcessorEditor)
 };

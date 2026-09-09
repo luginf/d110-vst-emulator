@@ -32,13 +32,18 @@ The built `.vst3` is copied automatically to the platform's shared VST3 folder
 ### macOS: Intel (x86_64) and Apple Silicon (arm64)
 
 Building on an actual Intel Mac needs nothing special - the commands above already produce a
-binary for whatever Mac you run them on. The official release binaries, though, are built on
-an Apple Silicon CI runner; to also cover Intel Macs, add
-`-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"` to the `cmake -B build -S .` line above. Xcode's
-toolchain can cross-compile the x86_64 slice from an arm64 Mac (and vice versa) with no other
-hardware involved - the two slices are `lipo`-combined into one universal `.app`/`.vst3`
-automatically, which is exactly how the project's own release zips are built (see
-`.github/workflows/build-macos.yml`).
+binary for whatever Mac you run them on, targeting whatever macOS version you're building on.
+The official release binaries, though, are built on an Apple Silicon CI runner; to also cover
+Intel Macs, add `-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"` to the `cmake -B build -S .` line
+above. Xcode's toolchain can cross-compile the x86_64 slice from an arm64 Mac (and vice versa)
+with no other hardware involved - the two slices are `lipo`-combined into one universal
+`.app`/`.vst3` automatically. Left unset, `CMAKE_OSX_DEPLOYMENT_TARGET` defaults to the build
+machine's own SDK version, which on a CI runner is usually much newer than most users' actual
+macOS - the resulting binary gets Gatekeeper-refused ("You can't use this version of the
+application with this version of macOS") on anything older, so also add
+`-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0` (Big Sur, the practical floor for a universal binary
+since arm64 Macs don't exist on anything older) when reproducing a release-style build. This
+is exactly how the project's own release zips are built (see `.github/workflows/build-macos.yml`).
 
 ### Optional: JACK MIDI input port (Linux Standalone only)
 

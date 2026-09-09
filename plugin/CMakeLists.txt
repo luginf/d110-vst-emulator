@@ -98,7 +98,8 @@ juce_add_binary_data(D110PanelData
             "${CMAKE_CURRENT_SOURCE_DIR}/../docs/panel_reference_compact.png"
             "${CMAKE_CURRENT_SOURCE_DIR}/../docs/memory_card_m256d.png"
             "${CMAKE_CURRENT_SOURCE_DIR}/../docs/D20infos.png"
-            "${CMAKE_CURRENT_SOURCE_DIR}/../docs/app_icon.png")
+            "${CMAKE_CURRENT_SOURCE_DIR}/../docs/app_icon.png"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../docs/volume_knob.png")
 
 # On Windows, plugins conventionally live in the shared Program Files VST3 folder.
 # Elsewhere, JUCE's own default (~/Library/Audio/Plug-Ins/VST3 on macOS, ~/.vst3 on Linux)
@@ -780,7 +781,13 @@ add_executable(d110_editor_shot editor_shot.cpp
 target_include_directories(d110_editor_shot PRIVATE ${MAME_INCLUDES} "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(d110_editor_shot PRIVATE ${MAME_DEFS}
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
-    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
+    # Not an actual JUCE plugin format target, so PluginEditor.cpp's own
+    # JucePlugin_Build_Standalone checks (see the sequencer drawer, Standalone/Android only
+    # since 2026-09-04) would otherwise default to the trimmed VST3/AU layout - wrong for a
+    # tool whose whole point is rendering the full editor, every drawer included, for visual
+    # review.
+    JucePlugin_Build_Standalone=1)
 target_link_libraries(d110_editor_shot PRIVATE
     D110PanelData ${MAME_LIBS} ${MAME_SYS_LIBS} MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)
@@ -2142,7 +2149,10 @@ target_include_directories(d110_native_editor_shot PRIVATE "${CMAKE_CURRENT_SOUR
 target_compile_definitions(d110_native_editor_shot PRIVATE
     D110_NATIVE_CORE=1
     JUCE_STANDALONE_APPLICATION=0 JUCE_MODULE_AVAILABLE_juce_audio_plugin_client=0
-    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
+    # See d110_editor_shot's own comment on this same define - render the full editor,
+    # sequencer drawer included, not the trimmed VST3/AU layout.
+    JucePlugin_Build_Standalone=1)
 target_link_libraries(d110_native_editor_shot PRIVATE
     D110PanelData MT32Emu::mt32emu
     juce::juce_audio_utils juce::juce_audio_processors)

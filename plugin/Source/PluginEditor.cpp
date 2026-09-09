@@ -110,14 +110,27 @@ constexpr float kLampX = 1940.0f, kLampY = 56.5f, kLampW = 26.0f, kLampH = 3.5f;
 
 // VOLUME knob. The disc's body ends at r 28 and a clean dark gap runs r 29..33
 // before the printed tick ring starts at r 34, so clipping the spin at r 31 takes
-// the whole knob and none of the fixed scale. The knob carries its own printed
-// white pointer, so it rides on the cut-out and needs no synthetic dot drawn over
-// it - but that also means the photograph's own pointer angle has to be subtracted
-// before any rotation is applied.
+// the whole knob and none of the fixed scale.
 //
-// All three angles come from sweeping the panel image around the knob's axis. The
-// scale has 21 printed ticks; the two that matter are the outermost, because the
-// pointer has to land exactly on them at MIN and at MAX. Each was isolated in its
+// The disc image itself (volume_knob.png, docs/) is a separate, roughly-frontal knob
+// photo, NOT lifted from the panel photograph - 2026-09-04, Alan's request: the panel
+// photo's own knob is lit from one side, so rotating that whole cut-out (the original
+// approach) dragged its specular highlight/shadow around with it, reading as visibly
+// "not symmetric" at most rotation angles rather than a real knob quietly turning in
+// place. This replacement was measured (centre/radius fit against a chroma-key
+// background) and rescaled so its own knob circle exactly fills the same r 31 spin
+// radius, centred in a 65x65 canvas (kKnobSpinR*2+3, matching cutOut()'s own margin
+// convention) - loaded straight from BinaryData, no cutOut() needed since there's no
+// panel photo pixel data to lift.
+//
+// It carries its own printed white pointer, so it rides on the image and needs no
+// synthetic dot drawn over it - but that also means the image's own pointer angle has
+// to be subtracted before any rotation is applied, same idea as the old cut-out.
+//
+// kKnobMinDeg/kKnobMaxDeg are properties of the FIXED printed scale on the panel
+// photograph (21 ticks around the knob) - untouched by which disc image spins inside
+// it. The scale has 21 printed ticks; the two that matter are the outermost, because
+// the pointer has to land exactly on them at MIN and at MAX. Each was isolated in its
 // own angular window and taken as an intensity-weighted centroid over r 35..42
 // (a single wide sweep merges the last two ticks and biases the answer):
 //
@@ -128,12 +141,14 @@ constexpr float kLampX = 1940.0f, kLampY = 56.5f, kLampW = 26.0f, kLampH = 3.5f;
 // is where it now sits by default, since masterVolume's range was made symmetric
 // about unity gain.
 //
-// The photographed pointer is at -151.14 (centroid over r 13..26), a little past
-// the MIN tick, so that offset has to be subtracted before any rotation is applied.
+// kKnobPhotoDeg is the NEW disc image's own pointer angle: -176.70 (intensity-weighted
+// centroid of the pointer capsule, isolated by connected-component labelling from the
+// knob's edge specular highlight, which sits at a very different radius). Re-measure
+// this constant again if volume_knob.png is ever replaced.
 constexpr float kKnobCx = 367.5f, kKnobCy = 149.0f;
 constexpr float kKnobSpinR = 31.0f, kKnobHitR = 34.0f;
 constexpr float kKnobMinDeg = -146.74f, kKnobMaxDeg = 149.96f;
-constexpr float kKnobPhotoDeg = -151.14f;
+constexpr float kKnobPhotoDeg = -176.70f;
 
 } // namespace
 
@@ -176,8 +191,10 @@ D110Panel::D110Panel(D110AudioProcessor &p)
 	powerCap = cutOut({ kPowerX, kPowerY, kPowerW, kPowerH });
 	powerRecessColour = recessColourOf({ kPowerX, kPowerY, kPowerW, kPowerH });
 
-	volumeDisc = cutOut({ kKnobCx - kKnobSpinR - 1.0f, kKnobCy - kKnobSpinR - 1.0f,
-	                      kKnobSpinR * 2.0f + 3.0f, kKnobSpinR * 2.0f + 3.0f });
+	// Not cutOut() - see kKnobCx's own comment on why this is a separate asset now
+	// rather than a lift from the panel photograph.
+	volumeDisc = juce::ImageCache::getFromMemory(BinaryData::volume_knob_png,
+	                                             BinaryData::volume_knob_pngSize);
 
 	setSize(kRefW, kRefH);
 	startTimerHz(60);
@@ -440,11 +457,14 @@ void D110Panel::paintVolumeKnob(juce::Graphics &g) const
 {
 	const float value = juce::jlimit(0.0f, 1.0f, volumeDisplayed < 0.0f ? processor.getMasterVolume()
 	                                                                    : volumeDisplayed);
-	// The cut-out already carries the photograph's own pointer angle, so only the
+	// The disc image already carries its own pointer angle (kKnobPhotoDeg), so only the
 	// difference between where the pointer should be and where it was shot is applied.
+	// Unlike the old panel-photo cut-out, this always has to be drawn, never skipped at
+	// rest: kKnobPhotoDeg sits outside [kKnobMinDeg, kKnobMaxDeg] (see its own comment),
+	// so deg is never exactly zero for any valid value, and the panel photograph's own
+	// baked-in knob pointer underneath (at its own different, now-stale angle) has to
+	// stay covered at every value, not just "away from rest".
 	const float deg = kKnobMinDeg + (kKnobMaxDeg - kKnobMinDeg) * value - kKnobPhotoDeg;
-	if (std::abs(deg) < 0.05f)
-		return; // at rest: the photograph is already correct
 
 	const float cx = mapX(kKnobCx, processor.getCompactPanelMode());
 
@@ -453,8 +473,9 @@ void D110Panel::paintVolumeKnob(juce::Graphics &g) const
 	clip.addEllipse(cx - kKnobSpinR, kKnobCy - kKnobSpinR, kKnobSpinR * 2.0f, kKnobSpinR * 2.0f);
 	g.reduceClipRegion(clip);
 
-	// The cut-out was taken from the panel at this origin, so put it back exactly
-	// there (shifted, in compact mode) and spin about the true centre.
+	// The disc image was built centred in its own 65x65 canvas (see kKnobCx's own
+	// comment) - put it back at that same size (shifted, in compact mode) and spin
+	// about the true centre.
 	const float ox = std::floor(cx - kKnobSpinR - 1.0f);
 	const float oy = std::floor(kKnobCy - kKnobSpinR - 1.0f);
 	g.drawImageTransformed(volumeDisc, juce::AffineTransform::translation(ox, oy)
@@ -743,7 +764,9 @@ void D110Panel::showOptionsMenu()
 	// отдельно от настроек эмулятора. Прошивка читает его как бит 0 порта состояния матрицы
 	// карты; см. docs/memory_card.md.
 	m.addItem(4, "Memory card write protect", true, processor.getCore().cardWriteProtect());
+#if JucePlugin_Build_Standalone
 	m.addItem(5, "Retro Sequencer (D-20 style LCD+buttons)", true, processor.getSequencerRetroMode());
+#endif
 	// Github issue #3: the LA Reference (structures/envelopes chart, UTILITY tab) was only
 	// reachable by opening the editor drawer and navigating there. Repeated here so it's one
 	// right-click away, the same shortcut the channel/remap entries below get.
@@ -893,10 +916,12 @@ void D110Panel::showOptionsMenu()
 			case 4:
 				processor.getCore().setCardWriteProtect(!processor.getCore().cardWriteProtect());
 				break;
+#if JucePlugin_Build_Standalone
 			case 5:
 				processor.setSequencerRetroMode(!processor.getSequencerRetroMode());
 				if (onSequencerModeChanged) onSequencerModeChanged();
 				break;
+#endif
 			case 6:
 				// NOT getWidth(): this panel is drawn at native reference resolution and
 				// scaled visually via a Component transform (see D110AudioProcessorEditor::
@@ -1857,6 +1882,7 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 	}
 	area.removeFromTop(18.0f);
 
+#if JucePlugin_Build_Standalone
 	labels.push_back({ area.removeFromTop(15.0f), "SEQUENCER", true });
 	{
 		auto row = area.removeFromTop(28.0f);
@@ -1880,6 +1906,7 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 		                   "the original recording again, unchanged", false });
 	}
 	area.removeFromTop(18.0f);
+#endif
 
 	labels.push_back({ area.removeFromTop(15.0f), "PANEL SIZE", true });
 	{
@@ -3039,6 +3066,7 @@ void D110EditorPane::buttonPressed(int id) {
 		repaint();
 		return;
 	}
+#if JucePlugin_Build_Standalone
 	if (id == 13) {
 		processor.setSequencerRetroMode(!processor.getSequencerRetroMode());
 		if (onSequencerModeChanged) onSequencerModeChanged();
@@ -3046,6 +3074,7 @@ void D110EditorPane::buttonPressed(int id) {
 		repaint();
 		return;
 	}
+#endif
 	if (id == 14) {
 		processor.setCompactPanelMode(!processor.getCompactPanelMode());
 		if (onCompactPanelModeChanged) onCompactPanelModeChanged();
@@ -3053,6 +3082,7 @@ void D110EditorPane::buttonPressed(int id) {
 		repaint();
 		return;
 	}
+#if JucePlugin_Build_Standalone
 	if (id == 15) {
 		auto &eng = processor.getSequencer();
 		eng.setQuantizeMode(eng.getQuantizeMode() == d110seq::QuantizeMode::soft ? d110seq::QuantizeMode::hard
@@ -3061,6 +3091,7 @@ void D110EditorPane::buttonPressed(int id) {
 		repaint();
 		return;
 	}
+#endif
 	if (id == 16) {
 		// Асинхронный диалог, поэтому объект должен пережить вызов - тот же приём, что и у
 		// остальных FileChooser в этом файле.
@@ -3942,17 +3973,22 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 	addAndMakeVisible(panel);
 	addAndMakeVisible(editorPane);
 	addAndMakeVisible(keyboard);
+#if JucePlugin_Build_Standalone
 	addAndMakeVisible(sequencerPanel);
 	addChildComponent(sequencerRetroPanel); // shown instead of sequencerPanel in retro mode - see resized()
+#endif
 	// Карта добавляется последней и потому лежит поверх обоих - и прибора, и ящика.
 	addAndMakeVisible(card);
 
+#if JucePlugin_Build_Standalone
 	sequencerPanel.setVisible(!processor.getSequencerRetroMode());
 	sequencerRetroPanel.setVisible(processor.getSequencerRetroMode());
+#endif
 	// Nothing to show in compact mode - the slot itself is spliced out of the panel photo.
 	card.setVisible(!processor.getCompactPanelMode());
 
 	panel.onCardSlotClicked = [this] { card.toggle(); };
+#if JucePlugin_Build_Standalone
 	auto refreshSequencerMode = [this] {
 		sequencerPanel.setVisible(!processor.getSequencerRetroMode());
 		sequencerRetroPanel.setVisible(processor.getSequencerRetroMode());
@@ -3961,6 +3997,7 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 	};
 	panel.onSequencerModeChanged = refreshSequencerMode;
 	editorPane.onSequencerModeChanged = refreshSequencerMode;
+#endif
 	editorPane.onOptionsButtonClicked = [this] { panel.showOptionsMenu(); };
 	card.onEjectNeedsDrawer = [this] {
 		expansion = expansionTarget = 1.0f;
@@ -4088,10 +4125,17 @@ void D110AudioProcessorEditor::parentHierarchyChanged()
 }
 
 float D110AudioProcessorEditor::totalRefHeight() const {
-	return float(D110Panel::kRefH) + kHandleRefH + expansion * editorPaneRefH
-	     + kKeyboardHandleRefH + keyboardExpansion * keyboardPaneRefH
-	     + kSequencerHandleRefH + sequencerExpansion * sequencerPaneRefH
-	     + sequencerExpansion * kSequencerResizeGripRefH;
+	float h = float(D110Panel::kRefH) + kHandleRefH + expansion * editorPaneRefH
+	        + kKeyboardHandleRefH + keyboardExpansion * keyboardPaneRefH;
+#if JucePlugin_Build_Standalone
+	h += kSequencerHandleRefH + sequencerExpansion * sequencerPaneRefH
+	   + sequencerExpansion * kSequencerResizeGripRefH;
+#else
+	// No sequencer drawer here - the keyboard is the last one instead, so it gets the grip
+	// (kKeyboardResizeGripRefH) the sequencer would otherwise have provided.
+	h += keyboardExpansion * kKeyboardResizeGripRefH;
+#endif
+	return h;
 }
 
 void D110AudioProcessorEditor::applySize() {
@@ -4116,24 +4160,50 @@ juce::Rectangle<float> D110AudioProcessorEditor::keyboardHandleBand() const {
 	return { 0.0f, top, float(getWidth()), kKeyboardHandleRefH * s };
 }
 
-// Same trick a third time: stacked below wherever the keyboard drawer currently ends.
+// Same trick a third time: stacked below wherever the keyboard drawer currently ends. Empty
+// (never hit-tests true) outside a Standalone build - see kKeyboardResizeGripRefH's comment:
+// the sequencer drawer itself is Standalone/Android only there.
 juce::Rectangle<float> D110AudioProcessorEditor::sequencerHandleBand() const {
+#if !JucePlugin_Build_Standalone
+	return {};
+#else
 	const float s = float(getWidth()) / float(D110Panel::currentRefW(processor.getCompactPanelMode()));
 	const float top = (float(D110Panel::kRefH) + kHandleRefH + expansion * editorPaneRefH
 	                  + kKeyboardHandleRefH + keyboardExpansion * keyboardPaneRefH) * s;
 	return { 0.0f, top, float(getWidth()), kSequencerHandleRefH * s };
+#endif
 }
 
 // The sequencer drawer's own resize grip, right under it - see kSequencerResizeGripRefH's
 // comment for why this one isn't a dual-role band like the two above. Zero height (so it
 // never hit-tests true) whenever the drawer itself is collapsed, exactly like the drawer's
-// own bounds in resized() below.
+// own bounds in resized() below. Empty outright outside a Standalone build, same reasoning
+// as sequencerHandleBand() just above.
 juce::Rectangle<float> D110AudioProcessorEditor::sequencerResizeBand() const {
+#if !JucePlugin_Build_Standalone
+	return {};
+#else
 	const float s = float(getWidth()) / float(D110Panel::currentRefW(processor.getCompactPanelMode()));
 	const float top = (float(D110Panel::kRefH) + kHandleRefH + expansion * editorPaneRefH
 	                  + kKeyboardHandleRefH + keyboardExpansion * keyboardPaneRefH
 	                  + kSequencerHandleRefH + sequencerExpansion * sequencerPaneRefH) * s;
 	return { 0.0f, top, float(getWidth()), sequencerExpansion * kSequencerResizeGripRefH * s };
+#endif
+}
+
+// VST3/AU only - the keyboard's own resize-only grip, right under it, replacing the sequencer's
+// dual-role SEQUENCER handle band it would otherwise have relied on (see keyboardHandleBand()'s
+// dual role for the editor pane above it, and kKeyboardResizeGripRefH's comment). Empty in a
+// Standalone/Android build, where that dual-role band still does the job instead.
+juce::Rectangle<float> D110AudioProcessorEditor::keyboardResizeBand() const {
+#if JucePlugin_Build_Standalone
+	return {};
+#else
+	const float s = float(getWidth()) / float(D110Panel::currentRefW(processor.getCompactPanelMode()));
+	const float top = (float(D110Panel::kRefH) + kHandleRefH + expansion * editorPaneRefH
+	                  + kKeyboardHandleRefH + keyboardExpansion * keyboardPaneRefH) * s;
+	return { 0.0f, top, float(getWidth()), keyboardExpansion * kKeyboardResizeGripRefH * s };
+#endif
 }
 
 namespace {
@@ -4173,6 +4243,7 @@ void D110AudioProcessorEditor::paint(juce::Graphics &g)
 	g.fillAll(d110ui::palette().panelBg);
 	paintDrawerHandle(g, handleBand(), expansion > 0.5f, handleHover, "EDITOR");
 	paintDrawerHandle(g, keyboardHandleBand(), keyboardExpansion > 0.5f, keyboardHandleHover, "KEYBOARD");
+#if JucePlugin_Build_Standalone
 	paintDrawerHandle(g, sequencerHandleBand(), sequencerExpansion > 0.5f, sequencerHandleHover, "SEQUENCER");
 
 	// Pure resize grip, no chevron/label - it doesn't fold anything, it's just a thicker
@@ -4186,6 +4257,18 @@ void D110AudioProcessorEditor::paint(juce::Graphics &g)
 		g.setColour(sequencerResizeHover ? pal.handleBarHover : pal.handleBar);
 		g.fillRect(grip.reduced(0.0f, grip.getHeight() * 0.28f));
 	}
+#else
+	// No sequencer drawer here - the keyboard's own resize grip takes its place instead, same
+	// "pure grip, no chevron/label" treatment (see keyboardResizeBand()'s comment).
+	const auto grip = keyboardResizeBand();
+	if (!grip.isEmpty()) {
+		const auto &pal = d110ui::palette();
+		g.setColour(pal.handleBg);
+		g.fillRect(grip);
+		g.setColour(keyboardResizeHover ? pal.handleBarHover : pal.handleBar);
+		g.fillRect(grip.reduced(0.0f, grip.getHeight() * 0.28f));
+	}
+#endif
 }
 
 void D110AudioProcessorEditor::mouseDown(const juce::MouseEvent &e)
@@ -4235,6 +4318,14 @@ void D110AudioProcessorEditor::mouseDown(const juce::MouseEvent &e)
 		resizeDragStartRefH = sequencerPaneRefH;
 		return;
 	}
+	if (keyboardResizeBand().contains(e.position)) {
+		// VST3/AU only - see keyboardResizeBand()'s own comment. Same "last drawer, plain
+		// resize grab" treatment as sequencerResizeBand() just above.
+		keyboardResizeHandlePressed = true;
+		resizeDragStartY = e.position.y;
+		resizeDragStartRefH = keyboardPaneRefH;
+		return;
+	}
 }
 
 void D110AudioProcessorEditor::mouseDrag(const juce::MouseEvent &e)
@@ -4269,11 +4360,22 @@ void D110AudioProcessorEditor::mouseDrag(const juce::MouseEvent &e)
 		sequencerPaneRefH =
 			juce::jlimit(kMinSequencerPaneRefH, kMaxSequencerPaneRefH, resizeDragStartRefH + deltaY / s);
 		applySize();
+		return;
+	}
+	if (keyboardResizeHandlePressed) {
+		keyboardPaneRefH =
+			juce::jlimit(kMinKeyboardPaneRefH, kMaxKeyboardPaneRefH, resizeDragStartRefH + deltaY / s);
+		applySize();
 	}
 }
 
 void D110AudioProcessorEditor::mouseUp(const juce::MouseEvent &)
 {
+	if (keyboardResizeHandlePressed) {
+		keyboardResizeHandlePressed = false;
+		processor.setKeyboardPaneRefH(keyboardPaneRefH);
+		return;
+	}
 	if (sequencerResizeHandlePressed) {
 		sequencerResizeHandlePressed = false;
 		processor.setSequencerPaneRefH(sequencerPaneRefH);
@@ -4315,18 +4417,20 @@ void D110AudioProcessorEditor::mouseMove(const juce::MouseEvent &e)
 	const bool overKeyboard = keyboardHandleBand().contains(e.position);
 	const bool overSequencer = sequencerHandleBand().contains(e.position);
 	const bool overSequencerResize = sequencerResizeBand().contains(e.position);
+	const bool overKeyboardResize = keyboardResizeBand().contains(e.position);
 	bool changed = false;
 	if (over != handleHover) { handleHover = over; changed = true; }
 	if (overKeyboard != keyboardHandleHover) { keyboardHandleHover = overKeyboard; changed = true; }
 	if (overSequencer != sequencerHandleHover) { sequencerHandleHover = overSequencer; changed = true; }
 	if (overSequencerResize != sequencerResizeHover) { sequencerResizeHover = overSequencerResize; changed = true; }
+	if (overKeyboardResize != keyboardResizeHover) { keyboardResizeHover = overKeyboardResize; changed = true; }
 	if (!changed) return;
 	// Over the keyboard/sequencer bands specifically, hint at the resize (rather than the
 	// plain pointing-hand the toggle-only band uses) only when there's actually something to
 	// resize - i.e. the pane above it is open. The grip is always a resize cursor - it has
 	// no toggle role to fall back to.
 	juce::MouseCursor cursor = juce::MouseCursor::NormalCursor;
-	if (overSequencerResize) cursor = juce::MouseCursor::UpDownResizeCursor;
+	if (overSequencerResize || overKeyboardResize) cursor = juce::MouseCursor::UpDownResizeCursor;
 	else if (overKeyboard && expansion > 0.5f) cursor = juce::MouseCursor::UpDownResizeCursor;
 	else if (overSequencer && keyboardExpansion > 0.5f) cursor = juce::MouseCursor::UpDownResizeCursor;
 	else if (over || overKeyboard || overSequencer) cursor = juce::MouseCursor::PointingHandCursor;
@@ -4336,11 +4440,13 @@ void D110AudioProcessorEditor::mouseMove(const juce::MouseEvent &e)
 
 void D110AudioProcessorEditor::mouseExit(const juce::MouseEvent &)
 {
-	if (!handleHover && !keyboardHandleHover && !sequencerHandleHover && !sequencerResizeHover) return;
+	if (!handleHover && !keyboardHandleHover && !sequencerHandleHover && !sequencerResizeHover
+	    && !keyboardResizeHover) return;
 	handleHover = false;
 	keyboardHandleHover = false;
 	sequencerHandleHover = false;
 	sequencerResizeHover = false;
+	keyboardResizeHover = false;
 	repaint();
 }
 
@@ -4356,7 +4462,12 @@ void D110AudioProcessorEditor::mouseExit(const juce::MouseEvent &)
 // lets this run), and this editor is the nearest shared ancestor of both.
 bool D110AudioProcessorEditor::keyPressed(const juce::KeyPress &key)
 {
+#if JucePlugin_Build_Standalone
 	return processor.getSequencerRetroMode() && sequencerRetroPanel.keyPressed(key);
+#else
+	juce::ignoreUnused(key);
+	return false;
+#endif
 }
 
 void D110AudioProcessorEditor::resized()

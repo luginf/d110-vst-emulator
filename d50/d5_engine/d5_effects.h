@@ -40,18 +40,21 @@ namespace d5 {
 
 class Biquad {
 public:
+    // Roland's D-50 VST plays the low EQ as a FIRST-order shelf: pole at
+    // the table frequency, zero at freq * 10^(gain/20), unity above -- so
+    // +12 dB at 250 Hz is still +9.6 at 262 Hz and +2.2 at 1 kHz, a 3 dB
+    // per octave slope across four octaves (measured per harmonic at three
+    // notes; a -12 dB cut mirrors it, -6 dB at 131 Hz for lf 8). A second-
+    // order shelf at the same corner was a full octave narrower and lost
+    // 2-6 dB of level on every boosted patch.
     void set_low_shelf(float freq, float gain_db, float sr) {
-        const float A = std::pow(10.0f, gain_db / 40.0f);
-        const float w = 2.0f * kPi * freq / sr;
-        const float cs = std::cos(w), sn = std::sin(w);
-        const float beta = std::sqrt(A) / 0.9f;      // shelf slope ~1
-        const float b0 = A * ((A + 1) - (A - 1) * cs + beta * sn);
-        const float b1 = 2 * A * ((A - 1) - (A + 1) * cs);
-        const float b2 = A * ((A + 1) - (A - 1) * cs - beta * sn);
-        const float a0 = (A + 1) + (A - 1) * cs + beta * sn;
-        const float a1 = -2 * ((A - 1) + (A + 1) * cs);
-        const float a2 = (A + 1) + (A - 1) * cs - beta * sn;
-        set(b0, b1, b2, a0, a1, a2);
+        const float g = std::pow(10.0f, gain_db / 20.0f);
+        const float wp = std::tan(kPi * freq / sr);
+        float fz = freq * g;
+        if (fz > 0.45f * sr) fz = 0.45f * sr;
+        const float wz = std::tan(kPi * fz / sr);
+        // H(s) = (s + wz) / (s + wp), bilinear with s = (1 - z^-1)/(1 + z^-1)
+        set(1.0f + wz, wz - 1.0f, 0.0f, 1.0f + wp, wp - 1.0f, 0.0f);
     }
 
     void set_peaking(float freq, float q, float gain_db, float sr) {
@@ -119,11 +122,19 @@ public:
         const int hq = clamp_index(spec.high_q, 9);
         low_.set_low_shelf(kLowEqFreq[lf], spec.low_gain_db, sr);
         high_.set_peaking(kHighEqFreq[hf], kHighEqQ[hq], spec.high_gain_db, sr);
+        // A boost costs headroom: Roland's D-50 VST pulls the whole signal
+        // down by half the boost (+12 dB low shelf: shelf +5.5, the rest
+        // -6.2; +6: +2.5 and -3.5), cuts leave the rest alone. Shape,
+        // corner frequencies and Q match ours without it.
+        const float boost = (spec.low_gain_db > 0.0f ? spec.low_gain_db : 0.0f)
+                          + (spec.high_gain_db > 0.0f ? spec.high_gain_db : 0.0f);
+        makeup_ = std::pow(10.0f, -0.5f * boost / 20.0f);
     }
 
-    float D5_HOT(process)(float x) { return high_.process(low_.process(x)); }
+    float D5_HOT(process)(float x) { return makeup_ * high_.process(low_.process(x)); }
 
 private:
+    float makeup_ = 1.0f;
     static int clamp_index(int v, int n) { return v < 0 ? 0 : (v >= n ? n - 1 : v); }
     Biquad low_{};
     Biquad high_{};

@@ -250,8 +250,16 @@ public:
         const float env = tvf_.next_n(kModPeriod);
         // mod.cutoff arrives on the old 0..1 scale from the LFO routes;
         // 100 units span that scale, same as the panel byte.
-        float cv = base_cv_ + env_units_ * 100.0f * env + mod.cutoff * 100.0f;
-        if (cv > kCutoffCeiling) cv = kCutoffCeiling;        // the chip's clamp
+        // The ceiling clamps the composed static cutoff (base + envelope,
+        // the register the firmware writes); the LFO and aftertouch travel
+        // through the chip's own modulation registers (E500..) and add on
+        // top of it: Roland's VST lifts a cutoff-50 sawtooth's centroid to
+        // 1018 Hz under full pressure at range 14, past the 961 Hz the
+        // ceiling alone allows. The final clamp is the register's range.
+        float cv = base_cv_ + env_units_ * 100.0f * env;
+        if (cv > kCutoffCeiling) cv = kCutoffCeiling;       // the chip's clamp
+        cv += mod.cutoff * 100.0f;
+        if (cv > kCutoffMax) cv = kCutoffMax;
         edge_frac_ = 0.5f;
         inv_edge_ = 2.0f;
         atten_ = 1.0f;
@@ -308,6 +316,18 @@ public:
         // 50) carry one; a square's mean is zero.
         dc_shape_ = h_frac_ > 0.0f ? 2.0f * pulse_frac_ - 1.0f
                                    : 2.0f * edge_frac_ - 1.0f;
+        // A narrow pulse keeps its level: Roland's D-50 VST holds a square
+        // within 0.5 dB from duty 0.5 down to the 1/16 floor (a fixed-
+        // amplitude pulse would lose 6.4 dB at the floor, and ours did).
+        // The sawtooth, a square ring-modulated with its cosine, is flat
+        // against the pulse width on both sides and needs nothing.
+        if (spec_.waveform == Waveform::kSquare) {
+            // the pulse the chip actually plays: never narrower than its edge pair
+            const float d = pulse_frac_ > edge_frac_ ? pulse_frac_ : edge_frac_;
+            pw_gain_ = std::pow(0.25f / (d * (1.0f - d)), 0.47f);
+        } else {
+            pw_gain_ = 1.0f;
+        }
     }
 
     float D5_HOT_TAG(d5_synth_next, next)(const Modulation& mod = Modulation{}) {
@@ -405,10 +425,9 @@ public:
         // partial -- DC included -- but the D-50's line out is AC-coupled
         // and never passes it. A saw keeps its shape mean on the cosine
         // carrier (mean zero), so only the square reports one.
-        dc_out_ = spec_.waveform == Waveform::kSquare
-                      ? dc_shape_ * atten_ * amp * gain_ * mod.amp * 0.5f
-                      : 0.0f;
-        return out * amp * gain_ * mod.amp * 0.5f;
+        const float scale = amp * gain_ * mod.amp * 0.5f * pw_gain_;
+        dc_out_ = spec_.waveform == Waveform::kSquare ? dc_shape_ * atten_ * scale : 0.0f;
+        return out * scale;
     }
 
     // DC of this partial's contribution next() just returned (see above).
@@ -445,11 +464,13 @@ private:
 #define D5_CUTOFF_CEILING 218.0f
 #endif
     static constexpr float kCutoffCeiling = D5_CUTOFF_CEILING;
+    static constexpr float kCutoffMax = 240.0f;   // munt's LA32 cutoff range
     float edge_frac_ = 0.5f;       // cosine edge as fraction of the period
     float inv_edge_ = 2.0f;        // 1/edge_frac_, a block constant
     float pulse_frac_ = 0.5f;
     float h_frac_ = 0.0f;
     float dc_shape_ = 0.0f;        // mean of the bare shape (duty imbalance)
+    float pw_gain_ = 1.0f;         // narrow-pulse level compensation (VST)
     float dc_out_ = 0.0f;          // dc_shape_ with all output scaling on
     float atten_ = 1.0f;           // sub-middle broadband attenuation
     bool res_on_ = false;

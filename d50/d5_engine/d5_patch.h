@@ -45,7 +45,7 @@ public:
         eq_.configure(spec.eq, sample_rate);
         chorus_.configure(spec.chorus, sample_rate);
         // The tone's three LFOs are single shared instances -- the D-50's
-        // 112-Hz tick walks one phase word per LFO per tone (IC25
+        // 97.66-Hz tick walks one phase word per LFO per tone (IC25
         // 0x1508-0x160D), so a chord vibrates coherently and a legato note
         // joins the running wobble. They free-run from here on.
         for (int i = 0; i < 3; ++i) {
@@ -132,7 +132,10 @@ public:
         return true;
     }
 
-    void note_off(int note) {
+    // cut: the solo modes replace the old note rather than release it --
+    // Roland's D-50 VST drops it by 67 dB within 200 ms where our envelope
+    // release still held it at -21; a 20 ms fade cannot click.
+    void note_off(int note, bool cut = false) {
         for (int i = 0; i < kVoices; ++i) {
             // Keyed by the KEY, not by whether the voice still sounds:
             // the firmware's key array outlives the envelope, so a
@@ -141,7 +144,10 @@ public:
             // back when it does.
             if (!key_[i] || note_[i] != note) continue;
             key_[i] = false;
-            if (active_[i]) voices_[i].note_off();
+            if (active_[i]) {
+                if (cut) voices_[i].quick_release();
+                else voices_[i].note_off();
+            }
             // The slot rejoins the pool at key-up, not when its release
             // ends -- that is what lets a fast passage keep taking voices
             // whose tails are still audible.
@@ -344,6 +350,11 @@ struct PatchSpec {
     // The "-S" key modes (WHOL-S, DUAL-S, SEP-S) play monophonically: one
     // note at a time, the new note ends the old one's hold at once.
     bool solo = false;
+    // The split solo modes (SPL-US, SPL-LS) hold one note per side only:
+    // Roland's D-50 VST plays byte 5 as a split with a polyphonic Lower
+    // and a monophonic Upper, byte 6 the other way round.
+    bool solo_upper = false;
+    bool solo_lower = false;
     int split_point = 60;         // panel "Split Point", C4 by default
     float balance = 0.5f;         // panel "Tone Balance", upper to lower
     // Panel "Bender Range", pb[26], 0..12 semitones. Patch-common: the
@@ -351,19 +362,21 @@ struct PatchSpec {
     // C59A -> FE04/FE0C) and lets an RPN-0 data entry overwrite it until
     // the next load (0x4E72, clamped to 12).
     int bend_range = 2;
-    // Panel "Output Mode", pb[29], stored 0..3 for modes 1..4 (upstream PR
-    // #146, 2026-09-03). Mode 1 mixes both tones to both outputs with the
-    // reverb on both. Modes 2, 3 and 4 put the Upper tone on the right
-    // output and the Lower tone on the left, each folded to its L/MONO
-    // signal - Roland's D-50 VST, recorded dry with one tone at a time,
-    // leaves the other channel digitally silent in all three, and its
-    // Stereo Polysynth is exactly this: two detuned tones hard left and
-    // right. They differ in the reverb feed (EPROM page 2, mixer rows
-    // 0xB4C5 + 6*mode): modes 1 and 2 send both tones at half, modes 3 and
-    // 4 send one tone at full and are each other's mirror: the VST,
-    // recorded one tone at a time with the reverb at 50, hangs the tail on
-    // the Upper's side in mode 3 and leaves the Lower dry, so mode 3 sends
-    // the Upper and mode 4 the Lower.
+    // Panel "Output Mode", pb[29], stored 0..3 for modes 1..4. Mode 1 mixes
+    // both tones to both outputs with the reverb on both. Modes 2, 3 and 4
+    // put the Upper tone on the right output and the Lower tone on the
+    // left, each folded to its L/MONO signal -- Roland's D-50 VST, recorded
+    // dry with one tone at a time, leaves the other channel digitally
+    // silent in all three, and its Stereo Polysynth is exactly this: two
+    // detuned tones hard left and right. They differ in the reverb feed
+    // (EPROM page 2, mixer rows 0xB4C5 + 6*mode): modes 1 and 2 send both
+    // tones at half, modes 3 and 4 send one tone at full and are each
+    // other's mirror: the VST, recorded one tone at a time with the reverb
+    // at 50, hangs the tail on the Upper's side in mode 3 and leaves the
+    // Lower dry, so mode 3 sends the Upper and mode 4 the Lower.
+    // The patch loader copies the byte to CD99 and rebuilds the mixer
+    // (0x66BB -> 0xB4DD). Bank 1: Jazz Guitar Duo, Stereo Polysynth,
+    // Picked Guitar Duo, Slap Bass n Brass and Pianissimo use mode 2.
     int output_mode = 0;
     ReverbSpec reverb{};
     float volume = 1.0f;
@@ -392,8 +405,9 @@ public:
     void silence() {
         upper_.silence();
         lower_.silence();
+        pend_head_ = pend_count_ = 0;
         reverb_.configure(spec_.reverb, sr_);
-        solo_note_ = -1;
+        solo_note_[0] = solo_note_[1] = -1;
     }
 
     void configure(const PatchSpec& spec, float sample_rate) {
@@ -415,49 +429,56 @@ public:
         // release segment rather than cutting it -- close enough to the
         // steal that no factory patch tells them apart, and it cannot
         // click.
-        if (spec_.solo && solo_note_ >= 0 && solo_note_ != note) {
-            upper_.note_off(solo_note_);
-            lower_.note_off(solo_note_);
-        }
         bool sounded = false;
         switch (spec_.key_mode) {
             case KeyMode::kDual: {
+                if (spec_.solo) solo_cut(0, note);
                 const bool u = upper_.note_on(note, velocity);
-                const bool l = lower_.note_on(note, velocity);
-                sounded = u || l;
+                if (spec_.solo) solo_note_[0] = note;
+                lower_later(note, velocity, true, spec_.solo);
+                sounded = u || true;
                 break;
             }
-            case KeyMode::kSplit:
-                sounded = (note >= spec_.split_point)
-                              ? upper_.note_on(note, velocity)
-                              : lower_.note_on(note, velocity);
+            case KeyMode::kSplit: {
+                const int side = note >= spec_.split_point ? 0 : 1;
+                const bool solo = side == 0 ? spec_.solo_upper : spec_.solo_lower;
+                if (side == 0) {
+                    if (solo) solo_cut(0, note);
+                    sounded = upper_.note_on(note, velocity);
+                    if (solo) solo_note_[0] = note;
+                } else {
+                    lower_later(note, velocity, true, solo);
+                    sounded = true;
+                }
                 break;
+            }
             case KeyMode::kWhole:
             default:
+                if (spec_.solo) solo_cut(0, note);
                 sounded = upper_.note_on(note, velocity);
+                if (spec_.solo) solo_note_[0] = note;
                 break;
         }
         // The gate and reverse reverbs time their wet envelope against the
         // note; a note the pool refused never reached the chip, so it must
         // not re-arm them either.
         if (sounded) reverb_.note_activity();
-        if (spec_.solo) solo_note_ = note;
     }
 
     void note_off(int note) {
         upper_.note_off(note);
-        lower_.note_off(note);
-        if (note == solo_note_) solo_note_ = -1;
+        if (note == solo_note_[0]) solo_note_[0] = -1;
+        lower_later(note, 0.0f, false, false);
     }
 
     // Mono fold is the L/MONO jack again: the left side as it ships. In the
     // split output modes the jack would carry only the Lower tone, so there
-    // the fold sums both sides - each tone is mono on its own side, nothing
+    // the fold sums both sides -- each tone is mono on its own side, nothing
     // anti-phase can cancel.
     float D5_HOT(next)() {
         float l, r;
         next_stereo(l, r);
-        return spec_.output_mode == 0 ? l : 0.5f * (l + r);
+        return (spec_.key_mode == KeyMode::kWhole || spec_.output_mode == 0) ? l : 0.5f * (l + r);
     }
 
     // Stereo: the tones keep their own left and right through the balance
@@ -465,6 +486,8 @@ public:
     // each -- the chorus width of a tone survives into the room. The laws
     // themselves are unchanged from the mono path.
     void D5_HOT(next_stereo)(float& l, float& r) {
+        ++clock_;
+        if (pend_count_ != 0 && pending_[pend_head_].due == clock_) service_lower();
         // Tone balance per the firmware's mixer (bank code 0xB397): each
         // tone's factor is min(4*b, 255)/200 of its side, so the center
         // is 1.0 each and a full tilt reaches +2.1 dB on the loud side --
@@ -481,21 +504,30 @@ public:
         float ul, ur, ll, lr;
         upper_.next_stereo(ul, ur);
         lower_.next_stereo(ll, lr);
-        if (spec_.output_mode == 0) {
-            const float send = ul * uw + ll * lw;
-            reverb_.process(send, ul * uw + ll * lw, ur * uw + lr * lw, l, r);
+        // Output mode gains, measured on Roland's D-50 VST with one tone at
+        // a time (Stereo Polysynth and Arco Strings, dry): mode 1 puts each
+        // tone at HALF amplitude on both outputs, modes 2 to 4 put each tone
+        // at full amplitude on its own output -- 5.8 dB apart, the EPROM
+        // mixer's rows 0x80 against 0xFF. A whole patch ignores the output
+        // mode: both outputs, mode-1 level, in every mode. The reverb send
+        // is both tones at half in modes 1 and 2 (rows 80 80) and one tone
+        // at full in modes 3 and 4.
+        const int om = spec_.key_mode == KeyMode::kWhole ? 0 : spec_.output_mode;
+        if (om == 0) {
+            const float xl = 0.5f * (ul * uw + ll * lw);
+            const float xr = 0.5f * (ur * uw + lr * lw);
+            reverb_.process(xl, xl, xr, l, r);
         } else {
-            // Output modes 2-4: Lower left, Upper right, each tone as its
-            // L/MONO signal. Mode 2 sends both tones to the reverb and its
-            // return reaches both outputs (the VST puts the Upper's tail on
-            // the left at -48 dB, on the right at -41). Modes 3 and 4 send
-            // one tone, and its return stays on that tone's own side - the
-            // other channel is digitally silent in the VST - while the
-            // other tone goes to its output dry and whole, past the balance.
+            // Lower left, Upper right, each tone as its L/MONO signal. Mode
+            // 2 sends both tones and its return reaches both outputs (the
+            // VST puts the Upper's tail on the left at -48 dB, on the right
+            // at -41). Modes 3 and 4 send one tone, and its return stays on
+            // that tone's own side -- the other channel is digitally silent
+            // in the VST -- while the other tone goes to its output dry.
             const float lo = ll * lw, up = ul * uw;
-            if (spec_.output_mode == 1) {
-                reverb_.process(lo + up, lo, up, l, r);
-            } else if (spec_.output_mode == 2) {
+            if (om == 1) {
+                reverb_.process(0.5f * (lo + up), lo, up, l, r);
+            } else if (om == 2) {
                 reverb_.process(up, 0.0f, up, l, r);
                 l = lo;
             } else {
@@ -629,7 +661,66 @@ private:
     Tone<8> lower_{};
     Reverb reverb_{};
     float sr_ = 32000.0f;
-    int solo_note_ = -1;          // the solo modes' single held note
+    int solo_note_[2] = {-1, -1}; // the solo modes' held note per tone (0 upper, 1 lower)
+
+    // The lower tone runs 128 samples (4.0 ms) behind the upper: Roland's
+    // D-50 VST starts it exactly that much later on every note, key and
+    // waveform tried (cross-correlation +128 at 32 kHz, corr 1.000; onsets
+    // 64 against 192). Two identical tones therefore never sum coherently
+    // -- a Tines or Warm Strings dual patch came out 6 dB louder here than
+    // there -- and a dual patch carries a 4-ms doubling. Note-ons and
+    // note-offs for the lower tone queue here, in order, and fire from the
+    // sample loop.
+    static constexpr uint32_t kLowerLag = 128;
+    static constexpr int kPendingMax = 32;
+    struct PendingLower {
+        uint32_t due;
+        float velocity;
+        int16_t note;
+        bool on;
+        bool solo;
+    };
+    PendingLower pending_[kPendingMax];
+    int pend_head_ = 0;
+    int pend_count_ = 0;
+    uint32_t clock_ = 0;
+
+    void lower_later(int note, float velocity, bool on, bool solo) {
+        if (pend_count_ >= kPendingMax) { lower_now(note, velocity, on, solo); return; }
+        PendingLower& e = pending_[(pend_head_ + pend_count_) % kPendingMax];
+        e.due = clock_ + kLowerLag + 1;   // +1: the upper already sounds in the next sample
+        e.velocity = velocity;
+        e.note = static_cast<int16_t>(note);
+        e.on = on;
+        e.solo = solo;
+        ++pend_count_;
+    }
+    void lower_now(int note, float velocity, bool on, bool solo) {
+        if (on) {
+            if (solo) solo_cut(1, note);
+            lower_.note_on(note, velocity);
+            if (solo) solo_note_[1] = note;
+        } else {
+            lower_.note_off(note);
+            if (note == solo_note_[1]) solo_note_[1] = -1;
+        }
+    }
+    void service_lower() {
+        while (pend_count_ != 0 && pending_[pend_head_].due == clock_) {
+            const PendingLower e = pending_[pend_head_];
+            pend_head_ = (pend_head_ + 1) % kPendingMax;
+            --pend_count_;
+            lower_now(e.note, e.velocity, e.on, e.solo);
+        }
+    }
+
+    // A solo side ends its previous note when a new one arrives.
+    void solo_cut(int side, int note) {
+        if (solo_note_[side] >= 0 && solo_note_[side] != note) {
+            if (side == 0) upper_.note_off(solo_note_[side], true);
+            else lower_.note_off(solo_note_[side], true);
+        }
+    }
 };
 
 }  // namespace d5

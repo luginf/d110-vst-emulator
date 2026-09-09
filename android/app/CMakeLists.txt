@@ -22,7 +22,8 @@ juce_add_binary_data(D110PanelData
     SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../../docs/panel_reference.png"
             "${CMAKE_CURRENT_SOURCE_DIR}/../../docs/panel_reference_compact.png"
             "${CMAKE_CURRENT_SOURCE_DIR}/../../docs/memory_card_m256d.png"
-            "${CMAKE_CURRENT_SOURCE_DIR}/../../docs/D20infos.png")
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../docs/D20infos.png"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../docs/volume_knob.png")
 
 juce_add_gui_app(D110Android
     VERSION ${PROJECT_VERSION}

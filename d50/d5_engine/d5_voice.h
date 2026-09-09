@@ -56,6 +56,28 @@ inline constexpr Structure kStructures[7] = {
 
 // How far a partial follows one of the three LFOs. The panel writes this as
 // +1..+3 / -1..-3 (which LFO, and in which direction) plus a depth.
+#ifndef D5_TVA_LFO_DB
+#define D5_TVA_LFO_DB 17.5f
+#endif
+#ifndef D5_TVF_LFO_UNITS
+#define D5_TVF_LFO_UNITS 26.0f
+#endif
+#ifndef D5_PW_LFO_SWING
+#define D5_PW_LFO_SWING 0.55f
+#endif
+// Roland's D-50 VST, one partial with LFO-1 (rate 50) on the route:
+//   TVA: 4.4/8.7/13.1/17.5 dB peak to peak at depth 25/50/75/100, downward
+//        from the static level, a straight line.
+//   TVF: the centroid of a cutoff-50 sawtooth swings 560-612 / 543-646 /
+//        531-684 / 525-725 Hz; 26 units of swing reproduce it (24 -> 524-703).
+//   PW:  a square's duty reaches 0.355 / 0.248 / 0.168 / 0.106 at the narrow
+//        turn, i.e. 32 / 65 / 101 / 143 register units -- 1.3 per depth unit,
+//        so 0.55 of the 0..255 register at depth 100 (the wide turn stays at
+//        the 0.5 floor).
+inline constexpr float kTvaLfoDb = D5_TVA_LFO_DB;       // pk-pk duck at depth 100
+inline constexpr float kTvfLfoUnits = D5_TVF_LFO_UNITS; // cutoff swing amplitude at depth 100
+inline constexpr float kPwLfoSwing = D5_PW_LFO_SWING;   // of the 0..255 register at depth 100
+
 struct LfoRoute {
     int lfo = 0;            // 0..2
     float depth = 0.0f;     // -1..+1, sign is the panel's polarity
@@ -191,7 +213,7 @@ public:
         sr_ = sample_rate;
         const Structure& st = structure();
         const PartialType types[2] = {st.p1, st.p2};
-        // The LFOs belong to the TONE: the 112-Hz tick walks one phase word
+        // The LFOs belong to the TONE: the 97.66-Hz tick walks one phase word
         // per LFO per tone (IC25 0x1508-0x160D) and every voice reads the
         // shared words from the CD40 merge area -- notes in a chord vibrate
         // together. bind_lfos() hands a real voice the tone's three
@@ -369,7 +391,7 @@ public:
 
         for (int i = 0; i < 2; ++i) {
             // Advance the glide by one block, then fold its offset into the
-            // pitch factor: T/64 semitones per 112-Hz tick, scaled to this
+            // pitch factor: T/64 semitones per 97.66-Hz tick, scaled to this
             // block. The walk is linear in pitch space, so its octave rate
             // is constant -- the D-50's portamento is tempo-based, not the
             // per-distance kind the envelopes are.
@@ -410,21 +432,44 @@ public:
                 partial_st != 0.0f ? fast_exp2(partial_st * (1.0f / 12.0f))
                                    : 1.0f;
             const float tgt_pitch = factor * ctl_bend * glide;
-            mod_[i].pw = 0.5f * spec_.pw_lfo[i].depth * lfo_value(l, spec_.pw_lfo[i])
+            // Route depths are linear 0..1 (d5_patch_map.h lfo_route), the
+            // VST's laws: the pulse width swings kPwLfoSwing of the 0..255
+            // register at full depth (the VST's swing hits the narrow floor
+            // from depth 50 on), the cutoff swings kTvfLfoUnits chip units,
+            // and the amplitude ducks kTvaLfoDb dB peak to peak, downward
+            // from the static level.
+            mod_[i].pw = kPwLfoSwing * spec_.pw_lfo[i].depth * lfo_value(l, spec_.pw_lfo[i])
                        + 0.65f * spec_.pw_at[i] * at_;
-            mod_[i].cutoff = 0.5f * spec_.tvf_lfo[i].depth * lfo_value(l, spec_.tvf_lfo[i])
-                           + 0.65f * spec_.tvf_at[i] * at_;
-            // amplitude modulation only ever ducks, never boosts past unity
-            const float am = spec_.tva_lfo[i].depth * lfo_value(l, spec_.tva_lfo[i]);
-            float tgt_amp = 1.0f + 0.5f * (am - std::fabs(spec_.tva_lfo[i].depth));
-            // TVA aftertouch (ROM 0x11A9): a positive range rests ~3 dB down
-            // and rises to unity at full press; a negative one ducks ~3 dB
-            // (the ROM's scale is 2|s| chip units of 0.376 dB, i.e. ~5.3 dB
-            // at s=7 -- the 3-dB reading is PLAUSIBLE, hearing test pending).
-            const float g = spec_.tva_at[i];
+            mod_[i].cutoff = (kTvfLfoUnits / 100.0f) * spec_.tvf_lfo[i].depth * lfo_value(l, spec_.tvf_lfo[i])
+                           + 0.85f * spec_.tvf_at[i] * at_;   // VST: range 14 at full pressure lifts the centroid 583 -> 1018 Hz
+            // A PCM partial has no TVA modulation at all in Roland's D-50
+            // VST: LFO depth 100 on either route and an aftertouch range of
+            // 14 leave it exactly where it is (pitch LFO and bias do act).
+            // Like the TVF, the modulation block belongs to the synth path.
+            const bool pcm_partial = ((i == 0) ? st.p1 : st.p2) == PartialType::kPcm;
+            const float tva_d = pcm_partial ? 0.0f : std::fabs(spec_.tva_lfo[i].depth);
+            const float tva_l = spec_.tva_lfo[i].depth < 0.0f ? -lfo_value(l, spec_.tva_lfo[i])
+                                                              : lfo_value(l, spec_.tva_lfo[i]);
+            // The VST's tremolo (select byte 1, our negative route) starts fully
+            // ducked on a synced LFO, where the vibrato starts at its highest
+            // pitch; with the route sign folded into tva_l that is (1 - l)/2.
+            float tgt_amp = fast_exp2(-kTvaLfoDb * tva_d * 0.5f * (1.0f - tva_l) * (1.0f / 6.0206f));
+            // TVA aftertouch, measured on Roland's D-50 VST: the attenuation
+            // is 2 * u^2 chip units (0.755 dB * u^2, u = range - 7), a
+            // positive range resting fully attenuated and lifted linearly
+            // by the pressure (range 10: -6.8 dB at rest, range 14: -37;
+            // pressure 64 halves it), a negative range resting at unity
+            // and ducking with the pressure. The "3 dB" reading of the ROM
+            // transform at 0x11A9 was off by an order of magnitude.
+            // In a ring structure the pair shares partial 1's aftertouch
+            // range: Roland's VST attenuates the product twice by P1's
+            // range and not at all by P2's (P2's byte is dead there), in a
+            // mix structure each partial follows its own byte.
+            const float g = pcm_partial ? 0.0f : spec_.tva_at[st.ring ? 0 : i];
             if (g != 0.0f) {
-                const float x = (g > 0.0f ? g * (at_ - 1.0f) : g * at_) * 0.5f;
-                tgt_amp *= fast_exp2(x);
+                const float u2 = 49.0f * g * g;
+                const float w = g > 0.0f ? (1.0f - at_) : at_;
+                tgt_amp *= fast_exp2(-0.755f * u2 * w * (1.0f / 6.0206f));
             }
             if (tgt_amp < 0.0f) tgt_amp = 0.0f;
             dpitch_[i] = (tgt_pitch - mod_[i].pitch) * (1.0f / kModPeriod);
@@ -480,13 +525,29 @@ public:
 
         // The chip multiplies in the log domain, which is an ordinary product
         // once decoded: sum and difference frequencies, and silence whenever
-        // either side is silent. The product uses the raw partials -- the
+        // either side is silent. Muting partial 1 keeps the product -- the
         // bank forces this reading: Glockenspiel (bank 4) mutes partial 1 of
         // a ring structure, a dead preset if the mute reached the product,
         // whereas gating only the direct path is exactly the classic trick
-        // of hiding the carrier and keeping the metallic product.
-        const float second = st.ring ? a_raw * b_raw - dca_raw * dcb_raw
-                                     : b - dcb;
+        // of hiding the carrier and keeping the metallic product. Muting
+        // partial 2 kills it (Roland's VST: P1 alone has no sidebands).
+        // The product is formed from DC-free partials: the VST's product of
+        // a narrow pulse with a sawtooth is 3 dB QUIETER than a square's,
+        // where the DC leak term (dc * saw, a copy of the other partial)
+        // made ours 3 dB louder. And its level sits above the plain
+        // product of our 0.5-scaled partials: +3.3 dB with two synth
+        // partials, +2.5 with one, +0.2 for PCM x PCM, on every pitch pair,
+        // velocity and envelope level tried (the ratio to P1's direct
+        // output is what was measured, so it tracks both TVAs).
+        float second;
+        if (st.ring) {
+            const int ns = (st.p1 == PartialType::kSynth) + (st.p2 == PartialType::kSynth);
+            const float rg = ns == 2 ? 1.46f : (ns == 1 ? 1.33f : 1.0f);
+            second = (spec_.partials_on & 0x2)
+                         ? rg * (a_raw - dca_raw) * (b_raw - dcb_raw) : 0.0f;
+        } else {
+            second = b - dcb;
+        }
 
         // The firmware's balance curve (EPROM bank code 0xB450): the
         // quieter side falls linearly to zero, the louder side RISES from
@@ -561,7 +622,7 @@ private:
     }
 
     // Semitones per control block at the panel time: the ROM's 4 * T[time]
-    // units of 1/256 semitone per 112-Hz tick, pre-multiplied for the
+    // units of 1/256 semitone per 97.66-Hz tick, pre-multiplied for the
     // block. T[0] is never reached (time 0 snaps at note_on), so indexing
     // is safe for any byte.
     static float porta_step(int time, float sr) {

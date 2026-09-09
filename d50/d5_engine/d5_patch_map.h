@@ -69,11 +69,17 @@ inline constexpr float kDepthCurve[101] = {
     0.499967f, 0.535880f, 0.574344f, 0.615556f, 0.659776f, 0.707071f,
     0.757833f, 0.812259f, 0.870544f, 0.933015f, 1.000000f};
 
+// The three modulation routes read their depth LINEARLY -- Roland's D-50
+// VST, one partial with LFO-1 on the route: TVA depth 25/50/75/100 ducks
+// 4.4/8.7/13.1/17.5 dB peak to peak (a straight line, downward only),
+// the TVF cutoff swing and the pulse-width swing grow in the same steps.
+// Through kDepthCurve they were near-silent up to 75 and wild at 100 --
+// Ham and Organ and Star Peace Chorus sat 25 dB under the VST on it.
 inline LfoRoute lfo_route(uint8_t select, uint8_t depth) {
     LfoRoute r;
     const int s = select > 5 ? 0 : select;
     r.lfo = s / 2;
-    r.depth = ((s & 1) ? -1.0f : 1.0f) * kDepthCurve[depth > 100 ? 100 : depth];
+    r.depth = ((s & 1) ? -1.0f : 1.0f) * (depth > 100 ? 100 : depth) * 0.01f;
     return r;
 }
 
@@ -466,24 +472,26 @@ inline PatchSpec patch_from_bytes(const uint8_t* patch, const int16_t* blob) {
     map_common(patch_block(patch, kBlkLowerCommon), p.lower);
 
     const uint8_t* pb = patch_block(patch, kBlkPatch);
-    // Key modes 0..8 (D-05 UI strings at BQ3 0x164628: WHOLE, DUAL, SEP,
-    // DUAL-S, WHOL-S, SEP-S, SPL-LS, SPL-US, SPLIT -- the string order is
-    // the panel menu, not the byte: drums-set splits sit on byte 2, so byte
-    // 2 must be SPLIT, and the bank's solo leads sit on 4/5 with names like
-    // "Monophonic Lead"). The -S bytes are the monophonic family; byte 5
-    // must route both tones, because four factory patches on it carry the
-    // upper tone muted -- with upper-only routing they would be dead
-    // presets (they were, before this mapping). Separate folds onto dual:
-    // its difference is the output jack, not the sound.
+    // Key modes 0..8 as Roland's D-50 VST plays them, probed with a
+    // split-friendly patch (Output Mode 2 puts the Lower left and the Upper
+    // right) at notes 48 and 72 plus two overlapping notes for the solo
+    // test: 0 WHOLE, 1 DUAL, 2 SPLIT, 3 WHOL-S, 4 DUAL-S, 5 SPL-US (split,
+    // Upper solo, Lower polyphonic), 6 SPL-LS, 7 SEP and 8 SEP-S (separate
+    // channels; on one channel the VST plays them as a split with a
+    // monophonic Lower). The earlier reading had 3/4/5/8 shifted and made
+    // byte 5 route both tones everywhere, which woke five "dead" presets --
+    // they are split basses whose muted Upper is silent above C4 in the VST
+    // too (Hammer Feel, DoubleGritBs, MoonStroller Bs, MultiMod Ld,
+    // Synthectric Bass).
     switch (pb[18]) {
-        case 3:                                   // SEPARATE
         case 1:  p.key_mode = KeyMode::kDual;  break;
-        case 2:
-        case 6:                                   // SPL-LS
-        case 7:  p.key_mode = KeyMode::kSplit; break;   // SPL-US
-        case 4:  p.key_mode = KeyMode::kWhole; p.solo = true; break;  // WHOL-S
-        case 5:                                   // DUAL-S
-        case 8:  p.key_mode = KeyMode::kDual;  p.solo = true; break;  // SEP-S
+        case 2:  p.key_mode = KeyMode::kSplit; break;
+        case 3:  p.key_mode = KeyMode::kWhole; p.solo = true; break;   // WHOL-S
+        case 4:  p.key_mode = KeyMode::kDual;  p.solo = true; break;   // DUAL-S
+        case 5:  p.key_mode = KeyMode::kSplit; p.solo_upper = true; break;   // SPL-US
+        case 6:                                                        // SPL-LS
+        case 7:                                                        // SEP
+        case 8:  p.key_mode = KeyMode::kSplit; p.solo_lower = true; break;   // SEP-S
         default: p.key_mode = KeyMode::kWhole; break;
     }
     p.split_point = 36 + pb[19];                 // panel C2..C7
@@ -546,8 +554,11 @@ inline PatchSpec patch_from_bytes(const uint8_t* patch, const int16_t* blob) {
     // -3.9 dB across the whole bank. Roland's own level relationships are
     // untouched -- the spread from Glockenspiel to Power Key Bs is theirs and
     // stays -- this only moves the ceiling out of the way of it.
-    p.upper.level = 0.37f;
-    p.lower.level = 0.37f;
+    // Doubled from 0.37 when output mode 1 went to half amplitude per tone
+    // (d5_patch.h next_stereo): the mode-1 majority keeps its loudness, the
+    // 37 patches in modes 2-4 gain the 6 dB the VST gives them.
+    p.upper.level = 0.74f;
+    p.lower.level = 0.74f;
 
     // Portamento is patch-common: switch pb[41], time pb[28], and mode
     // pb[20] -- 0 = upper only, 1 = lower only, 2 = both (the U/L/UL of
