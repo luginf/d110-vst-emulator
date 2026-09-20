@@ -114,6 +114,8 @@ public:
 	// queue a real MIDI In port's handleIncomingMidiMessage() feeds, so they thru to MIDI
 	// Out and get captured while recording by the same path a real controller would use.
 	void injectTestNote(int channel, int note, float velocity, bool on) override;
+	int getGridRowHeight() const override { return gridRowHeight; }
+	void setGridRowHeight(int pixels) override { gridRowHeight = pixels; }
 	void auditionTrackNote(int track, int note, int velocity, bool on) override {
 		injectTestNote(engine.channelForTrack(track), note, static_cast<float>(velocity) / 127.0f, on);
 	}
@@ -282,6 +284,7 @@ private:
 	bool uiThemeLight = false;
 	bool sequencerRetroMode = false;
 	bool sequencerGridMode = false;
+	int gridRowHeight = 0;
 	juce::String retroKeyBindings;
 	bool retroLcdCompactMode = false;
 

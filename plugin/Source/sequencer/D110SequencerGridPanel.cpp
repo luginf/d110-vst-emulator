@@ -10,10 +10,10 @@ using d110seq::D110SequencerEngine;
 using d110seq::QuantizeGrid;
 
 namespace {
-constexpr float kRowH = 14.0f;      // one pitch row
-constexpr float kKeysW = 46.0f;     // piano-key column
-constexpr float kVelLaneH = 46.0f;  // velocity lane under the grid
-constexpr float kScrollW = 12.0f;
+constexpr float kDefaultRowH = 14.0f; // one pitch row, desktop default
+constexpr float kKeysW = 46.0f;       // piano-key column
+// Row heights the ROW button steps through - the last two are meant for fingers.
+const float rowHeights[] = { 14.0f, 20.0f, 28.0f, 38.0f };
 constexpr float kBtnRowH = 24.0f;
 constexpr float kPad = 4.0f;
 
@@ -72,7 +72,13 @@ void paintButton(juce::Graphics &g, juce::Rectangle<float> b, const juce::String
 	g.setColour(fill);
 	g.fillRect(b.reduced(2.0f));
 	g.setColour(text);
-	g.setFont(juce::FontOptions(juce::jlimit(8.0f, 13.0f, b.getHeight() * 0.5f)));
+	// Shrink the text to fit a narrow button (a phone in portrait squeezes the transport row's
+	// fractional columns to a few dozen pixels) instead of letting it truncate to "S...".
+	float size = juce::jlimit(8.0f, 13.0f, b.getHeight() * 0.5f);
+	const float avail = b.getWidth() - 8.0f;
+	const float wide = float(juce::GlyphArrangement::getStringWidthInt(juce::Font(juce::FontOptions(size)), label));
+	if (wide > avail && avail > 0.0f) size = juce::jmax(6.5f, size * avail / wide);
+	g.setFont(juce::FontOptions(size));
 	g.drawText(label, b, juce::Justification::centred);
 }
 } // namespace
@@ -82,6 +88,7 @@ D110SequencerGridPanel::D110SequencerGridPanel(D110SequencerHost &p) : processor
 	vBar.setRangeLimits(0.0, 128.0);
 	vBar.setAutoHide(false);
 	vBar.addListener(this);
+	syncRowHeightFromHost();
 	startTimerHz(20);
 }
 
@@ -91,6 +98,40 @@ D110SequencerGridPanel::~D110SequencerGridPanel() {
 }
 
 D110SequencerEngine &D110SequencerGridPanel::engine() const { return processor.getSequencer(); }
+
+// ---------------------------------------------------------------- row height
+
+void D110SequencerGridPanel::setRowHeight(float newRowH, bool persist) {
+	if (std::abs(newRowH - rowH) < 0.5f) return;
+	// Keep whichever pitch is in the middle of the view in the middle.
+	const int centre = topNote - visibleRows() / 2;
+	rowH = newRowH;
+	if (persist) processor.setGridRowHeight(juce::roundToInt(newRowH));
+	buildLayout();
+	setTopNote(centre + visibleRows() / 2);
+	repaint();
+}
+
+void D110SequencerGridPanel::cycleRowHeight() {
+	float next = rowHeights[0];
+	for (float h : rowHeights)
+		if (h > rowH + 0.5f) { next = h; break; }
+	setRowHeight(next, true);
+}
+
+// The host's persisted value can arrive after this panel was built (the Android app loads its
+// state a moment after constructing its views), so it is re-read rather than trusted once.
+void D110SequencerGridPanel::syncRowHeightFromHost() {
+	const int stored = processor.getGridRowHeight();
+	const float wanted = stored > 0 ? juce::jlimit(10.0f, 60.0f, float(stored)) : kDefaultRowH;
+	if (std::abs(wanted - rowH) >= 0.5f) {
+		rowH = wanted;
+		if (getWidth() > 0) {
+			buildLayout();
+			setTopNote(topNote);
+		}
+	}
+}
 
 // ---------------------------------------------------------------- layout
 
@@ -184,6 +225,10 @@ void D110SequencerGridPanel::buildLayout() {
 		          e.gotoBar(juce::jmin(e.getBarCount() + 1, e.getCurrentBar() + 1));
 	          },
 	          {}, {}, [this] { engine().gotoBar(engine().getBarCount()); });
+	builtWithBarMenu = bool(onBarMenuButtonExtra);
+	if (builtWithBarMenu)
+		addButton(colT(0.958f, 0.042f), [] { return juce::String::fromUTF8("\xe2\x98\xb0"); }, // U+2630
+		          [this] { showBarMenu(); });
 
 	auto area = full.reduced(kPad, 2.0f);
 	auto row2 = area.removeFromTop(kBtnRowH);
@@ -194,13 +239,16 @@ void D110SequencerGridPanel::buildLayout() {
 	// ---- row 2: track selector, then MUTE/SOLO for the selected track
 	const int trackCount = eng.activeTrackCount();
 	const float muteSoloW = 52.0f;
-	auto tracksArea = row2.withTrimmedRight(2.0f * muteSoloW + 8.0f);
+	auto tracksArea = row2.withTrimmedRight(3.0f * muteSoloW + 8.0f);
 	const float trackW = juce::jmin(36.0f, tracksArea.getWidth() / float(juce::jmax(1, trackCount)));
 	for (int t = 0; t < trackCount; ++t)
 		addButton(take(tracksArea, trackW), [t] { return trackButtonLabel(t); }, [this, t] { selectTrack(t); },
 		          [this, t] { return selTrack == t; });
 	hintBounds = tracksArea.reduced(8.0f, 0.0f); // whatever the track buttons leave free
-	auto right = row2.removeFromRight(2.0f * muteSoloW + 4.0f);
+	auto right = row2.removeFromRight(3.0f * muteSoloW + 4.0f);
+	// Pitch-row height: steps through the presets (bigger rows are for fingers).
+	addButton(take(right, muteSoloW), [this] { return "ROW " + juce::String(juce::roundToInt(rowH)); },
+	          [this] { cycleRowHeight(); });
 	addButton(take(right, muteSoloW), [] { return juce::String("MUTE"); },
 	          [this] { engine().setTrackMuted(selTrack, !engine().isTrackMuted(selTrack)); },
 	          [this] { return engine().isTrackMuted(selTrack); });
@@ -236,9 +284,10 @@ void D110SequencerGridPanel::buildLayout() {
 
 	// ---- the editing area
 	keysBounds = area.removeFromLeft(kKeysW);
-	auto scrollArea = area.removeFromRight(kScrollW);
-	// A squat drawer gives some of the velocity lane back to the pitch rows.
-	const float velH = juce::jlimit(24.0f, kVelLaneH, area.getHeight() * 0.22f);
+	auto scrollArea = area.removeFromRight(juce::jmax(12.0f, rowH * 0.7f));
+	// A squat drawer gives some of the velocity lane back to the pitch rows; bigger rows (touch)
+	// get a taller lane so a stick's tip is a fair target.
+	const float velH = juce::jlimit(24.0f, juce::jmax(46.0f, rowH * 2.2f), area.getHeight() * 0.22f);
 	velBounds = area.removeFromBottom(velH);
 	gridBounds = area;
 	// The key column lines up with the grid rows; the space under it is the lane's label cell.
@@ -288,12 +337,12 @@ float D110SequencerGridPanel::xForBeat(double beat, const Geometry &g) const {
 	return gridBounds.getX() + float((beat - g.barStart) / g.stepBeats) * g.colW;
 }
 
-int D110SequencerGridPanel::visibleRows() const { return juce::jmax(1, int(gridBounds.getHeight() / kRowH)); }
+int D110SequencerGridPanel::visibleRows() const { return juce::jmax(1, int(gridBounds.getHeight() / rowH)); }
 
-float D110SequencerGridPanel::yForNote(int note) const { return gridBounds.getY() + float(topNote - note) * kRowH; }
+float D110SequencerGridPanel::yForNote(int note) const { return gridBounds.getY() + float(topNote - note) * rowH; }
 
 int D110SequencerGridPanel::noteAtY(float y) const {
-	return topNote - int(std::floor((y - gridBounds.getY()) / kRowH));
+	return topNote - int(std::floor((y - gridBounds.getY()) / rowH));
 }
 
 void D110SequencerGridPanel::setTopNote(int newTop) {
@@ -342,7 +391,7 @@ juce::Rectangle<float> D110SequencerGridPanel::noteRect(const NoteInfo &n, const
 	const double barEndBeat = stepTime(g, g.columns);
 	const float x1 = xForBeat(juce::jmax(n.startBeat, g.barStart), g);
 	const float x2 = xForBeat(juce::jmin(noteEnd(n, g), barEndBeat), g);
-	return { x1, yForNote(n.note), juce::jmax(4.0f, x2 - x1), kRowH };
+	return { x1, yForNote(n.note), juce::jmax(4.0f, x2 - x1), rowH };
 }
 
 D110SequencerGridPanel::Hit D110SequencerGridPanel::hitNote(const std::vector<NoteInfo> &notes, const Geometry &g,
@@ -351,7 +400,7 @@ D110SequencerGridPanel::Hit D110SequencerGridPanel::hitNote(const std::vector<No
 		const auto &n = notes[size_t(i)];
 		if (!isEditable(n, g)) continue;
 		const auto r = noteRect(n, g);
-		if (r.contains(p)) return { i, p.x >= r.getRight() - juce::jmin(7.0f, r.getWidth() * 0.4f) };
+		if (r.contains(p)) return { i, p.x >= r.getRight() - juce::jmin(juce::jmax(7.0f, rowH * 0.45f), r.getWidth() * 0.4f) };
 	}
 	return {};
 }
@@ -364,7 +413,7 @@ int D110SequencerGridPanel::hitVelocityStick(const std::vector<NoteInfo> &notes,
 		const auto &n = notes[size_t(i)];
 		if (!isEditable(n, g)) continue;
 		const float x = xForBeat(n.startBeat, g) + 1.0f;
-		if (std::abs(p.x - x) > 6.0f) continue;
+		if (std::abs(p.x - x) > juce::jmax(6.0f, rowH * 0.45f)) continue;
 		const float tipY = velBounds.getBottom() - 4.0f - float(n.velocity) / 127.0f * (velBounds.getHeight() - 8.0f);
 		// Chords put several sticks at one x: take the one whose tip is nearest the pointer.
 		const float d = std::abs(p.y - tipY);
@@ -466,6 +515,27 @@ void D110SequencerGridPanel::selectTrack(int track) {
 	repaint();
 }
 
+void D110SequencerGridPanel::showBarMenu() {
+	juce::PopupMenu m;
+	m.addItem("First bar", [this] { engine().gotoBar(1); repaint(); });
+	m.addItem("Last bar", [this] { engine().gotoBar(engine().getBarCount()); repaint(); });
+	if (onBarMenuButtonExtra) {
+		m.addSeparator();
+		onBarMenuButtonExtra(m);
+	}
+	m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition());
+}
+
+void D110SequencerGridPanel::armLongPress(std::function<void()> action, juce::Point<float> at) {
+	longPressStart = at;
+	const int token = ++longPressToken;
+	juce::Component::SafePointer<D110SequencerGridPanel> safe(this);
+	juce::Timer::callAfterDelay(500, [safe, token, action = std::move(action)] {
+		if (safe == nullptr || token != safe->longPressToken) return;
+		action();
+	});
+}
+
 void D110SequencerGridPanel::showGridMenu() {
 	const double barLen = engine().barLengthBeats();
 	juce::PopupMenu m;
@@ -533,7 +603,8 @@ void D110SequencerGridPanel::promptForTempo() {
 void D110SequencerGridPanel::timerCallback() {
 	if (!isShowing()) return;
 	auto &eng = engine();
-	if (eng.activeTrackCount() != builtTrackCount) {
+	syncRowHeightFromHost();
+	if (eng.activeTrackCount() != builtTrackCount || bool(onBarMenuButtonExtra) != builtWithBarMenu) {
 		if (selTrack >= eng.activeTrackCount()) selTrack = 0;
 		buildLayout();
 	}
@@ -589,7 +660,7 @@ void D110SequencerGridPanel::paint(juce::Graphics &g) {
 	for (int r = 0; r < rows; ++r) {
 		const int note = topNote - r;
 		if (note < 0) break;
-		const juce::Rectangle<float> row(gridBounds.getX(), yForNote(note), gridBounds.getWidth(), kRowH);
+		const juce::Rectangle<float> row(gridBounds.getX(), yForNote(note), gridBounds.getWidth(), rowH);
 		g.setColour(isBlackKey(note) ? pal.box.darker(0.3f) : pal.box);
 		g.fillRect(row);
 		if (note % 12 == 0) {
@@ -631,7 +702,7 @@ void D110SequencerGridPanel::paint(juce::Graphics &g) {
 		g.drawRect(r, 1.0f);
 		if (!ghost && r.getWidth() > 34.0f) {
 			g.setColour(pal.panelBg);
-			g.setFont(juce::FontOptions(9.5f));
+			g.setFont(juce::FontOptions(juce::jlimit(9.5f, 15.0f, rowH * 0.68f)));
 			g.drawText(noteName(n.note), r.reduced(2.0f, 0.0f), juce::Justification::centredLeft);
 		}
 	}
@@ -652,7 +723,7 @@ void D110SequencerGridPanel::paint(juce::Graphics &g) {
 	for (int r = 0; r < rows; ++r) {
 		const int note = topNote - r;
 		if (note < 0) break;
-		const juce::Rectangle<float> key(keysBounds.getX(), yForNote(note), keysBounds.getWidth(), kRowH);
+		const juce::Rectangle<float> key(keysBounds.getX(), yForNote(note), keysBounds.getWidth(), rowH);
 		const bool black = isBlackKey(note);
 		g.setColour(note == auditionNote ? pal.value : (black ? pal.keyBlack : pal.keyWhite));
 		g.fillRect(key);
@@ -660,7 +731,7 @@ void D110SequencerGridPanel::paint(juce::Graphics &g) {
 		g.drawRect(key, 0.5f);
 		if (note % 12 == 0 || note == auditionNote) {
 			g.setColour(black ? pal.keyWhite : pal.keyCaption);
-			g.setFont(juce::FontOptions(9.5f));
+			g.setFont(juce::FontOptions(juce::jlimit(9.5f, 15.0f, rowH * 0.68f)));
 			g.drawText(noteName(note), key.reduced(3.0f, 0.0f), juce::Justification::centredRight);
 		}
 	}
@@ -702,12 +773,14 @@ void D110SequencerGridPanel::mouseDown(const juce::MouseEvent &e) {
 	const auto p = e.position;
 	auto &eng = engine();
 
+	++longPressToken; // any earlier press's pending long-press is void
 	for (const auto &b : buttons) {
 		if (!b.bounds.contains(p)) continue;
 		if (b.enabled && !b.enabled()) return;
 		if (e.mods.isPopupMenu()) {
 			if (b.onRightClick) b.onRightClick();
 		} else if (b.onClick) {
+			if (b.onRightClick) armLongPress(b.onRightClick, p); // touch: hold = right-click
 			b.onClick();
 		}
 		repaint();
@@ -716,6 +789,7 @@ void D110SequencerGridPanel::mouseDown(const juce::MouseEvent &e) {
 
 	if (tempoBounds.contains(p)) {
 		if (e.mods.isPopupMenu()) { promptForTempo(); return; }
+		armLongPress([this] { promptForTempo(); }, p);
 		gesture.kind = GestureKind::tempoDrag;
 		gesture.downPos = p;
 		gesture.tempoStart = eng.getTempo();
@@ -726,6 +800,8 @@ void D110SequencerGridPanel::mouseDown(const juce::MouseEvent &e) {
 		const int note = noteAtY(p.y);
 		if (note < 0 || note > 127) return;
 		gesture.kind = GestureKind::keyAudition;
+		gesture.downPos = p;
+		gesture.scrollStartTop = topNote;
 		startAudition(note, defaultVelocity);
 		repaint();
 		return;
@@ -869,6 +945,7 @@ void D110SequencerGridPanel::resizeGestureNoteTo(float x) {
 void D110SequencerGridPanel::mouseDrag(const juce::MouseEvent &e) {
 	const auto p = e.position;
 	auto &eng = engine();
+	if (p.getDistanceFrom(longPressStart) > 10.0f) ++longPressToken;
 
 	switch (gesture.kind) {
 		case GestureKind::tempoDrag:
@@ -944,11 +1021,21 @@ void D110SequencerGridPanel::mouseDrag(const juce::MouseEvent &e) {
 		}
 
 		case GestureKind::keyAudition:
+			// Dragging the key column scrolls the pitch range (a touchscreen has no wheel, and the
+			// scroll bar is a thin target).
+			if (std::abs(p.y - gesture.downPos.y) < 6.0f) return;
+			stopAudition();
+			gesture.kind = GestureKind::keyScroll;
+			[[fallthrough]];
+		case GestureKind::keyScroll:
+			setTopNote(gesture.scrollStartTop + juce::roundToInt((p.y - gesture.downPos.y) / rowH));
+			return;
 		case GestureKind::none: return;
 	}
 }
 
 void D110SequencerGridPanel::mouseUp(const juce::MouseEvent &) {
+	++longPressToken; // released: no long press
 	auto &eng = engine();
 	const auto geo = geometry();
 	switch (gesture.kind) {
@@ -979,6 +1066,19 @@ void D110SequencerGridPanel::mouseWheelMove(const juce::MouseEvent &e, const juc
 		repaint();
 		return;
 	}
-	if (gridBounds.contains(e.position) || keysBounds.contains(e.position))
+	if (gridBounds.contains(e.position) || keysBounds.contains(e.position)) {
+		if (e.mods.isCtrlDown()) { // Ctrl+wheel: taller (up) / shorter (down) rows
+			float target = rowH;
+			if (wheel.deltaY > 0) {
+				for (float h : rowHeights)
+					if (h > rowH + 0.5f) { target = h; break; }
+			} else {
+				for (float h : rowHeights)
+					if (h < rowH - 0.5f) target = h; // the list ascends, so this ends on the next one down
+			}
+			setRowHeight(target, true);
+			return;
+		}
 		setTopNote(topNote + (wheel.deltaY > 0 ? 2 : -2));
+	}
 }

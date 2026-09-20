@@ -72,6 +72,7 @@ target_sources(D110Android PRIVATE
     ${D110_PLUGIN_SOURCE_DIR}/Source/SoundbankBrowser.cpp
     ${D110_PLUGIN_SOURCE_DIR}/Source/sequencer/D110SequencerPanel.cpp
     ${D110_PLUGIN_SOURCE_DIR}/Source/sequencer/D110SequencerRetroPanel.cpp
+    ${D110_PLUGIN_SOURCE_DIR}/Source/sequencer/D110SequencerGridPanel.cpp
     ${D110_PLUGIN_SOURCE_DIR}/Source/DotMatrixFont.cpp
 )
 

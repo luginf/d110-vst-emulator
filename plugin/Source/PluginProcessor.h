@@ -312,6 +312,8 @@ public:
 	// by the identical route a real keyboard would - nothing here talks to the synth directly.
 	// Safe to call from the message thread; the collector is its own lock.
 	void injectTestNote(int channel, int note, float velocity, bool on) override;
+	int getGridRowHeight() const override { return gridRowHeight; }
+	void setGridRowHeight(int pixels) override { gridRowHeight = pixels; }
 	void auditionTrackNote(int track, int note, int velocity, bool on) override {
 		injectTestNote(sequencerEngine.channelForTrack(track), note, static_cast<float>(velocity) / 127.0f, on);
 	}
@@ -1022,6 +1024,7 @@ private:
 	// See getSequencerRetroMode()/setSequencerRetroMode() above.
 	bool sequencerRetroMode = false;
 	bool sequencerGridMode = false;
+	int gridRowHeight = 0; // see D110SequencerHost::getGridRowHeight()
 	bool compactPanelMode = false;
 	juce::String retroKeyBindings;
 	bool retroLcdCompactMode = false;

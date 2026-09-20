@@ -40,6 +40,12 @@ public:
 	// the drawer the same way whichever one is showing.
 	static constexpr float kRefH = 347.0f;
 
+	// A host with nowhere else to put its own menu (the Android app hides its hamburger while
+	// a sequencer view shows) sets this: a bar-menu button then appears in the transport row's
+	// last column, exactly where D110SequencerPanel has its own, holding "first/last bar" and
+	// whatever this callback appends. Unset (the desktop) there is no such button.
+	std::function<void(juce::PopupMenu &)> onBarMenuButtonExtra;
+
 private:
 	void timerCallback() override;
 	void scrollBarMoved(juce::ScrollBar *, double newRangeStart) override;
@@ -56,6 +62,16 @@ private:
 	};
 
 	void buildLayout();
+	// Pixel height of one pitch row (the ROW button, Ctrl+wheel, and the host's persisted
+	// choice all end up here). Touch hosts want it much taller than the mouse default; the
+	// piano-key/scrollbar/velocity-lane sizes and the hit tolerances follow it.
+	void setRowHeight(float newRowH, bool persist);
+	void cycleRowHeight();
+	void syncRowHeightFromHost();
+	void showBarMenu();
+	// Touchscreens have no right button: holding a transport button ~500ms runs its right-click
+	// action too, same idea as D110SequencerPanel's long press.
+	void armLongPress(std::function<void()> action, juce::Point<float> at);
 	void addButton(juce::Rectangle<float> bounds, std::function<juce::String()> label, std::function<void()> onClick,
 	               std::function<bool()> active = {}, std::function<bool()> enabled = {},
 	               std::function<void()> onRightClick = {});
@@ -150,6 +166,10 @@ private:
 	int topNote = 79;     // highest pitch row currently visible
 	bool viewInitialised = false;
 	int lastBar = -1;
+	float rowH = 14.0f;           // see setRowHeight()
+	bool builtWithBarMenu = false; // whether the bar-menu button existed when the layout was last built
+	int longPressToken = 0;
+	juce::Point<float> longPressStart;
 	int builtTrackCount = 0; // activeTrackCount() the track buttons were last laid out for
 
 	std::vector<Button> buttons;
@@ -159,7 +179,7 @@ private:
 	juce::ScrollBar vBar{true};
 
 	// ---- mouse gesture in progress
-	enum class GestureKind { none, keyAudition, pendingNote, moveNote, resizeNote, newNote, velocity, tempoDrag };
+	enum class GestureKind { none, keyAudition, keyScroll, pendingNote, moveNote, resizeNote, newNote, velocity, tempoDrag };
 	struct Gesture {
 		GestureKind kind = GestureKind::none;
 		int engineIndex = -1;      // the note's index in the engine's sequence, kept current after every update
@@ -176,6 +196,7 @@ private:
 		bool changed = false;      // the note was actually modified (vs a plain click)
 		juce::Point<float> downPos;
 		double tempoStart = 0.0;
+		int scrollStartTop = 0;    // keyScroll: topNote when the drag began
 	} gesture;
 	int auditionNote = -1;
 

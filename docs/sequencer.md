@@ -249,8 +249,17 @@ the other two: edits appear there and the other way round.
 - **GRID** picks the step size (1/4, 1/8, 1/16, 1/32 and the 1/8 and 1/16 triplets), or **OFF**:
   no snapping at all, notes are added, moved and resized at any position (the 1/16 columns stay
   as a guide, and LEN counts those columns).
+- **ROW** steps the height of the pitch rows (14, 20, 28, 38 px; Ctrl+wheel does the same on a
+  desktop) and is remembered between launches. The taller sizes are for fingers: the piano-key
+  column, scroll bar, velocity lane and hit zones grow with it. Dragging the piano-key column
+  scrolls the pitch range, so no wheel is needed on a touchscreen.
 - The wheel or the scroll bar moves the visible pitch range. Notes held over from an earlier bar
   are drawn dimmed and can be edited from the bar they start in.
+
+On Android it is the "Piano Roll Sequencer" entry of Options (rows start at 28 px there), the
+bar-menu button in the last transport column opens the app menu, and holding a transport button
+for half a second acts as its right-click. Tapping a note removes it, and GRID OFF replaces the
+middle-click free move.
 
 Every gesture is one UNDO step, and edits made while playing are heard as soon as the playhead reaches them. A
 note is never made to overlap another note of the same pitch, since that would cut one of them

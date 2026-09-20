@@ -22,6 +22,7 @@
 #include "Source/D110Keyboard.h"
 #include "Source/SoundbankBrowser.h"
 #include "Source/UiTheme.h"
+#include "Source/sequencer/D110SequencerGridPanel.h"
 #include "Source/sequencer/D110SequencerPanel.h"
 #include "Source/sequencer/D110SequencerRetroPanel.h"
 
@@ -58,7 +59,7 @@ public:
 	}
 
 	MainComponent()
-		: panel(processor), keyboard(processor), gridSeq(processor), retroSeq(processor),
+		: panel(processor), keyboard(processor), gridSeq(processor), pianoRollSeq(processor), retroSeq(processor),
 		  soundbankBrowser(processor) {
 		// Bring-up shortcut, still the path chooseRomFolder() (hamburger menu) now also copies
 		// into - see its own comment. Originally ROMs only got there via `adb push`; the
@@ -68,6 +69,10 @@ public:
 			D110AudioProcessor::setCustomRomFolder(romBringUpDir().getFullPathName());
 		processor.reloadRomsAndPowerOn();
 		loadPersistedState();
+		// The piano roll's pitch rows are 14px on a desktop - far too thin for a finger. First
+		// run (nothing persisted yet) starts at a touch-sized 28; the piano roll's own ROW
+		// button changes it from there and the choice is saved with the rest of the state.
+		if (processor.getGridRowHeight() == 0) processor.setGridRowHeight(28);
 
 			// Theme (Options -> Theme), added 2026-08-28: the app never applied its own saved
 			// uiThemeLight/uiThemeFollowSystem to d110ui at all before this (grep confirmed zero
@@ -92,6 +97,7 @@ public:
 		// shows follows processor.getSequencerRetroMode() (default false - normal/grid),
 		// the exact same flag and default the desktop editor's own Options menu uses.
 		addChildComponent(gridSeq);
+		addChildComponent(pianoRollSeq); // third view: piano roll, see processor.getSequencerGridMode()
 		addChildComponent(retroSeq);
 		// Same shared component the desktop plugin's own SOUNDBANKS tab hosts (SoundbankBrowser.h)
 		// - reached from the hamburger menu instead of a tab, this app having no tab strip at all.
@@ -101,6 +107,8 @@ public:
 		// Play/Stop/hamburger row to get its full height, so its own bar-navigation menu
 		// button becomes the only way back to it.
 		gridSeq.onBarMenuButtonExtra = [this](juce::PopupMenu &m) { buildAppMenu(m); };
+		// Same reason for the piano roll: it replaces the app's own hamburger row too.
+		pianoRollSeq.onBarMenuButtonExtra = [this](juce::PopupMenu &m) { buildAppMenu(m); };
 		addAndMakeVisible(keyboard);
 
 		playButton.setButtonText("Play");
@@ -269,6 +277,7 @@ public:
 		// playback feature, not the sequencer transport - sitting right above retro's own
 		// STOP/PLAY/REC, they read as duplicates of it even though they do something
 		// completely unrelated, which is exactly the confusion Alan reported.
+		// (Also true for the piano roll view: it has the same bar-menu button, fed by pianoRollSeq.onBarMenuButtonExtra.)
 		const bool inGridSequencer = showingSequencer && !processor.getSequencerRetroMode();
 		const bool inRetroSequencer = showingSequencer && processor.getSequencerRetroMode();
 		// Soundbanks keeps the hamburger (its only way back to Panel view, same reasoning as
@@ -390,6 +399,7 @@ public:
 			// small phone screen has more use for the extra list height.
 			panel.setVisible(false);
 			gridSeq.setVisible(false);
+			pianoRollSeq.setVisible(false);
 			retroSeq.setVisible(false);
 			keyboard.setVisible(false);
 			// Bug fix (Alan's report, 2026-08-28): this was the one branch that never actually
@@ -404,7 +414,9 @@ public:
 			panel.setVisible(false);
 			soundbankBrowser.setVisible(false);
 			const bool retro = processor.getSequencerRetroMode();
-			gridSeq.setVisible(!retro);
+			const bool pianoRoll = !retro && processor.getSequencerGridMode();
+			gridSeq.setVisible(!retro && !pianoRoll);
+			pianoRollSeq.setVisible(pianoRoll);
 			retroSeq.setVisible(retro);
 
 			// Unlike Panel mode below, the sequencer here is NOT capped at its own reference
@@ -440,11 +452,13 @@ public:
 			auto seqBounds = area;
 			seqBounds.removeFromBottom(keyboardHeight);
 			gridSeq.setBounds(seqBounds);
+			pianoRollSeq.setBounds(seqBounds);
 			retroSeq.setBounds(seqBounds);
 			keyboard.setVisible(true);
 			keyboard.setBounds(area.removeFromBottom(keyboardHeight));
 		} else {
 			gridSeq.setVisible(false);
+			pianoRollSeq.setVisible(false);
 			retroSeq.setVisible(false);
 			soundbankBrowser.setVisible(false);
 			keyboard.setVisible(true);
@@ -537,6 +551,8 @@ private:
 		// Grid is the default (matches the desktop editor's own default) - this is the one
 		// Alan asked to keep reachable first, 2026-08-22, with retro kept as a fallback rather
 		// than the primary view that same request had originally put it as.
+		options.addItem("Piano Roll Sequencer (grid editor)", true, processor.getSequencerGridMode(),
+		                 [this] { toggleSequencerPianoRollMode(); });
 		options.addItem("Retro Sequencer (D-pad style)", true, processor.getSequencerRetroMode(),
 		                 [this] { toggleSequencerRetroMode(); });
 		options.addSeparator();
@@ -595,6 +611,12 @@ private:
 		processor.setUiThemeFollowSystem(mode == d110ui::ThemeMode::System);
 		if (mode != d110ui::ThemeMode::System) processor.setUiThemeLight(mode == d110ui::ThemeMode::Light);
 		applyThemeMode();
+	}
+
+	// The three views are mutually exclusive (see D110AudioProcessor::setSequencerRetroMode()).
+	void toggleSequencerPianoRollMode() {
+		processor.setSequencerGridMode(!processor.getSequencerGridMode());
+		if (showingSequencer) resized();
 	}
 
 	void toggleSequencerRetroMode() {
@@ -1139,6 +1161,7 @@ private:
 	D110Panel panel;
 	D110Keyboard keyboard;
 	D110SequencerPanel gridSeq;
+	D110SequencerGridPanel pianoRollSeq; // the third view - the piano roll (gridSeq is the normal strip)
 	D110SequencerRetroPanel retroSeq;
 	SoundbankBrowser soundbankBrowser;
 	bool showingSequencer = false;

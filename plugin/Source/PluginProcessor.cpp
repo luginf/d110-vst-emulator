@@ -2951,6 +2951,7 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	// See getSequencerRetroMode().
 	xml->setAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0);
 	xml->setAttribute("sequencerGridMode", sequencerGridMode ? 1 : 0);
+	xml->setAttribute("gridRowHeight", gridRowHeight);
 	// See getCompactPanelMode().
 	xml->setAttribute("compactPanelMode", compactPanelMode ? 1 : 0);
 	// See D110SequencerHost::getRetroKeyBindings().
@@ -3127,6 +3128,7 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 	setSequencerRetroMode(xml->getIntAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0) != 0);
 	if (!sequencerRetroMode)
 		setSequencerGridMode(xml->getIntAttribute("sequencerGridMode", sequencerGridMode ? 1 : 0) != 0);
+	gridRowHeight = xml->getIntAttribute("gridRowHeight", gridRowHeight);
 	setCompactPanelMode(xml->getIntAttribute("compactPanelMode", compactPanelMode ? 1 : 0) != 0);
 	setRetroKeyBindings(xml->getStringAttribute("retroKeyBindings", retroKeyBindings));
 	setRetroLcdCompactMode(xml->getIntAttribute("retroLcdCompactMode", retroLcdCompactMode ? 1 : 0) != 0);

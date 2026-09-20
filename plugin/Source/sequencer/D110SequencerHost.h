@@ -246,4 +246,11 @@ public:
 	// through the same path as the on-screen keyboard's own notes. A no-op by default (the
 	// grid editor just stays silent), both concrete hosts override it.
 	virtual void auditionTrackNote(int /*track*/, int /*note*/, int /*velocity*/, bool /*on*/) {}
+
+	// Optional: the grid editor's (D110SequencerGridPanel) row height in pixels, so the choice
+	// survives a restart. 0 = never set (the panel then uses its 14px desktop default; the
+	// Android app sets a larger one for fingers the first time it runs). Both concrete hosts
+	// persist it with the rest of their state.
+	virtual int getGridRowHeight() const { return 0; }
+	virtual void setGridRowHeight(int /*pixels*/) {}
 };

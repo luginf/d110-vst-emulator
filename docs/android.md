@@ -10,7 +10,7 @@ launcher label "d110".
 ## What's in it
 
 - The real firmware/native core, the real photographed panel, the on-screen keyboard (1 or 2
-  octaves), and the full D-20-style sequencer (grid and retro D-pad views) - all shared with the
+  octaves), and the full D-20-style sequencer (strip, retro D-pad and piano-roll views, see Options) - all shared with the
   desktop plugin. No extended editor drawer and no memory card slot.
 - A single hamburger menu (☰) for everything the desktop build splits across Load/Options.
 - Loading a MIDI file to play, and importing a SysEx/MIDI bank (`.syx` or SysEx events embedded
