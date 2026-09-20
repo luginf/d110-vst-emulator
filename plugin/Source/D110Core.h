@@ -123,9 +123,8 @@ public:
 	// How many mirror messages have been produced since boot - diagnostics, so a
 	// "nothing changed" result can be told apart from "the bridge never fired".
 	uint64_t sysexEmitted() const { return sysexCount.load(std::memory_order_acquire); }
-	// Сообщения зеркала, которым не хватило места в кольце. Всё, кроме нуля, означает,
-	// что движок недополучил обновления параметров, и любое снятое с него показание -
-	// это нижняя граница.
+	// Mirror messages that found no room in the ring. Anything but zero means the engine missed
+	// parameter updates, and any reading taken from it is a lower bound.
 	uint64_t sysexDropped() const { return sysexDropCount.load(std::memory_order_acquire); }
 
 	// --- Roland's map, as this instrument lays it out -------------------------
@@ -158,47 +157,46 @@ public:
 	static constexpr int kRamToneTemp   = 0x21E4;
 	static constexpr int kRamTimbres    = 0x2994;
 	static constexpr int kRamSystem     = 0x2D94;
-	// Имя патча, который прибор играет прямо сейчас: первые десять байт рабочей копии,
-	// сразу за системной областью. Остальное из патча живёт не здесь, а разложено по
-	// временным областям - реверберация, резерв и каналы в системной, назначения партий
-	// в Timbre Temporary, - поэтому отсюда берётся только имя.
+	// Name of the patch the unit is playing right now: the first ten bytes of the working copy,
+	// right after the System area. The rest of the patch does not live here but is unpacked
+	// into the temporary areas - reverb, reserve and channels in System, part assignments in
+	// Timbre Temporary - so only the name is taken from here.
 	static constexpr int kRamPatchName  = 0x2DAB;
-	// Номер играющего патча, 0..63. Измерено нажатиями: три Number+ сдвигают этот байт
-	// ровно на три, одно Bank+ - ровно на восемь (plugin/editor_write_probe.cpp). Отсюда
-	// редактор и умеет переходить на любой патч кнопками самой панели.
+	// Number of the playing patch, 0..63. Measured by button presses: three Number+ move this
+	// byte by exactly three, one Bank+ by exactly eight (plugin/editor_write_probe.cpp). This is
+	// what lets the editor go to any patch with the panel's own buttons.
 	static constexpr int kRamPatchNumber = 0x2DB9;
 
 	static constexpr int kNumPatches       = 64;
 	static constexpr int kPatchRecord      = 128;
-	static constexpr int kNumTimbres       = 128;  // внутренняя память тембров, I-A/I-B
+	static constexpr int kNumTimbres       = 128;  // internal timbre memory, I-A/I-B
 	static constexpr int kTimbreRecord     = 8;
-	static constexpr int kNumParts         = 9;    // восемь голосовых и ритм
+	static constexpr int kNumParts         = 9;    // eight voice parts and rhythm
 	static constexpr int kTimbreTempRecord = 16;
 	static constexpr int kToneRecord       = 246;
 	static constexpr int kNumRhythmKeys    = 85;
 	static constexpr int kRhythmRecord     = 4;
 	static constexpr int kRhythmFirstKey   = 24;
 	static constexpr int kNameChars        = 10;
-	// Память тонов: RAM 0x4000 == SysEx 08 00 00, 64 записи по 256 байт - верхняя половина
-	// батарейного ОЗУ целиком. Единственная область карты Roland, которую нельзя было найти
-	// по содержимому: в заводском приборе она пуста, и все эти 16 КБ - нули. Измерена
-	// записью (plugin/editor_write_probe.cpp): два имени, посланные по адресам 08 00 00 и
-	// 08 04 00, легли по 0x4000 и 0x4200, то есть с шагом 256. Подтверждено вторым,
-	// независимым способом: после записи прибор СВОИМ индикатором назвал тон группы 2
-	// присланным именем.
+	// Tone memory: RAM 0x4000 == SysEx 08 00 00, 64 records of 256 bytes - the whole upper half
+	// of the battery-backed RAM. The only area of Roland's map that could not be found by
+	// contents: in a factory unit it is empty, all 16 KB zeros. Measured by writing
+	// (plugin/editor_write_probe.cpp): two names sent to addresses 08 00 00 and 08 04 00 landed
+	// at 0x4000 and 0x4200, i.e. a stride of 256. Confirmed a second, independent way: after
+	// the write the unit named the group-2 tone with the sent name on ITS OWN display.
 	static constexpr int kRamTones     = 0x4000;
 	static constexpr int kNumTones     = 64;
 	static constexpr int kToneMemRecord = 256;
 
-	// Строит ровно то же сообщение "Data set 1", какое строит зеркало (см. emitRegionSysex),
-	// но для произвольного адреса и произвольных данных, и НЕ ставит его в очередь: этим
-	// пользуется расширенный редактор, чей путь ведёт не в движок, а в саму прошивку -
-	// через pushMidi, то есть через её собственный приёмник MIDI. Возвращает длину
-	// сообщения в `out` (не меньше kMaxSysexBytes) или 0, если данные не помещаются.
+	// Builds exactly the same "Data set 1" message the mirror builds (see emitRegionSysex), but
+	// for an arbitrary address and arbitrary data, and does NOT queue it: the extended editor
+	// uses this, and its path leads not to the engine but to the firmware itself - through
+	// pushMidi, i.e. through its own MIDI receiver. Returns the message length in `out` (at
+	// least kMaxSysexBytes) or 0 if the data does not fit.
 	//
-	// `offset` складывается с адресом в СЕМИБИТНОМ пространстве Roland, а не как обычное
-	// число: у Roland каждый байт адреса несёт семь бит, и смещение 246-байтного тембра
-	// иначе указывало бы не туда, стоит ему перевалить за 0x80.
+	// `offset` is added to the address in Roland's SEVEN-BIT space, not as an ordinary number:
+	// each address byte carries seven bits for Roland, and the offset of a 246-byte timbre
+	// would otherwise point elsewhere as soon as it crosses 0x80.
 	static int buildDt1Message(uint32_t sysexAddress, int offset, const uint8_t *data,
 	                           int length, uint8_t *out);
 
@@ -291,14 +289,14 @@ public:
 	//               its handler the status byte it reads from 0x0C00, encoding the very
 	//               voice it is waiting for. The handler then does its own work, which is
 	//               what the two cruder policies skipped. See docs/la32_interface.md.
-	//   La32Ramps - то, чем это на самом деле является. Амплитуда и срез у LA32 - аппаратные
-	//               рампы: процессор кладёт цель и приращение, микросхема идёт к цели сама и
-	//               по достижении поднимает INT, а прошивка по прерыванию грузит следующую
-	//               ступень огибающей. Измерено (docs/la32_register_map.md): за целую ноту
-	//               прошивка получает НОЛЬ ответов, поэтому огибающая обрывается на первой
-	//               ступени, и правка её времён и уровней не доходит до микросхемы вовсе.
-	//               Здесь рампы считаются по-настоящему, и прерывание поднимает их прибытие,
-	//               а не то, что процессор куда-то встал.
+	//   La32Ramps - what this actually is. On the LA32 amplitude and cutoff are hardware
+	//               ramps: the CPU stores a target and an increment, the chip walks to the
+	//               target on its own and raises INT on arrival, and the firmware loads the
+	//               next envelope step from the interrupt. Measured (docs/la32_register_map.md):
+	//               over a whole note the firmware gets ZERO answers, so the envelope breaks
+	//               off at the first step, and edits to its times and levels never reach the
+	//               chip at all. Here the ramps are really computed, and the interrupt
+	//               signals their arrival, not that the CPU got stuck somewhere.
 	enum class StuckPolicy { Off, PokeRam, PulseExtInt, La32Stub, La32Ramps };
 	void setStuckPolicy(StuckPolicy p) { stuckPolicy.store(int(p), std::memory_order_release); }
 	StuckPolicy stuckPolicy_() const {
@@ -406,27 +404,27 @@ public:
 	void setLa32ResponseDelay(int ticks) { la32Delay.store(ticks, std::memory_order_release); }
 	int la32ResponseDelay() const { return la32Delay.load(std::memory_order_acquire); }
 
-	// --- аппаратные рампы LA32 ---------------------------------------------------
-	// Два банка регистров по два байта на слот: чётный байт - ПРИРАЩЕНИЕ, нечётный - ЦЕЛЬ.
-	// Порядок именно такой, и он снят с измерения, а не выбран: при нажатии в банк
-	// амплитуды уходит цель 0x7E при силе 100 и 0x6E при силе 40 (то есть цель - это
-	// уровень), а при снятии цель 0x00 с приращением 0xCF, у которого старший бит означает
-	// «вниз». Банк среза ведёт себя в точности так же, что само по себе довод.
+	// --- LA32 hardware ramps -----------------------------------------------------
+	// Two register banks, two bytes per slot: the even byte is the INCREMENT, the odd one the
+	// TARGET. That order is measured, not chosen: on key-down the amplitude bank receives target
+	// 0x7E at velocity 100 and 0x6E at velocity 40 (so the target is the level), and on key-up
+	// target 0x00 with increment 0xCF, whose top bit means "downward". The cutoff bank behaves
+	// exactly the same, which is an argument in itself.
 	//
-	// Смысл цели и приращения взят у модели той же микросхемы в munt (LA32Ramp), где он
-	// восстановлен по анализу записей с живого прибора: старший бит приращения - сторона
-	// движения, младшие семь - скорость по экспоненте, нулевое приращение не двигает ничего
-	// и прерывания не даёт.
-	static constexpr uint16_t kAmpRampBase = 0x0C80;   // рампа TVA
-	static constexpr uint16_t kFilterRampBase = 0x0C00; // рампа TVF - см. оговорку в документе
-	// Частота, на которой микросхема считает рампы. Отсюда же её выход цифрового звука.
+	// The meaning of target and increment is taken from munt's model of the same chip (LA32Ramp),
+	// where it was reconstructed by analysing recordings from a live unit: the increment's top
+	// bit is the direction, the low seven the speed on an exponential scale, a zero increment
+	// moves nothing and raises no interrupt.
+	static constexpr uint16_t kAmpRampBase = 0x0C80;   // TVA ramp
+	static constexpr uint16_t kFilterRampBase = 0x0C00; // TVF ramp - see the caveat in the document
+	// The rate at which the chip computes ramps. Also the rate of its digital audio output.
 	static constexpr double kLa32SampleRate = 32000.0;
-	// Сколько рамп стартовало и сколько дошло до цели - счётчики, а не журнал: вопрос
-	// «работает ли механизм вообще» обрезанной записью не отвечается.
+	// How many ramps started and how many reached their target - counters, not a log: "does the
+	// mechanism work at all" cannot be answered by a truncated record.
 	uint64_t la32RampStarts() const { return rampStarts.load(std::memory_order_acquire); }
 	uint64_t la32RampLandings() const { return rampLandings.load(std::memory_order_acquire); }
-	// Считать ли приращение 0xFF установкой без прерывания. Держится переключателем, потому
-	// что это ГИПОТЕЗА, и стенд обязан уметь показать обе стороны.
+	// Whether to treat increment 0xFF as "set without interrupt". Kept as a switch because it
+	// is a HYPOTHESIS, and the rig must be able to show both sides.
 	void setLa32PresetFf(bool on) { presetFf.store(on, std::memory_order_release); }
 	bool la32PresetFf() const { return presetFf.load(std::memory_order_acquire); }
 	void osdCountRampStart() { rampStarts.fetch_add(1, std::memory_order_relaxed); }
@@ -436,61 +434,61 @@ public:
 	int la32StatusMode() const { return la32Mode.load(std::memory_order_acquire); }
 	static uint8_t encodeLa32Status(int mode, uint16_t voice);
 
-	// --- карта памяти M-256D ---------------------------------------------------
-	// Присутствие карты железо НИКАК не сигнализирует: у прошивки нет ни линии, ни бита
-	// «карта вставлена». Она узнаёт карту тем, что ПИШЕТ в неё и читает обратно.
-	// Подпрограмма опознания, ПЗУ 0x770A (дизассемблировано, см. docs/memory_card.md):
+	// --- M-256D memory card -------------------------------------------------------
+	// The hardware signals the card's presence in NO way: the firmware has neither a line nor a
+	// "card inserted" bit. It recognises a card by WRITING to it and reading back.
+	// The detection routine, ROM 0x770A (disassembled, see docs/memory_card.md):
 	//
-	//   770A  lcall 7d35             банк 0x30 - первые 16 КБ карты в окне 0x8000-0xBFFF
-	//   770D  ld 78, #7804           двенадцатибайтная подпись в ПЗУ
-	//   7718  ldb 70, [76]           байт карты
-	//   771B  cmpb 70, [78]          сверить с подписью; не сошлось - на 7746
-	//   7746  ldb 75, 70 / negb 75   дополнение прочитанного байта
-	//   774B  stb 75, [76]           записать его В КАРТУ
-	//   774E  cmpb 70, [76]          прочитать то же место обратно
-	//   7751  jne 7759               изменилось - запись прошла, карта ЕСТЬ (код 'C')
-	//   7753  cmpb 70, #ff           не изменилось. А исходный байт был 0xFF?
-	//   7756  jne 7759               нет - всё равно считать картой
-	//   7758  ret                    0xFF и не пишется - КАРТЫ НЕТ, код 0xFF
+	//   770A  lcall 7d35             bank 0x30 - the card's first 16 KB in the 0x8000-0xBFFF window
+	//   770D  ld 78, #7804           twelve-byte signature in ROM
+	//   7718  ldb 70, [76]           a card byte
+	//   771B  cmpb 70, [78]          compare with the signature; mismatch - go to 7746
+	//   7746  ldb 75, 70 / negb 75   complement of the byte read
+	//   774B  stb 75, [76]           write it INTO THE CARD
+	//   774E  cmpb 70, [76]          read the same place back
+	//   7751  jne 7759               changed - the write took, a card IS present (code 'C')
+	//   7753  cmpb 70, #ff           unchanged. Was the original byte 0xFF?
+	//   7756  jne 7759               no - treat it as a card anyway
+	//   7758  ret                    0xFF and not writable - NO CARD, code 0xFF
 	//
-	// Код 0xFF разбирается по 0x76E2 и выводит "Card Not Ready". То есть пустое гнездо
-	// для прошивки - это шина, которая читается как 0xFF и не принимает запись. Ровно это
-	// здесь и изображается: содержимое карты уносится в свой буфер, а разделяемая память
-	// "memcs" заливается 0xFF. Патчить MAME не нужно, драйверу знать ничего не надо.
+	// Code 0xFF is handled at 0x76E2 and prints "Card Not Ready". So to the firmware an empty
+	// socket is a bus that reads as 0xFF and refuses writes. That is exactly what is portrayed
+	// here: the card's contents are carried off into their own buffer, and the shared memory
+	// "memcs" is flooded with 0xFF. No MAME patch needed, the driver needs to know nothing.
 	//
-	// Защиту от записи прошивка читает отдельно и в другом банке: 0x7770 ставит банк 0x31
-	// и читает 0xBFFF, то есть смещение 0x7FFF от начала карты; ноль в бите 0 даёт
+	// The firmware reads write protection separately and in another bank: 0x7770 sets bank 0x31
+	// and reads 0xBFFF, i.e. offset 0x7FFF from the start of the card; a zero in bit 0 yields
 	// "Memory Card Write Protected".
 	//
-	// ЭТОТ БАЙТ - НЕ ПАМЯТЬ КАРТЫ, а порт состояния вентильной матрицы IC21 (D65005G-062).
-	// По схеме главной платы (стр. 7 сервисных заметок) вывод 34 разъёма CN8 - `CST` - идёт
-	// на вход `SENS` матрицы и подтянут к питанию через R11 100K, а вывод 33 `VBB` - через
-	// компаратор 22a на вход `BATT`. Это единственные две линии карты, кроме шины, и читать
-	// их процессору больше неоткуда. Что адрес 0x7FFF не хранит, а сообщает, видно и по
-	// поведению: форматирование заливает всю карту и записывает туда 0x00, и если бы это была
-	// память, только что отформатированная карта немедленно оказывалась бы защищённой от
-	// записи - что и происходило, пока байт не стал портом (измерено d110_card roundtrip).
-	// Драйвер MAME отдаёт весь диапазон 0xC0000-0xC7FFF под ОЗУ и матрицу не моделирует
-	// вовсе, поэтому порт восстанавливается здесь перехватом чтения.
+	// THIS BYTE IS NOT CARD MEMORY but the status port of the IC21 gate array (D65005G-062).
+	// On the main board schematic (service notes p. 7) pin 34 of connector CN8 - `CST` - goes
+	// to the array's `SENS` input, pulled up through R11 100K, and pin 33 `VBB` through
+	// comparator 22a to the `BATT` input. These are the card's only two lines besides the bus,
+	// and the CPU has nowhere else to read them from. That address 0x7FFF reports rather than
+	// stores also shows in behaviour: formatting floods the whole card, writing 0x00 there, and
+	// if this were memory a freshly formatted card would immediately turn out write-protected -
+	// which is what happened until the byte became a port (measured by the d110_card
+	// roundtrip). The MAME driver gives the whole 0xC0000-0xC7FFF range to RAM and does not
+	// model the array at all, so the port is recreated here by intercepting the read.
 	static constexpr int kCardSize = 0x8000;
 	static constexpr int kCardStatusOffset = 0x7fff;
-	// Чем читается пустое гнездо. Именно это значение прошивка и проверяет на 0x7753.
+	// What an empty socket reads as. This is precisely the value the firmware checks at 0x7753.
 	static constexpr uint8_t kCardAbsentByte = 0xff;
 	void setCardInserted(bool in) { cardWant.store(in, std::memory_order_release); }
 	bool cardInserted() const { return cardWant.load(std::memory_order_acquire); }
-	// Движок защиты от записи на самой карте. Читается как бит 0 порта состояния: ноль -
-	// защищена. Прочие биты порта прошивка не смотрит ни разу (во всём ПЗУ ровно одно
-	// чтение этого адреса, 0x7778), поэтому они отдаются единицами - так же, как их отдала
-	// бы неподключённая подтянутая линия.
+	// The write-protect switch on the card itself. Read as bit 0 of the status port: zero -
+	// protected. The firmware never looks at the port's other bits (exactly one read of this
+	// address in the whole ROM, 0x7778), so they are returned as ones - the same as an
+	// unconnected pulled-up line would give.
 	void setCardWriteProtect(bool on) { cardProtect.store(on, std::memory_order_release); }
 	bool cardWriteProtect() const { return cardProtect.load(std::memory_order_acquire); }
 	uint8_t cardStatusByte() const { return cardWriteProtect() ? 0xfe : 0xff; }
-	// Заменить содержимое карты целиком (kCardSize байт). Стенд заливает им пустое гнездо,
-	// чистую карту и карту с защитой от записи, чтобы про каждое состояние высказалась сама
-	// прошивка, а не разбор её кода.
+	// Replace the card's contents wholesale (kCardSize bytes). The rig fills an empty socket, a
+	// blank card and a write-protected card with it, so that the firmware itself, not a reading
+	// of its code, speaks for each state.
 	void setCardImage(const uint8_t *bytes);
-	// Текущее содержимое карты. Пока она вставлена, истина живёт в разделяемой памяти
-	// машины, поэтому снимок берётся оттуда, а не из буфера плагина.
+	// The card's current contents. While it is inserted the truth lives in the machine's shared
+	// memory, so the snapshot is taken from there, not from the plugin's buffer.
 	bool getCardImage(uint8_t *out) const;
 	void osdApplyCard(uint8_t *shared);
 	void osdDetachCard(uint8_t *shared);
@@ -507,21 +505,21 @@ public:
 	// Takes everything captured so far and empties the buffer.
 	std::vector<std::string> takeLogLines();
 
-	// --- лампа MIDI MESSAGE ------------------------------------------------------
-	// Горит, пока на вход MIDI приходят байты, и гаснет примерно через кTMidiLampHoldMs
-	// после последнего. Это ждущий мультивибратор на выходе оптрона входа MIDI - схемное
-	// решение, обычное для Roland тех лет, - а не регистр, которым правит прошивка.
+	// --- MIDI MESSAGE lamp ----------------------------------------------------------
+	// Lit while bytes arrive on MIDI IN, going out about kMidiLampHoldMs after the last one. It
+	// is a monostable on the output of the MIDI IN optocoupler - a circuit typical of Roland in
+	// those years - not a register the firmware drives.
 	//
-	// Прошивка ею не управляет, и это измерено, а не выведено из общих соображений
-	// (plugin/so_trace_probe.cpp, цель d110_so_trace). За весь сеанс прошивка пишет во
-	// внешние защёлки пять раз, все при загрузке - по 0x0200 из ПЗУ 0x2106 и 0x2D28, по
-	// 0x0280 из 0x1C94, 0x1CC1 и 0x20FF, - и бит 0 сброшен в каждой. В выводы портов 1 и
-	// 2 самого процессора (файл регистров 0x0F и 0x10) она не пишет НИ РАЗУ. При приходе
-	// MIDI не пишется ничего и никуда. Значит зажигать лампу прошивке нечем.
+	// The firmware does not drive it, and that is measured, not deduced from general principles
+	// (plugin/so_trace_probe.cpp, target d110_so_trace). Over a whole session the firmware
+	// writes the external latches five times, all at boot - to 0x0200 from ROM 0x2106 and
+	// 0x2D28, to 0x0280 from 0x1C94, 0x1CC1 and 0x20FF - with bit 0 clear in every one. It
+	// NEVER writes the CPU's own port 1 and 2 outputs (register file 0x0F and 0x10). On MIDI
+	// arrival nothing is written anywhere. So the firmware has nothing to light the lamp with.
 	//
-	// Раньше здесь читался бит 0 защёлки SO - так его называет комментарий в so_w() из
-	// roland_d10.cpp. Бит этот всегда ноль, поэтому лампа не загоралась никогда, а панель
-	// при этом считала показание достоверным и уверенно рисовала её погашенной.
+	// Bit 0 of the SO latch used to be read here - that is what the comment in so_w() in
+	// roland_d10.cpp calls it. That bit is always zero, so the lamp never lit, while the panel
+	// took the reading as authoritative and confidently drew it dark.
 	static constexpr int64_t kMidiLampHoldMs = 90;
 	static int64_t nowMs() {
 		return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -531,66 +529,66 @@ public:
 		const int64_t last = lastMidiByteMs.load(std::memory_order_acquire);
 		return last != 0 && nowMs() - last < kMidiLampHoldMs;
 	}
-	// Осталось для панели: раньше это значило "прошивка хоть раз написала регистр".
-	// Теперь источник известен всегда, и запасной путь панели не нужен.
+	// Left for the panel: this used to mean "the firmware has written the register at least
+	// once". Now the source is always known, and the panel's fallback path is not needed.
 	bool midiLampValid() const { return true; }
 	static constexpr uint16_t kSoRegister = 0x0200;
-	// Тот же адрес с точностью до A7. Карта памяти в MAME описывает защёлку SO ровно по
-	// 0x0200, и записи по 0x0280 в неё не попадают - они видны только в журнале
-	// неотображённых обращений. Если на плате дешифратор грубее (а адрес рядом и больше
-	// ничем не занят), это одна и та же защёлка, и половина её записей сейчас теряется.
+	// The same address up to A7. MAME's memory map describes the SO latch at exactly 0x0200, and
+	// writes to 0x0280 do not reach it - they show only in the unmapped-access log. If the
+	// decoder on the board is coarser (the address is adjacent and nothing else occupies it),
+	// this is one and the same latch, and half of its writes are currently lost.
 	static constexpr uint16_t kSoRegisterAlias = 0x0280;
 
-	// Внешний ввод-вывод, которого нет в карте памяти MAME вообще: 0x0400-0x0BFF.
+	// External I/O absent from MAME's memory map altogether: 0x0400-0x0BFF.
 	//
-	// По принципиальной схеме главной платы (docs/service_notes_findings.md) у микросхемы
-	// ревербератора IC5 есть собственный вход от процессора - пять бит данных D1-D5 и два
-	// строба STB0/STB1, - а стробы эти собраны из выходов вентильной матрицы IC16:
-	// STB0 = НЕ(EXIO1 · WL), STB1 = НЕ(EXIO2 · WL). Адреса, по которым матрица поднимает
-	// EXIO1 и EXIO2, внутри неё и на схеме не названы, но карта D-110 в MAME занимает
-	// только 0x0100, 0x0200, 0x021A-0x021D, 0x0300 и 0x0380, а журнал неотображённых
-	// обращений показывал ровно два необъяснённых адреса - 0x0400 и 0x0800. Перехват берёт
-	// весь промежуток целиком, чтобы ответ не зависел от того, угадана ли пара.
+	// Per the main board schematic (docs/service_notes_findings.md) the reverb chip IC5 has its
+	// own input from the CPU - five data bits D1-D5 and two strobes STB0/STB1 - and those
+	// strobes are built from the IC16 gate array outputs: STB0 = NOT(EXIO1 . WL), STB1 =
+	// NOT(EXIO2 . WL). The addresses at which the array raises EXIO1 and EXIO2 are internal to
+	// it and unnamed on the schematic, but the D-110 map in MAME occupies only 0x0100, 0x0200,
+	// 0x021A-0x021D, 0x0300 and 0x0380, and the unmapped-access log showed exactly two
+	// unexplained addresses - 0x0400 and 0x0800. The tap takes the whole span so the answer
+	// does not depend on whether the pair was guessed right.
 	//
-	// Верхняя граница 0x0BFF намеренно не доходит до 0x0C00: там регистровый файл самой
-	// LA32 (512 адресов, что ровно её выводы A0-A8), по нему идёт поток на каждую ноту, и
-	// он утопил бы захват. Это ДРУГОЙ интерфейс, не ревербератора.
+	// The upper bound 0x0BFF deliberately stops short of 0x0C00: that is the LA32's own register
+	// file (512 addresses, exactly its pins A0-A8), a stream goes through it on every note, and
+	// it would drown the capture. That is a DIFFERENT interface, not the reverb's.
 	static constexpr uint16_t kExtIoTapBase = 0x0400;
 	static constexpr uint16_t kExtIoTapEnd = 0x0BFF;
 
-	// 0x021A-0x021D прошивка не только ЧИТАЕТ (опрос панели), но и ПИШЕТ, а карта в MAME
-	// объявляет их `portr("SC0").nopw()` - записи выбрасываются молча. Между тем именно
-	// туда уходят биты 1-3 типа ревербератора: подпрограмма ПЗУ 0x4C93 читает тип из ОЗУ
-	// 0x2D95, берёт `тип & 0x0E`, вставляет в теневой байт и пишет его по 0x021A, а
-	// оставшийся младший бит типа кладёт в бит 2 порта 0x0800. Перехват нужен, чтобы это
-	// вообще было видно, и он же показывает, что теряет драйвер.
+	// The firmware not only READS 0x021A-0x021D (panel scan) but WRITES them too, and MAME's map
+	// declares them `portr("SC0").nopw()` - writes are silently discarded. Yet that is exactly
+	// where bits 1-3 of the reverb type go: ROM routine 0x4C93 reads the type from RAM 0x2D95,
+	// takes `type & 0x0E`, merges it into a shadow byte and writes it to 0x021A, and puts the
+	// remaining low bit of the type into bit 2 of port 0x0800. The tap is needed for this to be
+	// visible at all, and it also shows what the driver loses.
 	static constexpr uint16_t kPanelPortTapBase = 0x021A;
 	static constexpr uint16_t kPanelPortTapEnd = 0x021D;
 
-	// Регистровый файл самой LA32: 0x0C00-0x0DFF. Что это именно он, а не «какой-то кусок
-	// адресов», следует из таблицы выводов MB87136APF в сервисных заметках - у микросхемы
-	// девять адресных линий A0-A8, то есть ровно 512 регистров, и найденное зондом окно
-	// неотображённых обращений имеет ровно такой размер.
+	// The LA32's own register file: 0x0C00-0x0DFF. That it is this and not "some chunk of
+	// addresses" follows from the MB87136APF pinout table in the service notes - the chip has
+	// nine address lines A0-A8, i.e. exactly 512 registers, and the window of unmapped accesses
+	// the probe found is exactly that size.
 	//
-	// Перехват стоит всегда, но пишет только когда включён захват, и поток нот через него
-	// плотный - поэтому у захвата есть фильтр по адресу (setTraceFilter): без него опрос
-	// панели, идущий тысячами записей в секунду по 0x021A, забил бы кольцо раньше, чем в
-	// него попала бы хоть одна нота.
+	// The tap is always installed but only writes while capture is on, and the note stream
+	// through it is dense - hence capture has an address filter (setTraceFilter): without it the
+	// panel scan, thousands of entries a second at 0x021A, would fill the ring before a single
+	// note got in.
 	static constexpr uint16_t kLa32TapBase = 0x0C00;
 	static constexpr uint16_t kLa32TapEnd = 0x0DFF;
 
-	// Ограничить захват записей одним диапазоном адресов. По умолчанию берётся всё.
+	// Limit write capture to one address range. By default everything is taken.
 	void setTraceFilter(uint16_t lo, uint16_t hi) {
 		traceLo.store(lo, std::memory_order_release);
 		traceHi.store(hi, std::memory_order_release);
 	}
 
-	// Весь байт SO, а не только бит лампы. По разбору MAME (`so_w` в roland_d10.cpp):
-	// бит 0 - светодиод, биты 1-2 - номер программы ревербератора (это A13/A14 ПЗУ
-	// микросхемы BOSS, то есть всего четыре программы), бит 3 - "R. SW." на аналоговую
-	// плату, бит 5 - тактирование BOSS. Панель при этом предлагает восемь типов
-	// ревербератора плюс OFF, так что двух бит на них не хватает, и путь остальных
-	// параметров надо искать. Гистограмма по всем 256 значениям ничего потерять не может.
+	// The whole SO byte, not just the lamp bit. Per MAME's analysis (`so_w` in roland_d10.cpp):
+	// bit 0 - LED, bits 1-2 - reverb program number (that is A13/A14 of the BOSS chip's ROM, so
+	// four programs in all), bit 3 - "R. SW." to the analogue board, bit 5 - BOSS clocking. The
+	// panel meanwhile offers eight reverb types plus OFF, so two bits are not enough for them,
+	// and the path of the remaining parameters has to be found. A histogram over all 256 values
+	// can lose nothing.
 	void osdCountSoWrite(uint8_t v) {
 		soByteHist[v].fetch_add(1, std::memory_order_relaxed);
 		soLast.store(int(v), std::memory_order_release);
@@ -598,11 +596,10 @@ public:
 	uint64_t soWrites(uint8_t v) const { return soByteHist[v].load(std::memory_order_acquire); }
 	int soLastValue() const { return soLast.load(std::memory_order_acquire); }
 
-	// Каждая запись в SO вместе с адресом, откуда она сделана. Счётчика по значениям мало:
-	// он говорит, ЧТО записали, но не говорит, какая подпрограмма это сделала, а именно
-	// адрес и открывает вход в прошивку для дизассемблера (plugin/disasm_tool.cpp).
-	// Захват может переполниться, поэтому у него есть свой счётчик потерь, и печатать его
-	// обязан каждый, кто читает записи.
+	// Every write to SO together with the address it was made from. A per-value counter is not
+	// enough: it says WHAT was written but not which routine did it, and the address is exactly
+	// what opens the firmware to the disassembler (plugin/disasm_tool.cpp). The capture can
+	// overflow, so it has its own loss counter, and whoever reads the entries must print it.
 	struct SoWrite { double ms; uint16_t pc; uint16_t addr; uint8_t value; };
 	void osdLogSoWrite(uint16_t pc, uint16_t addr, uint8_t value);
 	std::vector<SoWrite> takeSoWrites();
@@ -618,8 +615,8 @@ public:
 			soTraceStart = std::chrono::steady_clock::now();
 			soTracing = true;
 		}
-		// Ставится последним и снимается первым: пока он ложный, osdLogSoWrite не берёт
-		// мьютекс вовсе - см. там же, почему на этом пути нельзя блокироваться.
+		// Set last and cleared first: while it is false, osdLogSoWrite does not take the mutex at
+		// all - see there for why that path must never block.
 		soTracingOn.store(true, std::memory_order_release);
 	}
 	void stopSoTrace() { soTracingOn.store(false, std::memory_order_release); }
@@ -669,8 +666,8 @@ public:
 	// waiting - which happens if a rhythm note WASN'T forwarded by us (e.g. it came from the
 	// panel itself rather than MIDI), and the firmware's own value has to stand uncorrected.
 	bool osdTakeRhythmKeyHint(uint8_t &outNote);
-	// Каждая запись в байт партии f3a0[], посчитанная по названной ею партии, ДО любых
-	// собственных отсечек моста. См. partByteWrites().
+	// Every write to a part byte in f3a0[], counted by the part it names, BEFORE any of the
+	// bridge's own cut-offs. See partByteWrites().
 	void osdCountPartByte(uint8_t rawValue) {
 		partByteHist[rawValue >> 4].fetch_add(1, std::memory_order_relaxed);
 	}
@@ -844,51 +841,48 @@ public:
 		uint32_t sysexAddress; // 21-bit, seven bits per transmitted byte
 		uint16_t length;
 		const char *name;
-		// Переслать этот регион всякий раз, когда уходит регион Timbre Temporary, даже
-		// если в прошивке он сам не менялся.
+		// Resend this region whenever the Timbre Temporary region goes out, even if it did not
+		// change in the firmware itself.
 		//
-		// Запись в Timbre Temporary заставляет движок LA перезагрузить тембр партии из
-		// одного из своих четырёх банков (Synth::writeMemoryRegion -> Part::setTimbre) и
-		// затирает Tone Temporary, который дала прошивка. Для MT-32 это правильно, для
-		// D-110 - нет: прошивка держит группы тембра, которые четыре банка движка назвать
-		// не могут. В демо-песне партии 6 и 7 несут группу 5, а таблица максимумов самого
-		// движка прижимает её к 3 - и вместо лид-синта звучал закрытый хай-хэт на 21 дБ
-		// тише. Истина о том, что играет партия, - это Tone Temporary прошивки, поэтому
-		// он подтверждается заново после записи, которая иначе его отменяет. Порядок
-		// задаётся позицией в массиве, а все тембры стоят после Timbre Temporary, так что
-		// отдельная синхронизация не нужна.
+		// A write to Timbre Temporary makes the LA engine reload the part's timbre from one of its
+		// four banks (Synth::writeMemoryRegion -> Part::setTimbre) and clobbers the Tone Temporary
+		// the firmware provided. Right for the MT-32, wrong for the D-110: the firmware holds
+		// timbre groups the engine's four banks cannot name. In the demo song parts 6 and 7 carry
+		// group 5, and the engine's own maximum table pins it to 3 - and instead of a lead synth a
+		// closed hi-hat sounded, 21 dB quieter. The truth about what a part plays is the firmware's
+		// Tone Temporary, so it is reasserted after the write that would otherwise cancel it. The
+		// order is set by array position, and all timbres come after Timbre Temporary, so no
+		// separate synchronisation is needed.
 		bool reassertAfterTimbreTemp = false;
 	};
 	static const MirrorRegion kMirrorRegions[];
 	static const int kNumMirrorRegions;
-	// Только для проверочных стендов: снимает подтверждение тембров, описанное в
-	// MirrorRegion::reassertAfterTimbreTemp. Нужно, чтобы КОНТРОЛЬ и измерение шли в
-	// одном прогоне: с выключенным подтверждением правка тембра обязана быть затёрта, с
-	// включённым - обязана уцелеть. Проверка, умеющая показать только "уцелела", не
-	// доказывает ничего: она одинаково выглядит и когда исправление работает, и когда
-	// затирать было просто нечему. В самом плагине это всегда включено, и переключателя
-	// в интерфейсе нет.
+	// For test rigs only: disables the timbre reassertion described at
+	// MirrorRegion::reassertAfterTimbreTemp. Needed so that the CONTROL and the measurement run
+	// in one pass: with reassertion off a timbre edit must be clobbered, with it on it must
+	// survive. A check that can only show "survived" proves nothing: it looks the same whether
+	// the fix works or there was simply nothing to clobber. In the plugin itself this is always
+	// on, and there is no switch in the UI.
 	void setToneReassert(bool on) { toneReassert.store(on, std::memory_order_release); }
 	bool toneReassertEnabled() const { return toneReassert.load(std::memory_order_acquire); }
-	// Взято с запасом, чтобы массив счётчиков ниже не приходилось трогать при добавлении
-	// региона; static_assert в .cpp держит их согласованными.
+	// Taken with headroom so the counter array below need not be touched when a region is
+	// added; a static_assert in the .cpp keeps them consistent.
 	static constexpr int kMaxMirrorRegions = 32;
 
-	// --- счётчики без потерь ---------------------------------------------------
-	// Считаем, а не логируем. Оба журнала событий в этом классе умеют заполниться и
-	// тихо перестать писать (именно так партия, вступившая позже, однажды прочиталась
-	// как партия, которая не играет вообще), поэтому вопросы, на которые нельзя
-	// отвечать обрезанной записью, отвечают счётчики фиксированного размера - они
-	// ничего потерять не могут.
+	// --- lossless counters --------------------------------------------------------
+	// Count, do not log. Both event logs in this class can fill up and quietly stop writing
+	// (that is exactly how a part that joined later once read as a part that never plays at
+	// all), so questions that cannot be answered by a truncated record are answered by
+	// fixed-size counters - they can lose nothing.
 	//
-	// noteOnPart   - завершённые прошивкой note-on, по партиям.
-	// partByteHist - каждая запись в f3a0[] по её сырому значению >> 4, ВКЛЮЧАЯ значения,
-	//                которые мост нот отвергает. "Прошивка никогда не назначает эту
-	//                партию" и "мост выбрасывает её ноты" по одному счёту нот неотличимы;
-	//                две эти строки рядом их различают.
-	// regionEmits  - сколько сообщений DT1 отправил каждый зеркалируемый регион. Регион,
-	//                сработавший в одиночку, без региона, который чинит его побочный
-	//                эффект, - конкретный и проверяемый вид отказа.
+	// noteOnPart   - note-ons completed by the firmware, per part.
+	// partByteHist - every write to f3a0[] by its raw value >> 4, INCLUDING values the note
+	//                bridge rejects. "The firmware never assigns this part" and "the bridge
+	//                drops its notes" are indistinguishable by a note count alone; these two
+	//                rows side by side tell them apart.
+	// regionEmits  - how many DT1 messages each mirrored region sent. A region that fired alone,
+	//                without the region that repairs its side effect, is a specific, checkable
+	//                kind of failure.
 	uint64_t noteOnsForPart(int part) const {
 		return (part >= 0 && part < 9) ? noteOnPart[part].load(std::memory_order_acquire) : 0;
 	}
@@ -949,12 +943,12 @@ private:
 	// SysEx ring: MAME thread producer, audio thread consumer. Fixed-size slots so
 	// the audio thread never allocates or blocks.
 	//
-	// 64 слотов не хватало. Пересборка зеркала шлёт все 13 регионов разом, а с тех пор
-	// как смена тембра тянет за собой ещё восемь подтверждений Tone Temporary
-	// (MirrorRegion::reassertAfterTimbreTemp), пик за один кадр стал вдесятеро больше -
-	// и sysexDropped() показал 3 потерянных сообщения за 40 секунд демо. Потерянное
-	// сообщение зеркала это молча не применённый параметр, то есть ровно тот класс
-	// ошибки, который здесь и чинится. Слот - 256 байт, так что 256 слотов стоят 64 КБ.
+	// 64 slots were not enough. A mirror rebuild sends all 13 regions at once, and since a
+	// timbre change drags along eight more Tone Temporary reassertions
+	// (MirrorRegion::reassertAfterTimbreTemp), the per-frame peak grew tenfold - and
+	// sysexDropped() showed 3 lost messages over 40 seconds of demo. A lost mirror message is a
+	// silently unapplied parameter, i.e. exactly the class of error being fixed here. A slot
+	// is 256 bytes, so 256 slots cost 64 KB.
 	static constexpr int kSysexSlots = 256;
 	static constexpr int kSysexMask = kSysexSlots - 1;
 	std::vector<uint8_t> sysexBuf;      // kSysexSlots * kMaxSysexBytes
@@ -985,15 +979,15 @@ private:
 	std::atomic<bool> presetFf{false};
 	std::atomic<int> la32Delay{0};
 
-	// Карта памяти. cardWant пишет любой поток, cardIsIn трогает только поток машины -
-	// он же единственный, кому позволено касаться разделяемой памяти MAME.
+	// Memory card. cardWant is written by any thread, cardIsIn is touched only by the machine
+	// thread - the only one allowed to touch MAME's shared memory.
 	std::atomic<bool> cardWant{true};
 	std::atomic<bool> cardProtect{false};
 	std::atomic<bool> cardImageDirty{false};
 	bool cardIsIn = true;
 	mutable std::mutex cardMutex;
 	std::vector<uint8_t> cardImage;
-	const uint8_t *cardShared = nullptr; // разделяемая память "memcs", пока машина жива
+	const uint8_t *cardShared = nullptr; // the "memcs" shared memory, while the machine is alive
 
 	std::atomic<bool> logUnmapped{false};
 	mutable std::mutex logMutex;
@@ -1016,14 +1010,14 @@ private:
 	std::vector<uint8_t> rhythmHintBuf;
 	std::atomic<int> rhW{0}, rhR{0};
 	std::atomic<uint64_t> noteOnCount{0}, noteOffCount{0}, noteMsTotal{0};
-	// Счётчики фиксированного размера: в отличие от двух журналов они НЕ МОГУТ ничего
-	// потерять. Почему это важно - см. методы доступа выше.
+	// Fixed-size counters: unlike the two logs they CANNOT lose anything. Why that matters -
+	// see the accessors above.
 	std::atomic<uint64_t> noteOnPart[9] = {};
 	std::atomic<uint64_t> partByteHist[16] = {};
 	std::atomic<uint64_t> regionEmits[kMaxMirrorRegions] = {};
 	std::atomic<int> soloPart{-1};
-	// Момент, когда в приёмник процессора ушёл последний байт MIDI, в миллисекундах
-	// монотонных часов. Ноль означает "ещё ни одного".
+	// When the last MIDI byte went into the CPU's receiver, in milliseconds of the monotonic
+	// clock. Zero means "none yet".
 	std::atomic<int64_t> lastMidiByteMs{0};
 	std::atomic<uint64_t> soByteHist[256] = {};
 	std::atomic<int> soLast{-1};
@@ -1034,10 +1028,11 @@ private:
 	std::atomic<bool> soTracingOn{false};
 	std::atomic<uint16_t> traceLo{0x0000}, traceHi{0xFFFF};
 	uint64_t soDropped = 0;
-	// Двадцати тысяч не хватало на вопрос, ради которого захват и делался: пока нота звучит,
-	// банк огибающих 0x0CC0 переписывается непрерывно, и полусекундное окно уже теряло по
-	// две тысячи записей. Обрезанный поток на вопрос «что он несёт во времени» ответить не
-	// может в принципе - потерянный хвост неотличим от закончившегося. Запись весит 16 байт.
+	// Twenty thousand was not enough for the question the capture was made for: while a note
+	// sounds, the envelope bank 0x0CC0 is rewritten continuously, and a half-second window was
+	// already losing two thousand entries. A truncated stream cannot in principle answer "what
+	// does it carry over time" - a lost tail is indistinguishable from an ended one. An entry
+	// weighs 16 bytes.
 	static constexpr size_t kMaxSoWrites = 400000;
 	mutable std::mutex noteLogMutex;
 	std::vector<NoteLog> noteLog;

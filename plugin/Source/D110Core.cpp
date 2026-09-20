@@ -91,31 +91,31 @@ class D110Osd : public osd_common_t {
 	memory_passthrough_handler m_panelPortTap;
 	memory_passthrough_handler m_la32WriteTap;
 	memory_passthrough_handler m_portTap;
-	// Одна аппаратная рампа LA32. Смысл полей и закон движения - как у LA32Ramp в munt,
-	// восстановленного там по записям с живого прибора; здесь он повторён, а не выдуман
-	// заново, потому что это модель ТОЙ ЖЕ микросхемы.
+	// One LA32 hardware ramp. The meaning of the fields and the motion law are as in munt's
+	// LA32Ramp, reconstructed there from recordings of a live unit; repeated here rather than
+	// invented anew, because this is a model of THE SAME chip.
 	//
-	// Считается не по отсчёту за раз, а аналитически: приращение постоянно, поэтому момент
-	// прибытия известен сразу, и обслуживать рампы можно на любой удобной частоте, не теряя
-	// точности самого момента. Единица времени - отсчёт микросхемы, 32 кГц.
+	// Computed analytically rather than one sample at a time: the increment is constant, so
+	// the arrival time is known at once, and the ramps can be serviced at any convenient rate
+	// without losing precision on the moment itself. The time unit is a chip sample, 32 kHz.
 	struct La32RampState {
-		double current = 0.0;      // в тех же крупных единицах, что и у munt: значение << 18
-		double increment = 0.0;    // за один отсчёт микросхемы
+		double current = 0.0;      // in the same coarse units as munt: value << 18
+		double increment = 0.0;    // per chip sample
 		double target = 0.0;
 		bool descending = false;
 		bool running = false;
-		bool landed = false;       // дошла и ещё не доложена процессору
+		bool landed = false;       // arrived and not yet reported to the CPU
 	};
-	static constexpr int kRampBanks = 2; // 0 - амплитуда (0x0C80), 1 - срез (0x0C00)
+	static constexpr int kRampBanks = 2; // 0 - amplitude (0x0C80), 1 - cutoff (0x0C00)
 	La32RampState m_ramp[kRampBanks][D110Core::kNumHardwareVoices];
-	// Полубайты, пришедшие порознь: пара собирается, когда записаны оба.
+	// Half-bytes that arrived separately: the pair is assembled once both are written.
 	uint8_t m_rampTarget[kRampBanks][D110Core::kNumHardwareVoices] = {};
 	uint8_t m_rampIncrement[kRampBanks][D110Core::kNumHardwareVoices] = {};
-	// Каким из двух банков пользуется этот голос - см. rampWrite. Ноль по умолчанию, то есть
-	// банк 0x0C80; настоящее значение приходит с флагом голоса при его выдаче.
+	// Which of the two banks this voice uses - see rampWrite. Zero by default, i.e. bank
+	// 0x0C80; the real value arrives with the voice flag when the voice is issued.
 	int m_slotBank[D110Core::kNumHardwareVoices] = {};
-	double m_rampSamples = 0.0; // сколько отсчётов микросхемы прошло с запуска машины
-	// Очередь прибытий: слот и банк. Прошивка забирает их по одному, читая байт состояния.
+	double m_rampSamples = 0.0; // how many chip samples have elapsed since the machine started
+	// Arrival queue: slot and bank. The firmware takes them one at a time by reading the status byte.
 	std::vector<std::pair<int, int>> m_rampLanded;
 
 	bool m_la32Pending = false;   // a status byte is waiting to be collected
@@ -124,7 +124,7 @@ class D110Osd : public osd_common_t {
 	uint8_t *m_ram = nullptr;
 	uint8_t *m_memcs = nullptr;
 	memory_passthrough_handler m_cardTap;
-	// Читает поток процессора, пишет update() - в MAME это один и тот же поток.
+	// Read by the CPU thread, written by update() - in MAME these are one and the same thread.
 	bool m_cardAbsent = false;
 	std::array<ioport_field *, D110Core::kNumButtons> m_buttonField{};
 	bool m_resolved = false;
@@ -177,8 +177,8 @@ class D110Osd : public osd_common_t {
 		    ramsOffset < D110Core::kPartTable + D110Core::kNumVoiceContexts) {
 			const int ctx = ramsOffset - D110Core::kPartTable;
 			const uint8_t part = uint8_t(value >> 4); // stored as part * 16
-			// Считаем ДО двух отсечек ниже, чтобы "прошивка никогда не называет эту
-			// партию" отличалось от "мост выбросил её здесь".
+			// Counted BEFORE the two cut-offs below, so that "the firmware never names this part"
+			// differs from "the bridge dropped it here".
 			core->osdCountPartByte(value);
 			if (part > 8) return;                     // 0-7 voice parts, 8 rhythm
 			m_ctxPart[ctx] = part;
@@ -236,31 +236,31 @@ class D110Osd : public osd_common_t {
 			std::chrono::steady_clock::now() - m_ctxOnTime[ctx]).count());
 	}
 
-	// Приращение по байту, как его понимает микросхема: старший бит - сторона, младшие семь -
-	// скорость, и она экспоненциальная. Формула взята у LA32Ramp из munt (там она выведена
-	// анализом записей с прибора) и переписана в плавающую точку - здесь важен момент
-	// прибытия, а не побитовое совпадение промежуточных значений.
+	// The increment per byte, as the chip understands it: the top bit is the direction, the
+	// low seven the speed, and it is exponential. The formula is taken from munt's LA32Ramp
+	// (derived there by analysing recordings from the unit) and rewritten in floating point -
+	// what matters here is the arrival moment, not bit-exact intermediate values.
 	static double rampIncrementOf(uint8_t increment) {
-		if (increment == 0) return 0.0;                      // ноль не двигает и не прерывает
+		if (increment == 0) return 0.0;                      // zero neither moves nor interrupts
 		const double large = std::exp2((double((increment & 0x7F)) + 24.0) / 8.0);
-		return (increment & 0x80) ? large + 1.0 : large;     // вниз микросхема идёт чуть быстрее
+		return (increment & 0x80) ? large + 1.0 : large;     // downward the chip goes slightly faster
 	}
 
-	// Запись в регистр рампы. Чётный байт слота - приращение, нечётный - цель; рампа
-	// запускается по записи ЦЕЛИ, потому что шестнадцатибитная запись кладёт младший байт
-	// первым, а раздельные записи прошивка делает в том же порядке.
+	// A write to a ramp register. The slot's even byte is the increment, the odd one the target;
+	// the ramp starts on the TARGET write, because a sixteen-bit write stores the low byte
+	// first, and the firmware makes separate writes in the same order.
 	void rampWrite(uint16_t addr, uint8_t value) {
-		// Флаг слота: чётный байт банка 0x0D00 - это тот же байт, что прошивка держит в
-		// ef80[слот], и его БИТ 7 выбирает, каким из двух банков рампы пользуется этот голос.
-		// Читается прямо из ПЗУ 0x3B11: `ldb 70, ef80[54]` / `jbc 70, 7, 3b20` / `st 78,
-		// 0c00[54]` против `st 78, 0c80[54]`. Значит банки - не «амплитуда» и «срез», как
-		// думалось: голос пользуется ОДНИМ из них, а во второй прошивка кладёт своё.
+		// The slot flag: the even byte of bank 0x0D00 is the same byte the firmware keeps in
+		// ef80[slot], and its BIT 7 selects which of the two ramp banks this voice uses. Read
+		// straight from ROM 0x3B11: `ldb 70, ef80[54]` / `jbc 70, 7, 3b20` / `st 78, 0c00[54]`
+		// versus `st 78, 0c80[54]`. So the banks are not "amplitude" and "cutoff" as was thought:
+		// a voice uses ONE of them, and the firmware puts its own stuff in the other.
 		//
-		// Пока рампы шли по обоим банкам сразу, каждый голос получал лишнюю рампу, её
-		// прибытие давало прерывание, которого прошивка не ждёт, и цепочка ступеней рушилась.
+		// While ramps ran on both banks at once, every voice got an extra ramp, its arrival raised
+		// an interrupt the firmware was not expecting, and the chain of steps collapsed.
 		if (addr >= 0x0D00 && addr < 0x0D40 && !(addr & 1)) {
 			const int slot = (addr - 0x0D00) / 2;
-			m_slotBank[slot] = (value & 0x80) ? 1 : 0; // 1 - банк 0x0C00, 0 - банк 0x0C80
+			m_slotBank[slot] = (value & 0x80) ? 1 : 0; // 1 - bank 0x0C00, 0 - bank 0x0C80
 			return;
 		}
 		int bankIndex = -1;
@@ -274,16 +274,17 @@ class D110Osd : public osd_common_t {
 		const int slot = within / 2;
 		if (within & 1) {
 			m_rampTarget[bankIndex][slot] = value;
-			// Рампу ведёт только тот банк, который выбран флагом голоса. Записи в другой -
-			// не рампа, и принимать их за неё значит выдумывать прерывания.
+			// Only the bank selected by the voice flag drives the ramp. Writes to the other are not a
+			// ramp, and taking them for one would mean inventing interrupts.
 			if (m_slotBank[slot] == bankIndex) startRamp(bankIndex, slot);
 		} else {
 			m_rampIncrement[bankIndex][slot] = value;
 		}
 	}
 
-	// Пара «цель и приращение» записана целиком - запускаем рампу. Начальная точка - там, где
-	// значение сейчас: у настоящей микросхемы это конец предыдущей рампы, и здесь так же.
+	// The "target and increment" pair is fully written - start the ramp. The starting point is
+	// wherever the value is now: on the real chip that is the end of the previous ramp, and
+	// here likewise.
 	void startRamp(int bankIndex, int slot) {
 		if (bankIndex < 0 || bankIndex >= kRampBanks || slot < 0 ||
 		    slot >= D110Core::kNumHardwareVoices)
@@ -295,18 +296,18 @@ class D110Osd : public osd_common_t {
 		r.target = double(m_rampTarget[bankIndex][slot]) * double(1 << 18);
 		r.landed = false;
 		r.running = r.increment != 0.0;
-		if (!r.running) return; // нулевое приращение: ни движения, ни прерывания
-		// Приращение 0xFF - не скорость, а «поставить и не прерывать». Иначе нота гаснет на
-		// нулевой миллисекунде: прошивка пишет эти регистры ДО того, как пометит слот
-		// занятым, обработчик видит слот свободным и глушит его (ПЗУ 0x3160). Проверяется
-		// тем, доживает ли нота до снятия.
+		if (!r.running) return; // zero increment: no motion and no interrupt
+		// Increment 0xFF is not a speed but "set and do not interrupt". Otherwise the note dies at
+		// millisecond zero: the firmware writes these registers BEFORE marking the slot busy, the
+		// handler sees the slot free and silences it (ROM 0x3160). Checked by whether the note
+		// survives until key-up.
 		if (core->la32PresetFf() && inc == 0xFF) {
 			r.current = r.target;
 			r.running = false;
 			core->osdCountRampStart();
 			return;
 		}
-		// Цель уже пройдена - микросхема встаёт на неё сразу и тут же рапортует.
+		// The target is already passed - the chip lands on it at once and reports immediately.
 		if ((r.descending && r.current <= r.target) || (!r.descending && r.current >= r.target)) {
 			r.current = r.target;
 			r.running = false;
@@ -317,9 +318,9 @@ class D110Osd : public osd_common_t {
 		core->osdCountRampStart();
 	}
 
-	// Продвинуть все рампы до текущего момента и собрать прибытия. Вызывается с частотой
-	// обслуживания, а не с частотой микросхемы: приращение постоянно, поэтому шаг любой
-	// длины считается одной формулой.
+	// Advance all ramps to the current moment and collect arrivals. Called at the service rate,
+	// not the chip rate: the increment is constant, so a step of any length is computed by one
+	// formula.
 	void advanceRamps(double samples) {
 		m_rampSamples += samples;
 		for (int b = 0; b < kRampBanks; ++b)
@@ -337,10 +338,10 @@ class D110Osd : public osd_common_t {
 			}
 	}
 
-	// Байт состояния, которым микросхема отвечает на чтение 0x0C00. Кодировка не выведена, а
-	// перебирается: разбор обработчика (docs/la32_interface.md) показал, что он ветвится по
-	// биту 7 и биту 5 и по-разному выводит из младших бит номер голоса, а какой именно
-	// вариант верен, решается опытом - счётом ступеней огибающей, которые пошли.
+	// The status byte the chip answers a read of 0x0C00 with. The encoding is not derived but
+	// enumerated: analysis of the handler (docs/la32_interface.md) showed it branches on bit 7
+	// and bit 5 and derives the voice number from the low bits in different ways, and which
+	// variant is right is decided by experiment - by counting the envelope steps that went.
 	uint8_t rampStatusByte(int bank, int slot) const {
 		const int mode = core->la32StatusMode();
 		const uint8_t v = uint8_t((mode & 1) ? ((slot + 1) & 0x1F) : (slot & 0x1F));
@@ -371,26 +372,24 @@ class D110Osd : public osd_common_t {
 			if (share->bytes() >= D110Core::kRamSize)
 				m_ram = static_cast<uint8_t *>(share->ptr());
 
-		// Карта памяти. Драйвер отводит ей 0xC0000-0xC7FFF в банковом пространстве и
-		// объявляет разделяемой памятью "memcs" - через неё и вставляется и извлекается
-		// карта, потому что для прошивки пустое гнездо это просто нечитаемая память.
-		// См. D110Core::osdApplyCard.
+		// The memory card. The driver gives it 0xC0000-0xC7FFF in the banked space and declares it
+		// shared memory "memcs" - through it the card is inserted and ejected, because to the
+		// firmware an empty socket is just unreadable memory. See D110Core::osdApplyCard.
 		if (memory_share *share = root.memshare("memcs"))
 			if (share->bytes() >= D110Core::kCardSize)
 				m_memcs = static_cast<uint8_t *>(share->ptr());
 
-		// Пустое гнездо - это не «память, набитая 0xFF»: залить память мало, потому что
-		// залитая память ЗАПИСЬ ПРИНИМАЕТ, а прошивка узнаёт карту именно тем, что пишет в
-		// неё и читает обратно (ПЗУ 0x7746). Измерено: с одной только заливкой запись
-		// проходила, чтение возвращало записанное, и прошивка говорила "Illegal Card" -
-		// то есть видела карту. Перехват чтения возвращает 0xFF независимо от того, что
-		// туда записали, и этого достаточно: запись перехватывать не нужно, потому что
-		// проверка смотрит на прочитанное. Стоит на собственном пространстве банкового
-		// устройства, где карта занимает 0xC0000-0xC7FFF, - в окне процессора по этим же
-		// адресам лежат ещё и ПЗУ с пресетами.
+		// An empty socket is not "memory filled with 0xFF": filling memory is not enough, because
+		// filled memory ACCEPTS WRITES, and the firmware recognises a card precisely by writing to
+		// it and reading back (ROM 0x7746). Measured: with the fill alone the write went through,
+		// the read returned what was written, and the firmware said "Illegal Card" - i.e. it saw a
+		// card. The read tap returns 0xFF regardless of what was written there, and that is enough:
+		// writes need not be intercepted, because the check looks at what was read. Installed on
+		// the bank device's own space, where the card occupies 0xC0000-0xC7FFF - in the CPU's
+		// window those same addresses also hold the preset ROMs.
 		//
-		// Тот же перехват отдаёт последний адрес окна как порт состояния матрицы IC21 -
-		// почему это порт, а не память карты, разобрано у D110Core::kCardStatusOffset.
+		// The same tap returns the window's last address as the IC21 array's status port - why it
+		// is a port and not card memory is worked out at D110Core::kCardStatusOffset.
 		if (address_map_bank_device *bank = root.subdevice<address_map_bank_device>("bank")) {
 			m_cardTap = bank->space(0).install_read_tap(
 				0xc0000, 0xc7fff, "d110_card",
@@ -425,9 +424,9 @@ class D110Osd : public osd_common_t {
 					// Counted unconditionally, so "the tap never fired" can be told apart
 					// from "the tap fired but had nothing to give".
 					core->osdCountLa32Read();
-					// Микросхеме есть что сказать только когда рампа дошла. Во всех прочих
-					// случаях она отвечает байтом со взведённым битом 7 - «обслуживать
-					// нечего», как и разбирает обработчик прошивки.
+					// The chip only has something to say when a ramp has arrived. In all other cases it
+					// answers with a byte whose bit 7 is set - "nothing to service", as the firmware's handler
+					// parses it.
 					if (!m_la32Pending &&
 					    core->stuckPolicy_() == D110Core::StuckPolicy::La32Ramps) {
 						if (mem_mask & 0x00ff) data = u16((data & 0xff00) | 0x00ff);
@@ -484,12 +483,11 @@ class D110Osd : public osd_common_t {
 						core->osdLogCtxEvent(pc, ramsOffset, uint8_t(data & 0xff));
 					if (mem_mask & 0xff00)
 						core->osdLogCtxEvent(pc, uint16_t(ramsOffset + 1), uint8_t((data >> 8) & 0xff));
-					// Те же записи уходят и во ВРЕМЕННОЙ захват - тот, у которого есть метка
-					// времени. Вопрос «что раньше: регистры микросхемы или пометка слота
-					// занятым» решается только общей осью времени, а два раздельных журнала
-					// её не дают. Оба перехвата живут на одном потоке процессора, поэтому
-					// порядок в общем журнале и есть настоящий порядок событий, без
-					// сортировки. Попадёт туда это или нет, решает фильтр по адресу.
+					// The same writes also go into the TIMED capture - the one with a timestamp. The question
+					// "which comes first: the chip registers or marking the slot busy" is settled only by a
+					// common time axis, and two separate logs do not give one. Both taps live on the one CPU
+					// thread, so the order in the common log is the real order of events, no sorting needed.
+					// Whether it lands there is decided by the address filter.
 					if (mem_mask & 0x00ff)
 						core->osdLogSoWrite(pc, uint16_t(addr), uint8_t(data & 0xff));
 					if (mem_mask & 0xff00)
@@ -512,17 +510,16 @@ class D110Osd : public osd_common_t {
 			};
 			m_soTap = m_cpu->space(AS_PROGRAM).install_write_tap(
 				D110Core::kSoRegister, D110Core::kSoRegister + 1, "d110_so_led", soWatch);
-			// Второй перехват на псевдониме - см. kSoRegisterAlias. Карта памяти его не
-			// покрывает, но перехват ставится поверх карты, а не внутри неё.
+			// A second tap on the alias - see kSoRegisterAlias. The memory map does not cover it, but a
+			// tap is installed over the map, not inside it.
 			m_soAliasTap = m_cpu->space(AS_PROGRAM).install_write_tap(
 				D110Core::kSoRegisterAlias, D110Core::kSoRegisterAlias + 1, "d110_so_alias",
 				soWatch);
 
-			// Внешний ввод-вывод целиком - см. kExtIoTapBase. Пишется в тот же поток, что и
-			// защёлка SO, потому что вопрос один и тот же: какая подпрограмма какое значение
-			// куда положила. Оба байта шестнадцатибитной шины разбираются порознь: у
-			// ревербератора подключены только D1-D5, так что значение имеет смысл побитно и
-			// склеивать два байта в одно слово было бы враньём.
+			// External I/O in full - see kExtIoTapBase. Written to the same stream as the SO latch,
+			// because the question is the same: which routine put which value where. The two bytes of
+			// the sixteen-bit bus are parsed separately: the reverb has only D1-D5 connected, so the
+			// value makes sense bitwise, and gluing two bytes into one word would be a lie.
 			auto ioWatch = [this](offs_t addr, u16 &data, u16 mem_mask) {
 				const uint16_t pc = uint16_t(m_cpu->pc());
 				if (mem_mask & 0x00ff)
@@ -530,17 +527,17 @@ class D110Osd : public osd_common_t {
 				if (mem_mask & 0xff00)
 					core->osdLogSoWrite(pc, uint16_t(addr + 1), uint8_t((data >> 8) & 0xff));
 			};
-			// Порты опроса панели - см. kPanelPortTapBase. Карта их занимает только на
-			// чтение, записи в ней объявлены nopw(), поэтому увидеть их можно лишь так.
+			// The panel scan ports - see kPanelPortTapBase. The map occupies them for reading only,
+			// writes are declared nopw() there, so this is the only way to see them.
 			m_panelPortTap = m_cpu->space(AS_PROGRAM).install_write_tap(
 				D110Core::kPanelPortTapBase, D110Core::kPanelPortTapEnd, "d110_panel_ports",
 				ioWatch);
 
-			// Регистровый файл LA32 - см. kLa32TapBase. Единственный способ увидеть, что
-			// прошивка кладёт в микросхему синтеза: карта памяти D-110 это окно не
-			// занимает вовсе, а обращения по нему и есть весь её управляющий интерфейс.
-			// Тот же перехват кормит и рампы: банки 0x0C00 и 0x0C80 - это их регистры, и
-			// пара «цель, приращение» становится известна ровно здесь.
+			// The LA32 register file - see kLa32TapBase. The only way to see what the firmware puts
+			// into the synthesis chip: the D-110's memory map does not occupy this window at all, and
+			// the accesses to it are its entire control interface. The same tap also feeds the ramps:
+			// banks 0x0C00 and 0x0C80 are their registers, and the "target, increment" pair becomes
+			// known exactly here.
 			m_la32WriteTap = m_cpu->space(AS_PROGRAM).install_write_tap(
 				D110Core::kLa32TapBase, D110Core::kLa32TapEnd, "d110_la32_regs",
 				[this, ioWatch](offs_t addr, u16 &data, u16 mem_mask) {
@@ -560,12 +557,11 @@ class D110Osd : public osd_common_t {
 						core->osdLogSoWrite(pc, uint16_t(addr + 1), uint8_t((data >> 8) & 0xff));
 				});
 
-			// Выводы портов 1 и 2 самого процессора. У MCS-96 они живут не в памяти, а в
-			// файле регистров (пространство AS_DATA): 0x0F - порт 1, 0x10 - порт 2.
-			// Драйвер D-110 не подключает ни out_p1_cb, ни out_p2_cb, поэтому всё, что
-			// прошивка туда пишет, уходит в несвязанный обработчик и пропадает бесследно -
-			// увидеть это можно только перехватом. Диапазон берётся с 0x0E по 0x11: шина
-			// шестнадцатибитная, и MAME требует, чтобы конец диапазона был нечётным.
+			// The CPU's own port 1 and 2 outputs. On the MCS-96 they live not in memory but in the
+			// register file (AS_DATA space): 0x0F - port 1, 0x10 - port 2. The D-110 driver connects
+			// neither out_p1_cb nor out_p2_cb, so whatever the firmware writes there goes to an
+			// unbound handler and vanishes without trace - only a tap can see it. The range is taken
+			// from 0x0E to 0x11: the bus is sixteen-bit, and MAME requires the range end to be odd.
 			m_portTap = m_cpu->space(AS_DATA).install_write_tap(
 				0x0e, 0x11, "d110_cpu_ports",
 				[this](offs_t addr, u16 &data, u16 mem_mask) {
@@ -759,9 +755,9 @@ public:
 			m_stuckIntHighTicks = 0;
 		}
 
-		// Рампы идут ВСЕГДА, а не только когда процессор во что-то упёрся: на железе
-		// микросхема считает их сама и поднимает прерывание по прибытию, чем бы процессор в
-		// этот момент ни занимался. Поэтому эта ветка стоит до проверки «застрял».
+		// The ramps run ALWAYS, not only when the CPU is stuck on something: on the hardware the
+		// chip computes them itself and raises the interrupt on arrival, whatever the CPU is doing
+		// at that moment. That is why this branch comes before the "stuck" check.
 		if (la32Ramps) {
 			// The line must actually go LOW for a tick before it can go high again (see the
 			// comment above `la32Ramps`'s declaration) - so when the previous event has just
@@ -1054,18 +1050,18 @@ const D110Core::MirrorRegion D110Core::kMirrorRegions[] = {
 	//     documented 0-127 -> 432.1-457.6 Hz mapping makes 0x4A about 447, so the two
 	//     scales disagree and mirroring it would detune everything against the display.
 
-	// Тип, время и уровень ревербератора - системные смещения 1, 2 и 3. Время и уровень
-	// измерены панелью (plugin/reverb_path_probe.cpp): страница Patch Edit, Reverb Time
-	// сдвигает ровно 0x2D96, Reverb Level - ровно 0x2D97, а смена патча переписывает обе,
-	// потому что D-110 хранит настройки ревербератора в патче. Диапазоны совпадают с
-	// полями движка байт в байт: Time на экране 1-8 это байт 0-7, Level 0-7 это байт 0-7.
+	// Reverb type, time and level - System offsets 1, 2 and 3. Time and level were measured
+	// through the panel (plugin/reverb_path_probe.cpp): on the Patch Edit page, Reverb Time
+	// moves exactly 0x2D96, Reverb Level exactly 0x2D97, and a patch change rewrites both,
+	// because the D-110 stores the reverb settings in the patch. The ranges match the engine's
+	// fields byte for byte: Time 1-8 on screen is byte 0-7, Level 0-7 is byte 0-7.
 	//
-	// Тип (смещение 1) раньше сюда не входил: у D-110 восемь типов, у стандартных четырёх
-	// режимов движка не было однозначного соответствия. Теперь есть - ниже подключена
-	// настоящая микросхема BOSS (BossEmu, ROM 2026-08-04), и её восемь банков ПЗУ
-	// адресуются тем же нулевым индексом, что уже лежит в этом самом байте: измерено
-	// (docs/sysex_address_map.md), что выбранный на панели «Тип 5» хранится как байт `04`,
-	// то есть прибор УЖЕ считает с нуля - переносить байт как есть, без пересчёта.
+	// Type (offset 1) was not included here before: the D-110 has eight types, and the engine's
+	// standard four modes had no unambiguous mapping. Now there is one - the real BOSS chip is
+	// connected below (BossEmu, ROM 2026-08-04), and its eight ROM banks are addressed by the
+	// same zero-based index already sitting in this very byte: measured
+	// (docs/sysex_address_map.md) that "Type 5" selected on the panel is stored as byte `04`,
+	// i.e. the unit ALREADY counts from zero - carry the byte as is, no conversion.
 	{ 0x2D95, 0x100001, 3, "System (reverb type+time+level)" },
 
 	{ 0x2D98, 0x100004, 18, "System (reserve + channels)" },
@@ -1074,7 +1070,7 @@ const D110Core::MirrorRegion D110Core::kMirrorRegions[] = {
 constexpr int D110Core::kNumMirrorRegions =
 	int(sizeof(D110Core::kMirrorRegions) / sizeof(D110Core::kMirrorRegions[0]));
 static_assert(D110Core::kNumMirrorRegions <= D110Core::kMaxMirrorRegions,
-              "увеличьте kMaxMirrorRegions - счётчик отправок индексируется номером региона");
+              "increase kMaxMirrorRegions - the emit counter is indexed by region number");
 
 // One DT1 carries kMaxSysexBytes minus an 8-byte header and a 2-byte tail. The largest
 // thing mirrored here is a 246-byte tone, which fits with EXACTLY no slack.
@@ -1094,8 +1090,8 @@ D110Core::D110Core()
 		assert(kMirrorRegions[i].length <= kMaxRegionBytes);
 		mirrorPrev[(size_t)i].assign(kMirrorRegions[i].length, 0);
 	}
-	// osdSnapshotRam подтверждает тембры после региона 0 по индексу, и каждый регион,
-	// просящий о подтверждении, обязан стоять в массиве после него - иначе порядок врёт.
+	// osdSnapshotRam reasserts the timbres after region 0 by index, and every region asking
+	// for reassertion must come after it in the array - otherwise the order lies.
 	assert(kMirrorRegions[0].sysexAddress == 0x030000u);
 	assert(!kMirrorRegions[0].reassertAfterTimbreTemp);
 }
@@ -1241,19 +1237,19 @@ bool D110Core::getLcd(uint8_t *out) const {
 	return true;
 }
 
-// ---- карта памяти ---------------------------------------------------------
+// ---- memory card ----------------------------------------------------------
 
-// Вызывается раз в кадр из потока машины - единственного, которому позволено касаться
-// разделяемой памяти MAME. Пока карта вставлена, истина живёт именно там: прошивка пишет
-// в неё сама, и буфер плагина в это время не трогается вовсе. Он наполняется ровно в
-// момент извлечения - тем, что на карте к этому моменту оказалось.
+// Called once per frame from the machine thread - the only one allowed to touch MAME's
+// shared memory. While the card is inserted the truth lives right there: the firmware
+// writes to it itself, and the plugin's buffer is not touched at all meanwhile. It is filled
+// exactly at the moment of ejection - with whatever the card holds by then.
 void D110Core::osdApplyCard(uint8_t *shared) {
 	if (!shared) return;
 	std::lock_guard<std::mutex> lock(cardMutex);
 
-	// Новая машина - другая разделяемая память, и состояние гнезда в неё надо перенести
-	// заново, даже если снаружи никто ничего не переключал. Иначе после перезапуска
-	// (заводской сброс - это он) извлечённая карта оказалась бы на месте.
+	// A new machine is different shared memory, and the socket state has to be carried into it
+	// afresh, even if nobody switched anything from outside. Otherwise after a restart (a
+	// factory reset is one) an ejected card would turn out to be in place.
 	const bool fresh = cardShared != shared;
 	const bool newImage = cardImageDirty.exchange(false, std::memory_order_acq_rel);
 	const bool want = cardWant.load(std::memory_order_acquire);
@@ -1261,12 +1257,12 @@ void D110Core::osdApplyCard(uint8_t *shared) {
 	if (!fresh && !newImage && want == wasIn) return;
 
 	if (fresh && !newImage) {
-		// Свежая машина подняла карту из своего файла, и это её содержимое, кто бы файл ни
-		// написал - прошлый сеанс или загрузка проекта. Буфер плагина берёт его себе, иначе
-		// проект, сохранённый с вынутой картой, терял бы её содержимое при открытии.
+		// A fresh machine loaded the card from its file, and that is its contents, whoever wrote
+		// the file - the previous session or a project load. The plugin's buffer takes it over,
+		// otherwise a project saved with the card out would lose its contents on opening.
 		std::memcpy(cardImage.data(), shared, kCardSize);
 	} else if (wasIn && !want) {
-		// Карту вынимают: то, что прошивка успела на неё записать, уносится в буфер.
+		// The card is being ejected: whatever the firmware managed to write to it is carried off into the buffer.
 		std::memcpy(cardImage.data(), shared, kCardSize);
 	}
 
@@ -1277,10 +1273,10 @@ void D110Core::osdApplyCard(uint8_t *shared) {
 	cardIsIn = want;
 }
 
-// Разделяемая память уходит вместе с машиной, поэтому содержимое карты снимается, пока оно
-// ещё существует. У извлечённой карты в машине лежат 0xFF, а настоящее содержимое - в
-// буфере; его надо вернуть на место, иначе MAME сохранит в свой файл пустое гнездо.
-// Состояние самого гнезда при этом НЕ трогается: выключение прибора карту не вставляет.
+// The shared memory goes away with the machine, so the card's contents are captured while
+// they still exist. An ejected card has 0xFF in the machine and its real contents in the
+// buffer; that has to be put back, otherwise MAME saves an empty socket into its file. The
+// socket state itself is NOT touched: powering the unit off does not insert the card.
 void D110Core::osdDetachCard(uint8_t *shared) {
 	std::lock_guard<std::mutex> lock(cardMutex);
 	if (shared) {
@@ -1300,8 +1296,8 @@ void D110Core::setCardImage(const uint8_t *bytes) {
 
 bool D110Core::getCardImage(uint8_t *out) const {
 	std::lock_guard<std::mutex> lock(cardMutex);
-	// Вставленная карта живёт в машине, а не в буфере, и читать надо оттуда - иначе
-	// сохранение вернуло бы состояние на момент последнего извлечения.
+	// An inserted card lives in the machine, not in the buffer, and must be read from there -
+	// otherwise saving would return the state as of the last ejection.
 	if (cardIsIn && cardShared) {
 		std::memcpy(out, cardShared, kCardSize);
 		return true;
@@ -1329,8 +1325,8 @@ void D110Core::osdSnapshotRam(const uint8_t *src) {
 	// whole 32 KB would fire dozens of times a second on the firmware's scratch area,
 	// which has nothing to do with the sound.
 
-	// Взводится, как только на этом проходе ушёл регион Timbre Temporary; почему тембры
-	// обязаны идти следом - см. MirrorRegion::reassertAfterTimbreTemp.
+	// Raised as soon as the Timbre Temporary region went out on this pass; why the timbres
+	// must follow - see MirrorRegion::reassertAfterTimbreTemp.
 	bool timbreTempSent = false;
 	for (int i = 0; i < kNumMirrorRegions; ++i) {
 		const auto &region = kMirrorRegions[i];
@@ -1348,7 +1344,7 @@ void D110Core::osdSnapshotRam(const uint8_t *src) {
 		if (mirrorPrimed || resync) {
 			emitRegionSysex(region, src);
 			regionEmits[i].fetch_add(1, std::memory_order_relaxed);
-			if (i == 0) timbreTempSent = true; // регион 0 - это Timbre Temporary
+			if (i == 0) timbreTempSent = true; // region 0 is Timbre Temporary
 		}
 	}
 	mirrorPrimed = true;
@@ -1403,9 +1399,9 @@ void D110Core::emitRegionSysex(const MirrorRegion &region, const uint8_t *ramIma
 	pushSysex(msg, n);
 }
 
-// Тот же DT1, но для произвольного адреса и данных, и без постановки в очередь. Смещение
-// прибавляется в семибитном пространстве Roland: 0x040000 + 246 - это 0x040166, а не
-// 0x0400F6, и обычное сложение промахнулось бы на каждом тембре, кроме первого.
+// The same DT1, but for an arbitrary address and data, and without queuing. The offset is
+// added in Roland's seven-bit space: 0x040000 + 246 is 0x040166, not 0x0400F6, and ordinary
+// addition would miss on every timbre but the first.
 int D110Core::buildDt1Message(uint32_t sysexAddress, int offset, const uint8_t *data,
                               int length, uint8_t *out) {
 	if (length <= 0 || length > kMaxSysexBytes - 12 || offset < 0) return 0;
@@ -1413,7 +1409,7 @@ int D110Core::buildDt1Message(uint32_t sysexAddress, int offset, const uint8_t *
 	int n = 0;
 	out[n++] = 0xF0;
 	out[n++] = 0x41; // Roland
-	out[n++] = 0x10; // device ID (заводской Exclu Unit# 17, считая с единицы)
+	out[n++] = 0x10; // device ID (factory Exclu Unit# 17, counting from one)
 	out[n++] = 0x16; // model: MT-32 family, which is what the D-110 answers to
 	out[n++] = 0x12; // DT1
 
@@ -1442,9 +1438,9 @@ void D110Core::pushSysex(const uint8_t *msg, int len) {
 	if (len <= 0 || len > kMaxSysexBytes) return;
 	const int w = sW.load(std::memory_order_relaxed);
 	const int r = sR.load(std::memory_order_acquire);
-	// Кольцо полно: бросаем, а не тормозим машину, - но СЧИТАЕМ. Молча потерянное
-	// сообщение зеркала - это параметр, о котором движок так и не узнает, а мост теперь
-	// шлёт девять сообщений там, где смена тембра раньше слала одно.
+	// The ring is full: drop rather than stall the machine - but COUNT. A silently lost mirror
+	// message is a parameter the engine never learns about, and the bridge now sends nine
+	// messages where a timbre change used to send one.
 	if (((w + 1) & kSysexMask) == r) {
 		sysexDropCount.fetch_add(1, std::memory_order_relaxed);
 		return;
@@ -1523,7 +1519,7 @@ void D110Core::osdPushNoteEvent(const NoteEvent &ev) {
 	// played even when only one part is being rendered.
 	if (noteLoggingOn())
 		osdLogNote({noteLogElapsedMs(), ev.part, ev.note, ev.velocity, ev.on});
-	// По той же причине, и, в отличие от журнала, здесь место кончиться не может.
+	// For the same reason, and unlike the log, this cannot run out of room.
 	if (ev.on && ev.part < 9) noteOnPart[ev.part].fetch_add(1, std::memory_order_relaxed);
 	const int solo = soloPart.load(std::memory_order_relaxed);
 	if (solo >= 0 && ev.part != solo) return;
@@ -1564,10 +1560,10 @@ bool D110Core::osdTakeRhythmKeyHint(uint8_t &outNote) {
 }
 
 void D110Core::osdLogSoWrite(uint16_t pc, uint16_t addr, uint8_t value) {
-	// Быстрый выход БЕЗ мьютекса. Перехват на портах опроса панели срабатывает несколько
-	// тысяч раз в секунду и делает это на потоке процессора - том самом, чьё расписание
-	// решает, успеет ли прошивка получить ответ от LA32 вовремя. Захват включён только в
-	// стендах, а в плагине выключен всегда, и тогда эта проверка - всё, что тут исполняется.
+	// Fast exit WITHOUT the mutex. The tap on the panel scan ports fires several thousand times
+	// a second, and does so on the CPU thread - the very one whose schedule decides whether
+	// the firmware gets its answer from the LA32 in time. Capture is on only in rigs and always
+	// off in the plugin, and then this check is all that runs here.
 	if (!soTracingOn.load(std::memory_order_acquire)) return;
 	if (addr < traceLo.load(std::memory_order_relaxed) ||
 	    addr > traceHi.load(std::memory_order_relaxed)) return;
@@ -1640,7 +1636,7 @@ bool D110Core::popMidiByte(uint8_t &out) {
 	out = midiBuf[(size_t)r];
 	mR.store((r + 1) & kMidiMask, std::memory_order_release);
 	midiOutCount.fetch_add(1, std::memory_order_relaxed);
-	// Байт дошёл до приёмника - лампа MIDI MESSAGE перезапускается отсюда, см. midiLampOn().
+	// The byte reached the receiver - the MIDI MESSAGE lamp is retriggered from here, see midiLampOn().
 	lastMidiByteMs.store(nowMs(), std::memory_order_release);
 	return true;
 }

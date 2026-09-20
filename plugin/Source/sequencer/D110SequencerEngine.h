@@ -490,6 +490,7 @@ public:
 	struct NoteEventInfo {
 		int index;            // this track's own MidiMessageSequence index - pass to deleteNoteEvent()
 		double beatInBar;     // 0-indexed offset from the start of whichever bar this note is in
+		double startBeat;     // absolute beat position of the note-on (what beatInBar is relative to)
 		int note;
 		int velocity;
 		double durationBeats; // 0 if no matching note-off was found (shouldn't normally happen)
@@ -512,6 +513,25 @@ public:
 	// untouched. No-op if out of range. See pushUndoSnapshot() above - the UI checkpoints
 	// before calling this, same as every other destructive edit.
 	void setNoteEventPitch(int trackIndex, int index, int newNote);
+
+	// Grid (piano-roll) editing primitives, for D110SequencerGridPanel. Positions are absolute
+	// beats (quarter notes from the start of the song), and a note is given by its start AND
+	// end rather than a length: the UI computes both as step * gridBeats, so a note ending
+	// exactly where the next same-pitch one starts gets bit-identical timestamps (a `start +
+	// length` sum could differ by an ulp and reorder the pair). At equal timestamps a note-off
+	// always sorts before a note-on, so back-to-back same-pitch notes retrigger instead of the
+	// new note being cut by the old one's off. The UI checkpoints with pushUndoSnapshot() once
+	// per gesture, same as every other edit.
+	//
+	// addNote() returns the new note-on's event index (valid until the next edit to this track),
+	// or -1 if the arguments are unusable (end <= start, negative start).
+	int addNote(int trackIndex, double startBeat, double endBeat, int note, int velocity);
+
+	// Rewrites one note (index as returned by eventsInBarRange()/addNote()) in one go: new
+	// start/end/pitch/velocity, covering move, resize and velocity edits alike. Returns the
+	// note's new event index, or -1 (and leaves the note untouched) if the index is not a
+	// note-on or the arguments are unusable.
+	int updateNoteEvent(int trackIndex, int index, double startBeat, double endBeat, int note, int velocity);
 
 	// Clears every track in the CURRENT slot (events, mute/solo/quantize all reset) and
 	// stops/rewinds/disarms - "new song" within the currently selected slot. Transport
@@ -616,7 +636,29 @@ private:
 		// consulted the moment mute/solo cuts this track's own playback so a still-sounding note
 		// doesn't hang - see renderInto()'s own comment.
 		std::vector<int> soundingNotes;
+		// Notes an edit (delete/move/shorten/repitch while playing) orphaned mid-sound: their
+		// own note-off is gone or no longer ahead of the playhead, so renderInto() sends these
+		// at the top of its next block instead. Runtime-only, like soundingNotes.
+		std::vector<int> pendingNoteOffs;
 	};
+
+	// Called with editLock held, right before an edit that removes or changes a note's span
+	// [oldOn, oldOff) at pitch `note`: if that note is sounding right now and the edit leaves
+	// it with no note-off still ahead of the playhead (`newOn`/`newOff` describe the edited
+	// note, or newOff <= newOn for a deletion), queues a note-off so it can't hang.
+	void releaseOrphanedNote(Track &track, int note, double oldOn, double oldOff, int newNote, double newOn,
+	                         double newOff);
+	// Same as juce::MidiMessageSequence::sort() but a note-off sorts before a note-on at an
+	// identical timestamp - see addNote()'s comment.
+	static void sortNoteOffsFirst(juce::MidiMessageSequence &seq);
+
+	// Guards `tracks` (and the runtime playback state inside them) between the audio thread's
+	// renderInto() and the message thread's note edits/undo. Held for a whole renderInto()
+	// call, so every locked edit stays short (no allocation-heavy work under it beyond one
+	// note pair insert + sort). Only the edits added for the grid editor, plus the ones the grid
+	// editor makes routine (single-note delete/repitch, undo, redo, step commit), take it -
+	// the older bar-range edits (quantize, transpose, ...) predate this and still don't.
+	mutable juce::SpinLock editLock;
 
 	double gridBeats(QuantizeGrid grid) const;
 	// The actual round-to-grid math, shared by snapTrackToGrid() (hard, writes it back) and

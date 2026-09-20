@@ -1015,6 +1015,10 @@ void D110AudioProcessor::rebuildSampleRateConverter() {
 void D110AudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
 	currentSampleRate = sampleRate;
 	interleavedScratch.resize(static_cast<size_t>(samplesPerBlock) * 2);
+	midiRemapScratch.ensureSize(4096);
+	portMidiScratch.ensureSize(4096);
+	sequencerOutScratch.ensureSize(4096);
+	sequencerClicks.reserve(64);
 	osMidiCollector.reset(sampleRate);
 	if (synth) rebuildSampleRateConverter();
 
@@ -1085,22 +1089,25 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 	// earlier - see handleIncomingMidiMessage(), which rechannelizes before a message ever
 	// reaches osMidiCollector in the first place.
 	if (midiRemap) {
-		juce::MidiBuffer rechannelized;
+		// Member scratch buffers (midiRemapScratch/portMidiScratch/sequencerOutScratch, pre-sized
+		// in prepareToPlay) rather than locals: a local juce::MidiBuffer allocates on the audio
+		// thread every block. swapWith() exchanges storage, so both sides keep their capacity.
+		midiRemapScratch.clear();
 		for (const auto meta : midiMessages) {
 			auto msg = meta.getMessage();
 			if (msg.getChannel() > 0) msg.setChannel(keyboardMidiChannel);
-			rechannelized.addEvent(msg, meta.samplePosition);
+			midiRemapScratch.addEvent(msg, meta.samplePosition);
 		}
-		midiMessages.swapWith(rechannelized);
+		midiMessages.swapWith(midiRemapScratch);
 	}
 
 	// Anything that arrived on the directly-opened port joins the host's own stream here,
 	// so from this point on there is one queue and the rest of the method cannot tell the
 	// two apart - which is right, since the hardware cannot either.
 	{
-		juce::MidiBuffer fromPort;
-		osMidiCollector.removeNextBlockOfMessages(fromPort, numSamples);
-		for (const auto meta : fromPort)
+		portMidiScratch.clear();
+		osMidiCollector.removeNextBlockOfMessages(portMidiScratch, numSamples);
+		for (const auto meta : portMidiScratch)
 			midiMessages.addEvent(meta.getMessage(), meta.samplePosition);
 	}
 
@@ -1112,7 +1119,8 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 	// tell them apart from host MIDI - same reasoning as the osMidiCollector merge above.
 	// sequencerClicks is filled here but mixed into the OUTPUT buffer much further down,
 	// after the synth has actually rendered into it.
-	std::vector<d110seq::D110SequencerEngine::MetronomeClick> sequencerClicks;
+	// Member (capacity kept across blocks), cleared here rather than a fresh local vector.
+	sequencerClicks.clear();
 	{
 		// Refreshed once per block, not once per note - see sequencerLiveChannels' comment.
 		if (core.isRunning()) {
@@ -1217,7 +1225,8 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 		// notes the sequencer actually played (as opposed to host/keyboard/thru input already
 		// sitting in midiMessages) can be told apart and also reach the direct MIDI Out port
 		// below - the first step towards the sequencer driving external gear on its own.
-		juce::MidiBuffer sequencerOut;
+		juce::MidiBuffer &sequencerOut = sequencerOutScratch;
+		sequencerOut.clear();
 
 		// Per-Part Program Change/Bank/Volume/Pan override (see getTrackProgram()/getTrackBank()/
 		// getTrackVolume()/getTrackPan()), added ahead of renderInto() below so it lands at
@@ -1313,9 +1322,13 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 	// Drain anything queued from the UI thread (SysEx bank imports, patch-browsing program
 	// changes, stub-button LCD messages) and actually apply it here on the audio thread, since
 	// Synth's MIDI queue only tolerates a single writer thread.
-	std::vector<std::vector<MT32Emu::Bit8u>> pendingImportsToSend;
-	std::vector<MT32Emu::Bit32u> pendingShortMessagesToSend;
-	std::vector<juce::uint8> pendingPanicBytesToSend;
+	// The three *ToSend vectors are members, cleared at the end of this block: swapping a
+	// member (empty, capacity retained) with the pending queue hands the queue an already
+	// allocated buffer back, so steady state never allocates or frees on the audio thread -
+	// a fresh local vector would free its storage on every block.
+	auto &pendingImportsToSend = pendingImportsToSendScratch;
+	auto &pendingShortMessagesToSend = pendingShortMessagesToSendScratch;
+	auto &pendingPanicBytesToSend = pendingPanicBytesToSendScratch;
 	bool forceReleaseStuckVoicesNow = false;
 	{
 		const juce::ScopedLock slEngine(engineActionLock);
@@ -1339,11 +1352,11 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 		core.resetVoiceSlotTable();
 		pendingSlotTableResetSamplesRemaining.fetch_sub(buffer.getNumSamples(), std::memory_order_relaxed);
 	}
-	// Эти две очереди намеренно идут через очередь движка с отметкой времени, а не через
-	// «немедленные» формы, которыми пользуется мост ниже: их источник - действие
-	// пользователя на панели, оно отстоит от любой ноты на секунды, и обгон в один блок
-	// здесь ничего не решает. У моста иначе - там параметр и нота приходят в одну и ту же
-	// миллисекунду, и порядок между ними значим.
+	// These two queues deliberately go through the engine's timestamped queue rather than the
+	// "immediate" forms the bridge below uses: their source is a user action on the panel,
+	// seconds away from any note, and overtaking by one block settles nothing here. The bridge
+	// is different - there a parameter and a note arrive in the same millisecond, and their
+	// order matters.
 	for (auto &message : pendingImportsToSend) {
 		synth->playSysex(message.data(), static_cast<MT32Emu::Bit32u>(message.size()));
 		// And to the control board, which is the half that actually owns this data. Sending
@@ -1356,21 +1369,23 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 	}
 	for (auto message : pendingShortMessagesToSend)
 		synth->playMsg(message);
+	pendingImportsToSend.clear();
+	pendingShortMessagesToSend.clear();
+	pendingPanicBytesToSend.clear();
 
 	// The bridge: whenever the control board's own parameter memory changes - because a
 	// button was pressed on the panel - the core hands us the Roland exclusive message
 	// the hardware would have used, and the LA engine takes it natively. This is what
 	// makes an edit made on the panel audible.
 	//
-	// playSysexNow, а не playSysex: последний ставит сообщение в собственную очередь
-	// движка с отметкой времени, и применяется оно только когда расчёт звука до неё
-	// дойдёт, - тогда как ноты ниже уходят через playMsgOnPart, который действует
-	// НЕМЕДЛЕННО. Ноты обгоняли параметры, от которых зависят. В начале демо-песни это
-	// стоило двух ударов: прошивка загружала карту ритма и почти сразу стучала по
-	// клавишам 25 и 27, а движок применял удары раньше карты, видел там тембр 127 (OFF)
-	// и молча их отбрасывал ("Attempted to play unmapped key"). Здесь оба пути
-	// действуют в момент разбора очередей, и порядок этого цикла - параметры, потом
-	// ноты - становится настоящим.
+	// playSysexNow, not playSysex: the latter puts the message into the engine's own timestamped
+	// queue, applied only when rendering reaches it - whereas the notes below go through
+	// playMsgOnPart, which acts IMMEDIATELY. Notes were overtaking the parameters they depend
+	// on. At the start of the demo song this cost two hits: the firmware loaded the rhythm map
+	// and almost at once struck keys 25 and 27, but the engine applied the hits before the map,
+	// saw timbre 127 (OFF) there and silently dropped them ("Attempted to play unmapped key").
+	// Here both paths act at queue-drain time, and the order of this loop - parameters, then
+	// notes - becomes real.
 	{
 		MT32Emu::Bit8u sysex[D110CoreType::kMaxSysexBytes];
 		while (const int len = core.popSysex(sysex))
@@ -1493,23 +1508,21 @@ void D110AudioProcessor::processBlock(juce::AudioBuffer<float> &buffer, juce::Mi
 			}
 			float *left = buffer.getWritePointer(0, samplePos);
 			float *right = numOutChannels > 1 ? buffer.getWritePointer(1, samplePos) : nullptr;
-			// Насыщение ЦАПа, и только потом ручка громкости - в приборе они стоят
-			// именно в таком порядке: ЦАП шестнадцатибитный и физически не может выдать
-			// больше полной шкалы, а регулятор громкости аналоговый и стоит за ним.
+			// DAC saturation first, and only then the volume knob - that is the order they sit in on the
+			// unit: the DAC is sixteen-bit and physically cannot output more than full scale, and the
+			// volume control is analogue and comes after it.
 			//
-			// Само насыщение принадлежит движку: Synth::clipSampleEx(Bit32s) прижимает
-			// сумму голосов к +-32767. Но у той же функции есть перегрузка для float, и
-			// она НАМЕРЕННО ничего не делает - `return sampleEx;`. Наша сборка идёт по
-			// float-пути, поэтому модель ЦАПа до выхода не доезжала, и плотные места
-			// демо-песни выходили за шкалу примерно на 1.5 дБ. Это расхождение с
-			// прибором, а не его характер: на «Macho Memory» за полную шкалу выходили
-			// 69 отсчётов из 6 614 016, то есть одна тысячная процента, - ЦАП срезал бы
-			// их неслышно.
+			// The saturation itself belongs to the engine: Synth::clipSampleEx(Bit32s) pins the voice
+			// sum to +-32767. But the same function has a float overload, and it DELIBERATELY does
+			// nothing - `return sampleEx;`. Our build goes down the float path, so the DAC model never
+			// reached the output, and the dense passages of the demo song went about 1.5 dB over full
+			// scale. That is a departure from the unit, not its character: on "Macho Memory" 69 samples
+			// out of 6,614,016 went over full scale, one thousandth of a percent - the DAC would have
+			// clipped them inaudibly.
 			//
-			// Ручка на панели идёт 0..2 с единичным усилением ровно посередине, где она
-			// и стоит по умолчанию, так что в состоянии покоя выход теперь не может
-			// превысить полную шкалу. Всё, что правее середины, - это уже запрошенное
-			// пользователем усиление, как фейдер на пульте, а не поведение прибора.
+			// The panel knob runs 0..2 with unity gain exactly at the middle, where it sits by default,
+			// so at rest the output can no longer exceed full scale. Anything right of the middle is
+			// gain the user asked for, like a fader on a desk, not the unit's behaviour.
 			for (int i = 0; i < samplesToRender; ++i) {
 				const float l = juce::jlimit(-1.0f, 1.0f,
 				                            interleavedScratch[static_cast<size_t>(i) * 2]);
@@ -1609,8 +1622,8 @@ void D110AudioProcessor::handleIncomingMidiMessage(const juce::MidiMessage &mess
 	// parts, and why the display drifted away from the host's program changes.
 	forwardMidiToFirmware(message);
 
-	// И в ленту, которую показывает вкладка MONITOR расширенного редактора: это ровно то,
-	// что прибор получил, до всякого разбора.
+	// And into the log the extended editor's MONITOR tab shows: exactly what the unit received,
+	// before any parsing.
 	logIncomingMidi(message);
 
 	// Echoed to a real MIDI Out port too, if one's been opened (setMidiOutputDevice) - Alan's
@@ -2323,10 +2336,10 @@ void D110AudioProcessor::sendRhythmParam(int slot, int field, juce::uint8 value)
 }
 
 void D110AudioProcessor::sendSystemParam(int field, juce::uint8 value) {
-	// 23 байта, как их описывает Roland: подстройка, ревербератор, резерв партиалов, карта
-	// каналов и громкость. Последняя у D-110 - физическая ручка, и прошивка её не
-	// заполняет, поэтому редактор её не предлагает; предел здесь всё равно стоит по длине
-	// области, а не по тому, что редактор рисует.
+	// 23 bytes, as Roland describes them: tune, reverb, partial reserve, channel map and volume.
+	// On the D-110 the last one is a physical knob and the firmware never fills it, so the
+	// editor does not offer it; the limit here is still set by the area's length, not by what
+	// the editor draws.
 	if (field < 0 || field > 22) return;
 	const juce::uint8 v = value & 0x7f;
 	sendAreaData(D110CoreType::kSysexSystem, field, &v, 1);
@@ -2500,18 +2513,18 @@ void D110AudioProcessor::selectTimbreForPart(int part, int timbre) {
 	if (part < 0 || part > 7 || timbre < 0 || timbre > 127) return;
 	if (!core.isRunning()) return;
 
-	// Канал берётся из карты самой прошивки (System Area, chanAssign), а не считается по
-	// заводской формуле "партия N на канале N+1": эту карту можно изменить, и тогда
-	// формула отправила бы смену программы мимо.
+	// The channel is taken from the firmware's own map (System Area, chanAssign), not computed
+	// by the factory formula "part N on channel N+1": that map can be changed, and the formula
+	// would then send the Program Change to the wrong place.
 	std::vector<uint8_t> ram(D110CoreType::kRamSize, 0);
 	if (!core.getRam(ram.data())) return;
 	const int chan = ram[(size_t)D110CoreType::kRamSystem + 13 + (size_t)part];
-	if (chan > 15) return;   // партия выключена - слать некуда
+	if (chan > 15) return;   // part is OFF - nowhere to send it
 
 	const juce::uint8 bytes[2] = { juce::uint8(0xC0 | chan), juce::uint8(timbre & 0x7f) };
 	core.pushMidi(bytes, 2);
-	// Смена программы - обычное MIDI-сообщение, поэтому она должна дойти и до звукового
-	// движка, как дошла бы с внешней клавиатуры.
+	// A Program Change is an ordinary MIDI message, so it must also reach the sound engine, as
+	// it would from an external keyboard.
 	const juce::ScopedLock sl(engineActionLock);
 	pendingShortMessages.push_back(juce::uint32(bytes[0]) | (juce::uint32(bytes[1]) << 8));
 }
@@ -2669,16 +2682,16 @@ void D110AudioProcessor::loadSoundSnapshotForSlot(int slot) {
 	lastImportMessage = "Loaded Slot " + juce::String(slot + 1) + "'s stored sounds.";
 }
 
-// Патч выбирается НАЖАТИЯМИ, а не записью в память: на D-110 патч - это не один
-// параметр, а целая раскладка, и раскладывает её по временным областям сама прошивка.
-// Записать её за прошивку значило бы держать вторую, свою реализацию смены патча, которая
-// однажды разойдётся с настоящей; нажать кнопки - значит попросить сделать это ту
-// программу, которая на приборе за это отвечает, и получить заодно её индикатор, её
-// зеркало и её же поведение.
+// A patch is selected by BUTTON PRESSES, not by writing memory: on the D-110 a patch is not
+// one parameter but a whole layout, and the firmware itself unpacks it into the temporary
+// areas. Writing it on the firmware's behalf would mean keeping a second, private
+// implementation of patch switching that one day diverges from the real one; pressing the
+// buttons asks the program responsible for it on the unit to do it, and gets its display,
+// its mirror and its behaviour into the bargain.
 //
-// Номер текущего патча лежит в ОЗУ по 0x2DB9 (0..63), Bank+ двигает его на 8, Number+ на 1
-// - измерено plugin/editor_write_probe.cpp. Отсюда путь до любого патча: не больше семи
-// нажатий Bank+ и семи Number+.
+// The current patch number lives in RAM at 0x2DB9 (0..63); Bank+ moves it by 8, Number+ by 1
+// - measured by plugin/editor_write_probe.cpp. Hence the path to any patch: at most seven
+// Bank+ and seven Number+ presses.
 void D110AudioProcessor::selectPatch(int patch) {
 	if (patch < 0 || patch >= D110CoreType::kNumPatches) return;
 	if (!core.isRunning() || patchSteps > 0) return;
@@ -2689,15 +2702,16 @@ void D110AudioProcessor::selectPatch(int patch) {
 	if (current < 0 || current >= D110CoreType::kNumPatches) return;
 
 	patchQueue.clear();
-	// Сперва на страницу выбора патча - оттуда Bank и Number значат номер патча, а не
-	// что-нибудь ещё. Нажимается всегда, даже если патч уже нужный: пользователь щёлкнул
-	// по патчу и вправе увидеть его на индикаторе.
+	// First to the patch-select page - from there Bank and Number mean the patch number and
+	// nothing else. Always pressed, even if the patch is already the right one: the user clicked
+	// a patch and is entitled to see it on the display.
 	patchQueue.push_back(D110CoreType::buttonIndex(0, 6));   // Patch
 
-	// Ход считается СО ЗНАКОМ, и вниз идут кнопки со стрелкой вниз. Кольцевая арифметика
-	// здесь не работает, и это измерено: Bank+ у прибора НЕ перекатывается с восьмого банка
-	// на первый, а упирается. Расчёт «пять раз вперёд вместо трёх назад» просил патч I-14 и
-	// оставлял прибор на I-84 - ровно там, где кончился банк (plugin/editor_test.cpp).
+	// The travel is SIGNED, and downward uses the down-arrow buttons. Wrap-around arithmetic
+	// does not work here, and that is measured: the unit's Bank+ does NOT roll over from the
+	// eighth bank to the first, it stops. Computing "five forward instead of three back" asked
+	// for patch I-14 and left the unit at I-84 - exactly where the bank ran out
+	// (plugin/editor_test.cpp).
 	const int bankStep = (patch / 8) - (current / 8);
 	const int numberStep = (patch % 8) - (current % 8);
 	const int bankButton = D110CoreType::buttonIndex(bankStep >= 0 ? 0 : 1, 2);     // Bank+ / Bank-
@@ -2707,9 +2721,9 @@ void D110AudioProcessor::selectPatch(int patch) {
 
 	patchSteps = int(patchQueue.size());
 	patchPhase = 0;
-	// 60 мс на полунажатие: две фазы на кнопку, то есть восьмая доля секунды на нажатие -
-	// быстрее, чем это делает рука, и заметно медленнее, чем матрица опроса, которая
-	// читается каждый кадр прошивки.
+	// 60 ms per half-press: two phases per button, i.e. an eighth of a second per press -
+	// faster than a hand does it, and noticeably slower than the scan matrix, which is read
+	// every firmware frame.
 	startTimer(60);
 }
 
@@ -2740,14 +2754,14 @@ int D110AudioProcessor::currentPatchNumber() const {
 	return (n >= 0 && n < D110CoreType::kNumPatches) ? n : -1;
 }
 
-// Правка патча, слышная сразу. Память патча пишется всегда, а если правится тот патч,
-// который прибор играет, то же значение уходит и в живую область - туда, откуда прибор
-// действительно берёт звук.
+// A patch edit, audible at once. Patch memory is always written, and if the patch being
+// edited is the one the unit is playing, the same value also goes to the live area - where
+// the unit actually takes its sound from.
 //
-// Раскладка записи патча измерена (docs/sysex_address_map.md): имя 0-9, ревербератор 10-12,
-// резерв партиалов 13-21, карта каналов 22-30, дальше восемь записей партий по 12 байт с
-// 31-го. Живые двойники у них разные: у партий это Timbre Temporary, у ревербератора,
-// резерва и каналов - системная область.
+// The patch record layout is measured (docs/sysex_address_map.md): name 0-9, reverb 10-12,
+// partial reserve 13-21, channel map 22-30, then eight 12-byte part records from 31. Their
+// live twins differ: for the parts it is Timbre Temporary, for reverb, reserve and channels
+// the System area.
 void D110AudioProcessor::editPatchField(int patch, int field, juce::uint8 value) {
 	sendPatchMemoryParam(patch, field, value);
 	if (patch != currentPatchNumber()) return;
@@ -2756,19 +2770,19 @@ void D110AudioProcessor::editPatchField(int patch, int field, juce::uint8 value)
 		const int part = (field - 31) / 12;
 		const int offset = (field - 31) % 12;
 
-		// «Какой тон играет партия» - это ПАРА байтов, группа и номер, и переносить её
-		// надо парой. Перенос одного байта оставляет обе стороны при своих: в записи патча
-		// b01, в живой области a01 - номер сходится, группа нет, и ящик с индикатором
-		// называют разные тона. Измерено: развели группы, покрутили номер, получили патч
-		// (1,0) против живой области (0,0) (plugin/editor_test.cpp, раздел 5).
+		// "Which tone the part plays" is a PAIR of bytes, group and number, and it must be carried
+		// as a pair. Carrying one byte leaves each side with its own: b01 in the patch record, a01
+		// in the live area - the number agrees, the group does not, and the drawer and the display
+		// name different tones. Measured: groups pulled apart, number turned, result patch (1,0)
+		// against live area (0,0) (plugin/editor_test.cpp, section 5).
 		if (offset == 0 || offset == 1) {
 			std::vector<uint8_t> ram(D110CoreType::kRamSize, 0);
 			if (!core.getRam(ram.data())) return;
 			const size_t at = size_t(D110CoreType::kRamPatches)
 			                + size_t(patch) * D110CoreType::kPatchRecord + 31 + size_t(part) * 12;
-			// Второй байт пары берётся из самой записи патча: та, что в ОЗУ, ещё не знает о
-			// правке, которая только что ушла эксклюзивным сообщением, поэтому правимый байт
-			// подставляется вручную.
+			// The pair's second byte is taken from the patch record itself: the copy in RAM does not yet
+			// know about the edit that just left as an exclusive message, so the byte being edited is
+			// substituted by hand.
 			juce::uint8 pair[2] = { ram[at], ram[at + 1] };
 			pair[offset] = value & 0x7f;
 			sendAreaData(D110CoreType::kSysexTimbreTemp, part * D110CoreType::kTimbreTempRecord, pair, 2);
@@ -2777,15 +2791,15 @@ void D110AudioProcessor::editPatchField(int patch, int field, juce::uint8 value)
 		sendTimbreTempParam(part, offset, value);
 		return;
 	}
-	// Тип ревербератора в движок не переносится (восемь типов на четыре режима не ложатся),
-	// но в прошивку он уходит: на индикаторе прибора значение обязано измениться.
+	// The reverb type is not carried to the engine (eight types do not map onto four modes), but
+	// it does go to the firmware: the value on the unit's display must change.
 	if (field >= 10 && field <= 12) { sendSystemParam(field - 9, value); return; }
 	if (field >= 13 && field <= 21) { sendSystemParam(field - 9, value); return; }
 	if (field >= 22 && field <= 30) { sendSystemParam(field - 9, value); return; }
 }
 
-// Тон целиком - 246 байт, а в одно эксклюзивное сообщение у Roland помещается 244, поэтому
-// он идёт двумя кусками, ровно как его послал бы внешний библиотекарь.
+// A whole tone is 246 bytes, and one Roland exclusive message holds 244, so it goes in two
+// pieces, exactly as an external librarian would send it.
 static void sendToneBlock(D110AudioProcessor &proc, juce::uint32 address, int offset,
                           const uint8_t *from) {
 	constexpr int kChunk = 123;
@@ -2817,8 +2831,8 @@ void D110AudioProcessor::logIncomingMidi(const juce::MidiMessage &message) {
 	const auto *raw = message.getRawData();
 	const int size = message.getRawDataSize();
 	if (size <= 0) return;
-	// Тактовые импульсы и active sensing идут потоком - их сотни в секунду, и они вытеснили
-	// бы из ленты всё осмысленное.
+	// Clock ticks and active sensing come as a stream - hundreds a second - and would push
+	// everything meaningful out of the log.
 	if (raw[0] == 0xF8 || raw[0] == 0xFE) return;
 
 	MidiLogEntry e;
@@ -2900,9 +2914,9 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 		}
 		if (rams.getSize() == 0) rams = readNvramFile("rams");
 
-		// Карта - по тому же правилу, что и батарейное ОЗУ: пока машина работает, файл на
-		// диске отстал, а живое содержимое лежит в ядре. Оно же отдаётся и для извлечённой
-		// карты, у которой в разделяемой памяти машины сейчас одни 0xFF.
+		// The card follows the same rule as the battery-backed RAM: while the machine is running
+		// the file on disk is stale and the live contents sit in the core. The core is also what
+		// serves an ejected card, whose slot in the machine's shared memory is currently all 0xFF.
 		juce::MemoryBlock memcs;
 		if (core.isRunning()) {
 			memcs.setSize(D110CoreType::kCardSize);
@@ -2913,8 +2927,8 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 		xml->setAttribute("nvramRams", packBlock(rams));
 		xml->setAttribute("nvramMemcs", packBlock(memcs));
 	}
-	// Гнездо и движок защиты от записи - это положение вещей на приборе, такое же, как
-	// содержимое памяти: проект, сохранённый с вынутой картой, должен открыться с вынутой.
+	// The socket and the write-protect switch are state of the unit, just like memory contents:
+	// a project saved with the card out must open with the card out.
 	xml->setAttribute("cardInserted", core.cardInserted() ? 1 : 0);
 	xml->setAttribute("cardWriteProtect", core.cardWriteProtect() ? 1 : 0);
 
@@ -2936,6 +2950,7 @@ void D110AudioProcessor::getStateInformation(juce::MemoryBlock &destData) {
 	xml->setAttribute("uiFontScaleBig", uiFontScaleBig ? 1 : 0);
 	// See getSequencerRetroMode().
 	xml->setAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0);
+	xml->setAttribute("sequencerGridMode", sequencerGridMode ? 1 : 0);
 	// See getCompactPanelMode().
 	xml->setAttribute("compactPanelMode", compactPanelMode ? 1 : 0);
 	// See D110SequencerHost::getRetroKeyBindings().
@@ -3054,10 +3069,10 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 		openSynthIfReady();
 	}
 
-	// Атрибут forwardNotes из старых проектов намеренно игнорируется. Пока он был
-	// переключателем в меню, его можно было сохранить выключенным; теперь переключателя
-	// нет, и восстановленное «выключено» оставило бы инструмент без индикации партий и без
-	// собственных диапазонов клавиш прошивки, причём включить обратно было бы нечем.
+	// The forwardNotes attribute of old projects is deliberately ignored. While it was a menu
+	// toggle it could be saved switched off; now there is no toggle, and a restored "off" would
+	// leave the instrument without part indicators and without the firmware's own key ranges,
+	// with no way to switch it back on.
 	forwardNotes = true;
 
 	// Reopening by identifier: if the device is not present on this machine the call simply
@@ -3085,9 +3100,9 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 			writeNvramFiles(rams, memcs);
 	}
 
-	// Проект старше этой возможности карту не вынимал, поэтому по умолчанию она на месте.
-	// Содержимое её при этом уже лежит в файле выше, и ядро подхватит его при включении даже
-	// с вынутой картой - см. D110CoreType::osdApplyCard.
+	// A project older than this feature never ejected the card, so by default it is in place.
+	// Its contents already sit in the file above, and the core picks them up at power-on even
+	// with the card out - see D110CoreType::osdApplyCard.
 	core.setCardInserted(xml->getIntAttribute("cardInserted", 1) != 0);
 	core.setCardWriteProtect(xml->getIntAttribute("cardWriteProtect", 0) != 0);
 
@@ -3110,6 +3125,8 @@ void D110AudioProcessor::setStateInformation(const void *data, int sizeInBytes) 
 	setUiThemeFollowSystem(xml->getIntAttribute("uiThemeFollowSystem", uiThemeFollowSystem ? 1 : 0) != 0);
 	setUiFontScaleBig(xml->getIntAttribute("uiFontScaleBig", uiFontScaleBig ? 1 : 0) != 0);
 	setSequencerRetroMode(xml->getIntAttribute("sequencerRetroMode", sequencerRetroMode ? 1 : 0) != 0);
+	if (!sequencerRetroMode)
+		setSequencerGridMode(xml->getIntAttribute("sequencerGridMode", sequencerGridMode ? 1 : 0) != 0);
 	setCompactPanelMode(xml->getIntAttribute("compactPanelMode", compactPanelMode ? 1 : 0) != 0);
 	setRetroKeyBindings(xml->getStringAttribute("retroKeyBindings", retroKeyBindings));
 	setRetroLcdCompactMode(xml->getIntAttribute("retroLcdCompactMode", retroLcdCompactMode ? 1 : 0) != 0);

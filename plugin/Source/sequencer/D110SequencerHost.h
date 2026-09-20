@@ -240,4 +240,10 @@ public:
 	// getRetroKeyBindings() is.
 	virtual bool getRetroLcdCompactMode() const { return false; }
 	virtual void setRetroLcdCompactMode(bool /*compact*/) {}
+
+	// Optional: sounds one note on a track's own live channel right now, so a click in the grid
+	// editor (D110SequencerGridPanel) is heard as the pitch it just placed or grabbed. Goes
+	// through the same path as the on-screen keyboard's own notes. A no-op by default (the
+	// grid editor just stays silent), both concrete hosts override it.
+	virtual void auditionTrackNote(int /*track*/, int /*note*/, int /*velocity*/, bool /*on*/) {}
 };

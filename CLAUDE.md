@@ -56,7 +56,7 @@ behaviour. Don't duplicate that here; this file is about how to work in the repo
   model - deliberately D-110-agnostic (own internal clock, note-only
   `juce::MidiMessageSequence` per track, MIDI-file, quantize and step-recording logic),
   talking to whatever embeds it only through a `channelForTrack` callback. `D110SequencerPanel`
-  is the JUCE UI drawer, talking to its host only through `D110SequencerHost` (20 methods) -
+  is the JUCE UI drawer, talking to its host only through `D110SequencerHost` (20 methods, plus the optional `auditionTrackNote()`) -
   `D110AudioProcessor` implements that interface for the plugin, `NonetSeqHost` implements
   it for `Nonet-Seq` (**Nonet Sequencer** - CMake target and binary both `Nonet-Seq`), the
   independent sequencer app, deliberately named apart from the D-110 - Standalone-only, no
@@ -86,7 +86,12 @@ behaviour. Don't duplicate that here; this file is about how to work in the repo
   applied with a power cycle. State persists in
   `getStateInformation`/`setStateInformation` the same way the firmware NVRAM does (plugin)
   or its own settings file (independent app), both via the shared `D110SequencerSongsFile.h/.cpp`.
-  `plugin/sequencer_probe.cpp` and `plugin/sequencer_state_probe.cpp` are its headless tests
+  `D110SequencerGridPanel` is the third view of that same drawer (piano roll: one track/one bar,
+  click to add/remove, drag to move/resize, velocity lane), exclusive with the retro one via
+  `get/setSequencerGridMode()` on both hosts; its edits go through the engine's `addNote()`/
+  `updateNoteEvent()`/`deleteNoteEvent()`, which take `editLock` (as do `renderInto()`, undo/redo
+  and `pushUndoSnapshot()`) and queue a note-off for any note edited while it sounds.
+  `plugin/sequencer_probe.cpp` and `plugin/sequencer_state_probe.cpp` are the sequencer's headless tests
   (engine timing/quantize/step-recording/undo/file-I/O, and the state-save round trip,
   respectively) - both native-core-only, no MAME dependency.
 - `plugin/Source/SoundbankDatabase.h/.cpp` + `SoundbankBrowser.h/.cpp` - the SOUNDBANKS tab
@@ -141,11 +146,15 @@ behaviour. Don't duplicate that here; this file is about how to work in the repo
 
 ## Conventions
 
-- **Code comments are written in Russian** (see the header of `plugin/CMakeLists.txt`
-  for why - MSVC codepage issue was the proximate trigger, but it's the established
-  convention project-wide, not just that file). Match it when editing existing
-  Russian-commented code; new files/comments in areas you author don't have to follow
-  this unless editing alongside existing Russian comments.
+- **Code comments: English.** The project historically carried Russian comments (see the
+  header of `plugin/CMakeLists.txt`); the rule is now to translate them to English as they
+  are encountered. `plugin/Source/*` was fully translated on 2026-09-18 (PluginEditor.*,
+  PluginProcessor.*, D110Core.*). Still Russian: the probe/test programs in `plugin/*.cpp`,
+  `plugin/CMakeLists.txt` and `patches/README.md` - translate when you touch them.
+- `processBlock()` must not allocate: its MIDI merge/remap buffers, the sequencer
+  click list and the three drained `pending*` queues are member scratch storage
+  pre-sized in `prepareToPlay()` (2026-09-18). Add new per-block temporaries the
+  same way, not as locals.
 - Everything in the extended editor writes to the **firmware** via real Roland SysEx
   messages (DT1), never directly to the sound engine - the mirror to the sound engine
   is a separate, one-directional path. If you add a new editor field, follow this

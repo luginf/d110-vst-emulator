@@ -4,6 +4,7 @@
 #include "D110Keyboard.h"
 #include "PluginProcessor.h"
 #include "SoundbankBrowser.h"
+#include "sequencer/D110SequencerGridPanel.h"
 #include "sequencer/D110SequencerPanel.h"
 #include "sequencer/D110SequencerRetroPanel.h"
 
@@ -79,23 +80,23 @@ public:
 	void mouseDoubleClick(const juce::MouseEvent &) override;
 	void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
 
-	// Щелчок по щели карты памяти. Сама карта панели больше не принадлежит - она ездит по
-	// всему окну, включая ящик, и потому живёт отдельным компонентом (D110MemoryCard). А вот
-	// ЩЕЛЬ - часть фотографии прибора, и ловить попадание в неё должна панель.
+	// Click on the memory card slot. The card itself no longer belongs to the panel - it travels
+	// over the whole window, drawer included, so it lives as its own component (D110MemoryCard).
+	// The SLOT, however, is part of the photograph of the unit, so the panel is what hit-tests it.
 	std::function<void()> onCardSlotClicked;
 	// Options menu's Retro Sequencer toggle - the editor swaps which sequencer view is
 	// visible in response (see D110AudioProcessorEditor's own resized()); this panel has
 	// no reference to the sequencer drawer itself, hence the callback rather than a
 	// direct call.
 	std::function<void()> onSequencerModeChanged;
-	// Обрамление щели, а не сам проём: попасть мышью в полоску высотой тридцать точек трудно,
-	// а обрамление - это ровно то, что человек видит как «щель».
+	// The slot's bezel, not the opening itself: hitting a strip thirty points tall with the mouse
+	// is hard, and the bezel is exactly what a person sees as "the slot".
 	static constexpr float kSlotHitX = 1588.0f, kSlotHitY = 109.0f;
 	static constexpr float kSlotHitW = 260.0f, kSlotHitH = 52.0f;
 
-	// Забирает у прибора всё, что панель показывает: индикатор, лампу, положение ручки, ход
-	// карты. В работе это делает таймер панели; отдельно вызывается там, где очереди
-	// сообщений нет, - например при съёмке панели в файл (plugin/editor_shot.cpp).
+	// Pulls from the machine everything the panel shows: the display, the lamp, the knob position,
+	// the card's travel. Normally the panel's own timer does this; it is called separately where
+	// there is no message loop - e.g. when shooting the panel to a file (plugin/editor_shot.cpp).
 	void refreshFromInstrument() { timerCallback(); }
 
 	// The window/reference-artwork ratio the editor is about to apply as a Component
@@ -188,17 +189,18 @@ private:
 };
 
 
-// Карта памяти M-256D - отдельный компонент, лежащий ПОВЕРХ всего окна.
+// The M-256D memory card - a separate component lying ON TOP of the whole window.
 //
-// Раньше её рисовала сама панель, и потому карта могла только проехать мимо кадра и
-// скрыться: панель ростом с прибор, 256 точек, а карта - 370. Теперь под прибором есть
-// ящик, и извлечённой карте есть куда лечь. Она выезжает из щели, ложится на ящик целиком
-// видимой и там остаётся; за неё можно взяться левой кнопкой и передвинуть куда удобно.
+// The panel used to draw it itself, so the card could only slide past the frame and vanish:
+// the panel is the height of the unit, 256 points, and the card is 370. Now there is a drawer
+// below the unit, and an ejected card has somewhere to lie. It slides out of the slot, comes
+// to rest fully visible on the drawer and stays there; you can grab it with the left button
+// and move it wherever is convenient.
 //
-// Компонент, а не рисование поверх детей, именно ради этого: тащить мышью можно только то,
-// что само получает события мыши, а ящик под картой - живой компонент со своими полями.
-// Пока карта сидит в гнезде, она мышь НЕ перехватывает - щелчок по щели тогда достаётся
-// панели, как и раньше.
+// A component, rather than painting over the children, precisely for that: only what receives
+// mouse events itself can be dragged, and the drawer under the card is a live component with
+// its own fields. While the card sits in its socket it does NOT intercept the mouse - a click
+// on the slot then goes to the panel, as before.
 class D110MemoryCard : public juce::Component, private juce::Timer {
 public:
 	explicit D110MemoryCard(D110AudioProcessor &);
@@ -208,56 +210,58 @@ public:
 	void mouseDrag(const juce::MouseEvent &) override;
 	void mouseUp(const juce::MouseEvent &) override;
 
-	// Извлечь или вставить - то же самое, что щелчок по щели на приборе.
+	// Eject or insert - the same thing as clicking the slot on the unit.
 	void toggle();
 	void insert();
-	// Вставлена ли она (по положению, а не по мнению прошивки): нужно хозяину окна, чтобы
-	// вернуть карту в гнездо, когда ящик закрывают, - лежать ей тогда негде.
+	// Whether it is inserted (by position, not by the firmware's opinion): the window owner needs
+	// this to put the card back into its socket when the drawer is closed - it has nowhere to lie then.
 	bool isOut() const { return target > 0.5f; }
 
-	// Масштаб панели и полная высота окна в опорных точках. Задаёт хозяин окна при каждом
-	// изменении размера: карта живёт в тех же опорных точках, что и панель, поэтому и
-	// ездит вместе с ней при любом масштабе.
+	// Panel scale and full window height in reference points. Set by the window owner on every
+	// resize: the card lives in the same reference points as the panel, so it travels with the
+	// panel at any scale.
 	void setGeometry(float panelScale, float totalRefHeight);
 
-	// Извлечение просит открыть ящик: карта ложится на него, и на закрытом ящике ей просто
-	// негде быть.
+	// Ejecting asks for the drawer to be opened: the card comes to rest on it, and on a closed
+	// drawer it simply has nowhere to be.
 	std::function<void()> onEjectNeedsDrawer;
 
-	// Геометрия, снятая с фотографии панели (docs/panel_reference_notes.md): проём щели
-	// 1600, 120, размером 236 x 30. Ширина карты в истинном масштабе прибора - те же 236,
-	// что и ширина проёма, и это совпадение служит проверкой масштаба.
+	// Geometry taken from the panel photograph (docs/panel_reference_notes.md): the slot opening
+	// is at 1600, 120, sized 236 x 30. The card's width at the unit's true scale is the same 236
+	// as the opening's width, and that coincidence doubles as a check of the scale.
 	static constexpr float kCardX = 1600.0f;
 	static constexpr float kCardWidth = 236.0f;
 	static constexpr float kCardHeight = 370.0f;
-	static constexpr float kSlotBottom = 150.0f;   // пол проёма: ниже него карта уже снаружи
-	static constexpr float kCardSeatedY = kSlotBottom - kCardHeight;   // торцом в проёме
-	// Верх отсечения. Карта не прячется за щель целиком: вставленная, она стоит торцом в
-	// проёме, и восемнадцать точек её края видны - иначе занятое гнездо ничем не отличалось
-	// бы от пустого. Восемнадцать - это около четырёх миллиметров в масштабе панели
-	// (4.4 точки на миллиметр), то есть толщина корпуса карты у хвата.
+	static constexpr float kSlotBottom = 150.0f;   // floor of the opening: below it the card is already outside
+	static constexpr float kCardSeatedY = kSlotBottom - kCardHeight;   // end-on in the opening
+	// Top of the clipping. The card does not hide behind the slot entirely: inserted, it stands
+	// end-on in the opening with eighteen points of its edge visible - otherwise an occupied
+	// socket would look no different from an empty one. Eighteen is about four millimetres at
+	// panel scale (4.4 points per millimetre), i.e. the thickness of the card's shell at the grip.
 	static constexpr float kCardClipTop = 132.0f;
-	// Внутри проёма карта в тени. Тень рисуется поверх неё градиентом, а не заложена в
-	// картинку: карта сквозь проём проезжает, и затемняться должно место, а не карта.
+	// Inside the opening the card is in shadow. The shadow is painted over it as a gradient rather
+	// than baked into the picture: the card travels through the opening, so it is the place that
+	// must darken, not the card.
 	static constexpr float kSlotShadeAlpha = 0.58f;
-	// Доля пути за кадр в самой быстрой точке хода; закон движения - в timerCallback.
+	// Fraction of the path per frame at the fastest point of the travel; the motion law is in timerCallback.
 	static constexpr float kCardStep = 0.032f;
 
 private:
 	void timerCallback() override;
-	// Куда карта поедет, если её извлечь: на ящик, ниже полосы-ручки и ниже ряда вкладок,
-	// чтобы она их не закрывала. Точка эта - только НАЧАЛЬНАЯ: дальше её задаёт мышь.
+	// Where the card goes when ejected: onto the drawer, below the handle strip and below the row
+	// of tabs, so it does not cover them. This point is only the STARTING one: after that the
+	// mouse decides.
 	static constexpr float kRestX = kCardX;
 	static constexpr float kRestY = 360.0f;
-	juce::Point<float> position() const;   // левый верхний угол, в опорных точках
+	juce::Point<float> position() const;   // top-left corner, in reference points
 	void updateBounds();
 
 	D110AudioProcessor &processor;
 	juce::Image cardImage;
 
-	// Насколько карта вышла: 0 - сидит в гнезде, 1 - лежит на ящике. Между этими двумя
-	// точками она едет по прямой, поэтому положение - это их смесь, а не отдельная пара
-	// координат: закон движения остаётся тем же, каким он был снят раскадровкой.
+	// How far the card is out: 0 - sitting in the socket, 1 - lying on the drawer. Between those
+	// two points it travels in a straight line, so the position is a blend of them rather than a
+	// separate pair of coordinates: the motion law stays the one captured from the storyboard.
 	float travel = 0.0f;
 	float target = 0.0f;
 	juce::Point<float> rest{ kRestX, kRestY };
@@ -266,7 +270,7 @@ private:
 	float totalRefH = 1190.0f;
 
 	bool dragging = false;
-	juce::Point<float> dragGrab;   // где именно за карту взялись, в опорных точках
+	juce::Point<float> dragGrab;   // where exactly the card was grabbed, in reference points
 
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D110MemoryCard)
 };
@@ -278,21 +282,21 @@ private:
 // D110AudioProcessor::injectTestNote(), which hands notes to the same collector
 // (osMidiCollector) that handleIncomingMidiMessage(MidiInput*, ...) does.
 
-// Расширенный редактор - ящик, выезжающий из-под прибора.
+// The extended editor - a drawer sliding out from under the unit.
 //
-// Он НАРИСОВАН КОДОМ, и это осознанное расхождение с самой панелью: панель - фотокомпозит,
-// потому что изображает существующую вещь, а редактора у D-110 не существует вовсе. У
-// прибора на всё про всё индикатор в две строки по шестнадцать знаков, и добраться по нему
-// до пятидесяти восьми величин партиала - это десятки нажатий; ящик показывает их разом.
+// It is DRAWN IN CODE, a deliberate departure from the panel itself: the panel is a photo
+// composite because it depicts an existing thing, whereas the D-110 has no editor at all. The
+// unit has a two-line, sixteen-character display for everything, and reaching the fifty-eight
+// values of a partial through it takes dozens of presses; the drawer shows them all at once.
 //
-// Ни одно поле не трогает звуковой движок напрямую. Правка уходит ПРИБОРУ эксклюзивным
-// сообщением - тем же путём, каким её послал бы внешний редактор настоящему D-110, -
-// прошивка меняет свою память, а зеркало доносит это до движка. Поэтому правка отсюда и
-// правка с панели это одно и то же событие, и обе видны в обоих местах.
+// No field touches the sound engine directly. An edit goes to the UNIT as an exclusive
+// message - the same way an external editor would send it to a real D-110 - the firmware
+// changes its own memory, and the mirror carries that to the engine. So an edit made here
+// and an edit made on the panel are one and the same event, and both show up in both places.
 //
-// Каждый адрес, по которому пишет эта панель, ИЗМЕРЕН, а не взят из руководства на веру:
-// plugin/editor_write_probe.cpp посылает по одной записи в каждую область и смотрит, какой
-// байт батарейного ОЗУ сдвинулся.
+// Every address this pane writes to has been MEASURED, not taken from the manual on trust:
+// plugin/editor_write_probe.cpp sends one write into each area and watches which byte of the
+// battery-backed RAM moves.
 class D110EditorPane : public juce::Component, private juce::Timer {
 public:
 	explicit D110EditorPane(D110AudioProcessor &);
@@ -312,8 +316,8 @@ public:
 	// D-pad, etc.) - see that method's own comment on the bubbling.
 	bool keyPressed(const juce::KeyPress &) override;
 
-	// Перечитывает память прибора. Обычно это делает таймер; отдельно вызывается снимком
-	// панели в файл, которому не на чем крутить очередь сообщений.
+	// Re-reads the unit's memory. Normally the timer does this; it is called separately by the
+	// panel-to-file snapshot, which has no message loop to run.
 	void refreshFromInstrument();
 	void selectTab(int index);
 
@@ -362,34 +366,33 @@ public:
 
 private:
 	void timerCallback() override;
-	// Держит недавно посланные, ещё не подтверждённые правки поверх свежепрочитанной ram -
-	// см. комментарий у PendingEdit. Вызывается сразу после каждого getRam() в
-	// refreshFromInstrument(), обоих мест.
+	// Holds recently sent, not-yet-confirmed edits on top of a freshly read ram - see the comment
+	// at PendingEdit. Called right after every getRam() in refreshFromInstrument(), both places.
 	void reapplyPendingEdits();
 
-	// Куда пишет поле. Области - те же, что у Roland, и адрес каждой в ОЗУ прошивки
-	// измерен; см. D110Core.
+	// Where a field writes. The areas are Roland's own, and each one's address in the firmware's
+	// RAM has been measured; see D110Core.
 	enum class Area { TimbreTemp, ToneTemp, Rhythm, System, Timbres, Patches, Tones };
 
 	struct Cell {
 		juce::Rectangle<float> bounds;
 		Area area = Area::TimbreTemp;
-		int index = 0;   // партия, клавиша, ячейка памяти или смещение в системной области
-		int field = 0;   // смещение внутри записи; для System не используется
+		int index = 0;   // part, key, memory slot, or offset within the System area
+		int field = 0;   // offset within the record; unused for System
 		int lo = 0, hi = 127;
 	};
 
-	// Правый клик по TONE GROUP/TONE - список всех тонов (a/b/i/r, 64 в каждой) вместо
-	// перебора колесом по одному. Общий для живой области партии (Parts) и записи патча
-	// (PARTS OF PATCH внутри Patches) - у обеих одна и та же пара байт группа+номер, разнится
-	// только куда её послать (index) и с каким смещением записи (groupField - адрес байта
-	// группы; номер идёт следующим байтом).
+	// Right-click on TONE GROUP/TONE - a list of all tones (a/b/i/r, 64 in each) instead of
+	// stepping through them one by one with the wheel. Shared between the live part area (Parts)
+	// and the patch record (PARTS OF PATCH inside Patches) - both have the same group+number byte
+	// pair, only where to send it (index) and the record offset (groupField - the address of the
+	// group byte; the number is the next byte) differ.
 	void showToneListMenu(Area area, int index, int groupField);
-	// Правый клик по DRUM SOUND на вкладке Rhythm - список всех тембров ударных и памяти,
-	// тем же чтением их имён, что и showToneListMenu.
+	// Right-click on DRUM SOUND on the Rhythm tab - a list of all rhythm timbres and memory
+	// timbres, reading their names the same way showToneListMenu does.
 	void showRhythmSoundMenu(int slot);
-	// Правый клик по полю PCM партиала (Tone tab) - список всех 128 образцов ПЗУ по имени,
-	// вместо перебора номера колесом. Github issue #2.
+	// Right-click on a partial's PCM field (Tone tab) - a list of all 128 ROM samples by name,
+	// instead of stepping through the number with the wheel. Github issue #2.
 	void showPcmWaveMenu(const Cell &pcmCell);
 
 	enum class Tab { Parts, Tone, Rhythm, Patches, Timbres, Tones, System, Monitor, Soundbanks, Utility };
@@ -403,7 +406,7 @@ private:
 	// means neither view is ever squeezed below what it needs, whatever the drawer's height.
 	enum class PatchesSubTab { AllPatches, PartsOfPatch };
 
-	// Один параметр партиала: подпись, смещение внутри его 58-байтной записи и предел.
+	// One partial parameter: caption, offset within its 58-byte record, and limit.
 	struct ToneParam {
 		const char *name;
 		int offset;
@@ -423,9 +426,9 @@ private:
 		int id = 0;
 	};
 
-	// Подпись, посчитанная вместе с полями. Держать их в одном списке нужно затем, чтобы
-	// заголовок столбца и сам столбец не считались дважды по разным формулам и однажды не
-	// разъехались.
+	// The caption, computed together with the fields. They are kept in one list so that the
+	// column header and the column itself are never computed twice by different formulas and
+	// drift apart one day.
 	struct Label {
 		juce::Rectangle<float> bounds;
 		juce::String text;
@@ -472,11 +475,11 @@ private:
 	int valueOf(const Cell &) const;
 	void setValue(const Cell &, int value);
 	juce::String textOf(const Cell &) const;
-	// Имя из памяти прибора: десять знаков, как их показывает индикатор.
+	// The name from the unit's memory: ten characters, as the display shows them.
 	juce::String nameAt(size_t ramOffset) const;
-	// Имя тона по паре «группа, номер». Пресетные группы и ритм живут в ПЗУ, поэтому их
-	// имена берутся у звукового движка, который загрузил то же ПЗУ; внутренние тона - из
-	// памяти самой прошивки.
+	// A tone's name from its (group, number) pair. The preset groups and rhythm live in ROM, so
+	// their names come from the sound engine, which loaded the same ROM; internal tones come from
+	// the firmware's own memory.
 	juce::String toneName(int group, int number) const;
 
 	D110AudioProcessor &processor;
@@ -489,7 +492,7 @@ private:
 	// right-click menu exists.
 	juce::Rectangle<float> optionsButtonBounds{};
 
-	// Чьи записи показывают вкладки, у которых есть «текущая партия».
+	// Whose records the tabs that have a "current part" show.
 	int part = 0;
 	std::array<juce::Rectangle<float>, 8> partBounds{};
 	juce::Rectangle<float> toneNameBounds;
@@ -513,13 +516,13 @@ private:
 	// through the lock hook either, only a value the user dials in by hand does).
 	bool suppressPartialLock = false;
 
-	// Длинные списки листаются колесом мимо полей.
+	// Long lists scroll with the wheel when it is not over a field.
 	int rhythmScroll = 0;
 	int timbreScroll = 0;
 	int patchScroll = 0;
 	int toneScroll = 0;
-	int patchSlot = 0;    // патч, чьи партии показаны на под-вкладке PARTS OF PATCH
-	int toneSlot = 0;     // выбранная ячейка памяти тонов
+	int patchSlot = 0;    // patch whose parts are shown on the PARTS OF PATCH sub-tab
+	int toneSlot = 0;     // selected tone memory slot
 	// Row count of the TONES grid's own 3 columns, as last computed by layoutTones() - kept
 	// around so keyPressed() can walk the grid without re-deriving it from tableArea/rowHeight.
 	int toneRows = 1;
@@ -546,7 +549,7 @@ private:
 	float utilityScrollDragStartY = 0.0f, utilityScrollDragStartOffset = 0.0f;
 
 	juce::Rectangle<float> tableArea;
-	juce::Rectangle<float> contentArea;   // для вкладок, которые рисуются целиком
+	juce::Rectangle<float> contentArea;   // for tabs that are painted as a whole
 	float rowHeight = 0.0f;
 
 	// SOUNDBANKS tab's whole content - a real child Component (unlike every other tab, which
@@ -558,48 +561,47 @@ private:
 	std::vector<Cell> cells;
 	std::vector<Button> buttons;
 
-	// Одно поле ввода на весь редактор: им набирается любое имя и надпись для индикатора.
+	// One text entry field for the whole editor: every name and display message is typed into it.
 	juce::TextEditor textEntry;
-	int textEntryTarget = 0;   // 0 - никуда, 1 - имя тона партии, 2 - надпись на индикатор,
-	                           // 3 - имя патча, 4 - имя тона в памяти
-	int textEntryButton = -1;  // кнопка, на месте которой стоит поле ввода
+	int textEntryTarget = 0;   // 0 - nowhere, 1 - the part's tone name, 2 - a display message,
+	                           // 3 - a patch name, 4 - a tone memory name
+	int textEntryButton = -1;  // the button the entry field is standing in for
 	int hovered = -1, dragging = -1;
 	float dragStartY = 0.0f;
 	int dragStartValue = 0;
 
-	// Снимок памяти прибора, обновляемый по таймеру: редактор всегда показывает то, что в
-	// приборе на самом деле, включая правки, сделанные с его собственной панели.
+	// Snapshot of the unit's memory, refreshed on a timer: the editor always shows what is really
+	// in the unit, including edits made from its own panel.
 	std::vector<uint8_t> ram;
 	uint64_t ramGen = 0;
 	bool ramValid = false;
 
-	// Правки, посланные пользователем и ещё не подтверждённые настоящим ответом прибора.
-	// setValue() ставит оптимистичное значение в `ram` сразу, чтобы поле под курсором не
-	// отставало, - но правка идёт в прошивку тем же путём, что и нота, с той же реальной
-	// задержкой (0-18 мс измерено сегодня), а сама память прошивки меняется постоянно по
-	// не связанным с этим причинам (мигание курсора, лампа MIDI), и каждое такое изменение
-	// поднимает общий счётчик поколения. Без этого списка ближайшее срабатывание таймера
-	// перечитывает ВСЮ память и стирает ещё не принятую прошивкой правку до её настоящего
-	// значения - подёргивание при быстрой прокрутке колесом это ровно оно. Список удерживает
-	// оптимистичное значение до тех пор, пока прошивка сама не подтвердит его или не истечёт
-	// срок ожидания.
+	// Edits sent by the user and not yet confirmed by a real answer from the unit. setValue()
+	// puts the optimistic value into `ram` at once so the field under the cursor does not lag -
+	// but the edit reaches the firmware by the same path as a note, with the same real latency
+	// (0-18 ms measured today), and the firmware's memory keeps changing for unrelated reasons
+	// (cursor blink, MIDI lamp), each such change bumping the global generation counter. Without
+	// this list the next timer tick re-reads ALL of memory and wipes an edit the firmware has not
+	// accepted yet back to its real value - the jitter on fast wheel scrolling is exactly that.
+	// The list holds the optimistic value until the firmware itself confirms it or the wait
+	// times out.
 	struct PendingEdit { size_t address; uint8_t value; juce::int64 sentMs; };
 	std::vector<PendingEdit> pendingEdits;
 
-	// Имена тонов из ПЗУ спрашиваются у движка по одному разу: они не меняются, а читать их
-	// на каждой перерисовке значило бы лезть в чужой поток по десять раз в секунду.
+	// ROM tone names are asked of the engine once each: they never change, and reading them on
+	// every repaint would mean reaching into another thread ten times a second.
 	mutable std::array<juce::String, 4 * 64> romToneNames;
 	mutable std::array<bool, 4 * 64> romToneNameKnown{};
 
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(D110EditorPane)
 };
 
-// Прибор, ящик и полоса-ручка между ними.
+// The unit, the drawer and the handle strip between them.
 //
-// Ящик открывается ВНИЗ, как у остальных синтезаторов этой серии: сам прибор остаётся
-// целым, а редактор выезжает из-под него. Ручка - во всю ширину, чтобы читалась ящиком, а
-// не кнопкой, и стоит НИЖЕ фотографии, а не на ней: на лицевой стороне прибора нет и не
-// может быть органов управления, которых нет у железа.
+// The drawer opens DOWNWARD, like on the other synths in this series: the unit itself stays
+// whole and the editor slides out from under it. The handle is full-width so it reads as a
+// drawer rather than a button, and sits BELOW the photograph, not on it: the unit's front has,
+// and can have, no controls the hardware does not.
 class D110AudioProcessorEditor : public juce::AudioProcessorEditor {
 public:
 	explicit D110AudioProcessorEditor(D110AudioProcessor &);
@@ -621,19 +623,19 @@ public:
 	// see the .cpp for why this is done here rather than at window construction.
 	void parentHierarchyChanged() override;
 
-	// Перечитать прибор обеими половинами сразу - панелью и ящиком. Нужно снимку целого
-	// редактора, у которого нет ни окна, ни очереди сообщений, чтобы крутить их таймеры.
+	// Re-read the unit with both halves at once - panel and drawer. Needed by the whole-editor
+	// snapshot, which has neither a window nor a message loop to run their timers.
 	void refreshFromInstrument() {
 		panel.refreshFromInstrument();
 		editorPane.refreshFromInstrument();
 	}
-	// Открыть ящик без мыши - тем же снимком.
+	// Open the drawer without the mouse - by that same snapshot.
 	void setExpanded(bool open) { expansion = expansionTarget = open ? 1.0f : 0.0f; }
 	// Same, for the sequencer drawer - closed by default in normal use, but editor_shot's
 	// whole-editor snapshot wants to show it open, the way it already does for the others.
 	void setSequencerExpanded(bool open) { sequencerExpansion = sequencerExpansionTarget = open ? 1.0f : 0.0f; }
 
-	// Высота полосы-ручки в опорных точках панели.
+	// Height of the handle strip in panel reference points.
 	static constexpr float kHandleRefH = 34.0f;
 	// Default/initial height of the drawer, in the same reference units - what a new project
 	// (or one saved before this was adjustable) opens with. Used to be chosen so the UTILITY
@@ -692,8 +694,8 @@ private:
 
 	D110Panel panel;
 	D110EditorPane editorPane;
-	// Карта добавляется ПОСЛЕ ящика и потому лежит поверх него - иначе выехавшая карта
-	// пряталась бы за полями редактора.
+	// The card is added AFTER the drawer and so lies on top of it - otherwise an ejected card
+	// would hide behind the editor's fields.
 	D110MemoryCard card;
 	// Stacked below the extended editor's own drawer, with its own independent fold state -
 	// see D110Keyboard's header comment for why.
@@ -702,12 +704,14 @@ private:
 	D110SequencerPanel sequencerPanel;
 	// D-20-style alternate view of the same drawer - see processor.getSequencerRetroMode()
 	// and D110Panel::onSequencerModeChanged below. Both are always constructed (cheap,
-	// stateless views over the same host/engine); resized() shows exactly one of the two.
+	// stateless views over the same host/engine); resized() shows exactly one of the views.
 	D110SequencerRetroPanel sequencerRetroPanel;
+	// Piano-roll grid editor, the third view of the same drawer - see processor.getSequencerGridMode().
+	D110SequencerGridPanel sequencerGridPanel;
 	juce::ComponentBoundsConstrainer constrainer;
 
-	float expansion = 0.0f;        // сглаженное 0..1
-	float expansionTarget = 0.0f;  // то, что задал щелчок по ручке
+	float expansion = 0.0f;        // smoothed 0..1
+	float expansionTarget = 0.0f;  // what the click on the handle asked for
 	bool handleHover = false;
 
 	// The editor pane's own live height (see kPaneRefH's comment) - adjustable by dragging

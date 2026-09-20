@@ -221,9 +221,45 @@ PRECOUNT/LOOP, SONG (slot switching), BAR, then one row per track. BACK always g
 a known place - it's a full STOP while playing/recording, otherwise it pops one menu level, and
 jumps to HOME's top row once there's nothing left to pop.
 
+## Grid mode (piano roll)
+
+A third view of the same drawer, for entering and correcting notes by mouse instead of playing
+them: one track and one bar at a time, pitches down the side (the piano-key column plays the
+note when clicked), steps across (16 per bar in 4/4 at the default 1/16 grid), and a velocity
+lane underneath. Switch to it from the same place as Retro mode (Options in the D-110 plugin,
+OPTIONS in Nonet Sequencer); the three views are mutually exclusive. It shows the same song as
+the other two: edits appear there and the other way round.
+
+- **Transport row**: STOP/PLAY/REC, tempo, time signature, METRO, PRECOUNT, LOOP and the bar
+  buttons sit at exactly the same place as in the normal view (REC records into the selected
+  track). UNDO/REDO are on the third row, at the same columns as the normal view.
+- **Song slots**: the four numbered buttons on the third row switch between the 4 songs (a dot
+  marks the ones holding notes), at the same columns as in the normal view. Copying a song to
+  another slot and the per-slot sound snapshots stay in the normal view's right-click menu.
+- **Bar and track**: `<` / `>` move the view bar (it is the transport's current bar, so LOOP
+  loops what's on screen and playback pages the view along by itself; `>` goes one bar past the
+  end so a song can be extended). The numbered buttons pick the track, MUTE/SOLO act on it.
+- **Add**: click an empty cell. The note is as long as the LEN button says, and dragging right
+  before releasing stretches it (the next click then reuses that length).
+- **Remove**: click a note without moving, or right-click it.
+- **Move**: drag a note's body (step and pitch). **Resize**: drag its right edge.
+- **Middle button**: the same move/resize, but ignoring the grid (as if GRID were OFF), and a
+  plain middle click leaves the note alone.
+- **Velocity**: drag a note's stick in the lane up or down; new notes use the VEL button's value.
+- **GRID** picks the step size (1/4, 1/8, 1/16, 1/32 and the 1/8 and 1/16 triplets), or **OFF**:
+  no snapping at all, notes are added, moved and resized at any position (the 1/16 columns stay
+  as a guide, and LEN counts those columns).
+- The wheel or the scroll bar moves the visible pitch range. Notes held over from an earlier bar
+  are drawn dimmed and can be edited from the bar they start in.
+
+Every gesture is one UNDO step, and edits made while playing are heard as soon as the playhead reaches them. A
+note is never made to overlap another note of the same pitch, since that would cut one of them
+short on playback.
+
 ## Verification
 
 `plugin/sequencer_probe.cpp` is the headless test suite covering timing, quantize, both
-recording modes, loop/punch, bar editing, step recording, undo and song slots.
+recording modes, loop/punch, bar editing, step recording, undo, song slots and the grid editor's
+note primitives (including editing a note while it sounds).
 `plugin/sequencer_state_probe.cpp` round-trips the engine's full state and checks it comes back
 identical.

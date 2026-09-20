@@ -12,6 +12,7 @@
 #include "../D110Keyboard.h"
 #include "../UiTheme.h"
 #include "D110SequencerPanel.h"
+#include "D110SequencerGridPanel.h"
 #include "D110SequencerRetroPanel.h"
 #include "NonetSeqHost.h"
 
@@ -34,17 +35,19 @@ public:
 	std::function<void(int)> onBankOffsetChanged;
 	std::function<void()> onExtraTracksToggled;
 	std::function<void()> onRetroModeToggled;
+	std::function<void()> onGridModeToggled;
 	std::function<void()> onAudioSettingsRequested;
 	std::function<void()> onQuantizeModeToggled;
 	std::function<void()> onLoadInstrumentDefinition;
 
 	void setValues(bool themeLightIn, int programOffsetIn, int bankOffsetIn, bool extraTracksOnIn,
-	               bool retroModeOnIn, bool quantizeSoftIn, const juce::String &instrumentDefNameIn) {
+	               bool retroModeOnIn, bool gridModeOnIn, bool quantizeSoftIn, const juce::String &instrumentDefNameIn) {
 		themeLight = themeLightIn;
 		programOffset = programOffsetIn;
 		bankOffset = bankOffsetIn;
 		extraTracksOn = extraTracksOnIn;
 		retroModeOn = retroModeOnIn;
+		gridModeOn = gridModeOnIn;
 		quantizeSoft = quantizeSoftIn;
 		instrumentDefName = instrumentDefNameIn;
 		repaint();
@@ -65,6 +68,8 @@ public:
 		b.removeFromTop(kRowGap);
 		retroModeRowBounds = b.removeFromTop(kRowH);
 		b.removeFromTop(kRowGap);
+		gridModeRowBounds = b.removeFromTop(kRowH);
+		b.removeFromTop(kRowGap);
 		quantizeModeRowBounds = b.removeFromTop(kRowH);
 		b.removeFromTop(kRowGap);
 		instrumentDefRowBounds = b.removeFromTop(kRowH);
@@ -76,6 +81,7 @@ public:
 		paintOffsetRow(g, pal, bankRow, "Bank offset", bankOffset, bankMinusBounds, bankPlusBounds);
 		paintToggleRow(g, pal, extraTracksRowBounds, "Extra tracks (16 total)", extraTracksOn ? "ON" : "OFF");
 		paintToggleRow(g, pal, retroModeRowBounds, "Retro Sequencer (D-20 style)", retroModeOn ? "ON" : "OFF");
+		paintToggleRow(g, pal, gridModeRowBounds, "Grid Sequencer (piano roll)", gridModeOn ? "ON" : "OFF");
 		paintToggleRow(g, pal, quantizeModeRowBounds, "Quantize mode", quantizeSoft ? "SOFT" : "HARD");
 		paintToggleRow(g, pal, instrumentDefRowBounds, "Instrument Definition (.idf)",
 		               instrumentDefName.isEmpty() ? "Load..." : instrumentDefName);
@@ -90,6 +96,7 @@ public:
 		if (bankPlusBounds.contains(e.position)) { if (onBankOffsetChanged) onBankOffsetChanged(bankOffset + 1); return; }
 		if (extraTracksRowBounds.contains(e.position)) { if (onExtraTracksToggled) onExtraTracksToggled(); return; }
 		if (retroModeRowBounds.contains(e.position)) { if (onRetroModeToggled) onRetroModeToggled(); return; }
+		if (gridModeRowBounds.contains(e.position)) { if (onGridModeToggled) onGridModeToggled(); return; }
 		if (quantizeModeRowBounds.contains(e.position)) { if (onQuantizeModeToggled) onQuantizeModeToggled(); return; }
 		if (instrumentDefRowBounds.contains(e.position)) { if (onLoadInstrumentDefinition) onLoadInstrumentDefinition(); return; }
 		if (audioRowBounds.contains(e.position)) { if (onAudioSettingsRequested) onAudioSettingsRequested(); return; }
@@ -141,10 +148,11 @@ private:
 	int programOffset = 0, bankOffset = 0;
 	bool extraTracksOn = false;
 	bool retroModeOn = false;
+	bool gridModeOn = false;
 	bool quantizeSoft = false;
 	juce::String instrumentDefName;
 	juce::Rectangle<float> themeRowBounds, progMinusBounds, progPlusBounds, bankMinusBounds, bankPlusBounds,
-		extraTracksRowBounds, retroModeRowBounds, quantizeModeRowBounds, instrumentDefRowBounds, audioRowBounds;
+		extraTracksRowBounds, retroModeRowBounds, gridModeRowBounds, quantizeModeRowBounds, instrumentDefRowBounds, audioRowBounds;
 };
 
 // Three clickable fields: MIDI In and MIDI Out (the same idea as
@@ -202,11 +210,11 @@ private:
 
 	void showOptionsDialog() {
 		auto *content = new OptionsDialogContent();
-		content->setSize(320, 8 * 30 + 7 * 10 + 12);
+		content->setSize(320, 9 * 30 + 8 * 10 + 12);
 		auto refresh = [this, content] {
 			content->setValues(d110ui::getTheme() == d110ui::Theme::Light, host.getProgramChangeOffset(),
 			                    host.getBankOffset(), host.getSequencer().getExtraTracksEnabled(),
-			                    host.getSequencerRetroMode(),
+			                    host.getSequencerRetroMode(), host.getSequencerGridMode(),
 			                    host.getSequencer().getQuantizeMode() == d110seq::QuantizeMode::soft,
 			                    host.getInstrumentDefinitionName());
 		};
@@ -232,6 +240,11 @@ private:
 		};
 		content->onRetroModeToggled = [this, refresh] {
 			host.setSequencerRetroMode(!host.getSequencerRetroMode());
+			if (onSequencerModeChanged) onSequencerModeChanged();
+			refresh();
+		};
+		content->onGridModeToggled = [this, refresh] {
+			host.setSequencerGridMode(!host.getSequencerGridMode());
 			if (onSequencerModeChanged) onSequencerModeChanged();
 			refresh();
 		};
@@ -369,23 +382,19 @@ public:
 				  toolbar.repaint();
 				  panel.repaint();
 				  retroPanel.repaint();
+				  gridPanel.repaint();
 				  keyboard.repaint();
 				  repaint();
 			  },
 			  [this] { panel.toggleExtraTracks(); },
-			  [this] {
-				  panel.setVisible(!host.getSequencerRetroMode());
-				  retroPanel.setVisible(host.getSequencerRetroMode());
-				  panel.repaint();
-				  retroPanel.repaint();
-			  }),
-		  panel(host), retroPanel(host), keyboard(host) {
+			  [this] { refreshSequencerView(); }),
+		  panel(host), retroPanel(host), gridPanel(host), keyboard(host) {
 		d110ui::setTheme(host.getUiThemeLight() ? d110ui::Theme::Light : d110ui::Theme::Dark);
 		addAndMakeVisible(toolbar);
 		addChildComponent(panel);
 		addChildComponent(retroPanel);
-		panel.setVisible(!host.getSequencerRetroMode());
-		retroPanel.setVisible(host.getSequencerRetroMode());
+		addChildComponent(gridPanel);
+		refreshSequencerView();
 		addAndMakeVisible(keyboard);
 		setSize(760, kToolbarHeight + static_cast<int>(D110SequencerPanel::kRefH)
 		                 + static_cast<int>(D110Keyboard::kRefH));
@@ -399,6 +408,20 @@ public:
 		// host.getSequencerRetroMode() picked is actually visible.
 		panel.setBounds(b);
 		retroPanel.setBounds(b);
+		gridPanel.setBounds(b);
+	}
+
+	// Which of the three sequencer views (normal / retro / grid - see NonetSeqHost's
+	// getSequencerRetroMode()/getSequencerGridMode(), mutually exclusive) is showing.
+	void refreshSequencerView() {
+		const bool retro = host.getSequencerRetroMode();
+		const bool grid = host.getSequencerGridMode();
+		panel.setVisible(!retro && !grid);
+		retroPanel.setVisible(retro);
+		gridPanel.setVisible(grid);
+		panel.repaint();
+		retroPanel.repaint();
+		gridPanel.repaint();
 	}
 
 	// D110Keyboard::mouseDown() grabs keyboard focus on every click, deliberately, so playing
@@ -423,6 +446,7 @@ private:
 	Toolbar toolbar;
 	D110SequencerPanel panel;
 	D110SequencerRetroPanel retroPanel;
+	D110SequencerGridPanel gridPanel;
 	D110Keyboard keyboard;
 };
 

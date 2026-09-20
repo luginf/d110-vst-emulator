@@ -547,21 +547,20 @@ int D110Panel::buttonAt(juce::Point<float> p) const
 void D110Panel::setButtonState(int index, bool down)
 {
 	if (index < 0 || index >= kNumButtons) return;
-	// Раньше здесь стоял ранний выход, пока прибор выключен ("nothing to press while the
-	// unit is off") - и он молча ломал ДОКУМЕНТИРОВАННУЮ процедуру факт-сброса: она прямо
-	// требует защёлкнуть WRITE/COPY, ПОКА ПРИБОР ВЫКЛЮЧЕН, и только потом включить. Ctrl-клик
-	// в этот момент попадал сюда, отражался ранним выходом, и `core.setButton()` не
-	// вызывался вовсе - защёлкивался только локальный флаг панели `m.latched`, который ничего
-	// не значит для настоящей матрицы опроса. Прибор включался, ничего не видел зажатым, и
-	// пятишаговая процедура из README не срабатывала НИКОГДА, ни для одного пользователя -
-	// не через раз, а структурно, самим порядком проверки.
+	// There used to be an early return here while the unit is off ("nothing to press while the
+	// unit is off") - and it silently broke the DOCUMENTED factory-reset procedure, which
+	// explicitly requires latching WRITE/COPY WHILE THE UNIT IS OFF and only then powering on.
+	// A Ctrl-click at that moment landed here, bounced off the early return, and
+	// `core.setButton()` was never called at all - only the panel's local `m.latched` flag
+	// latched, which means nothing to the real scan matrix. The unit powered on, saw nothing
+	// held down, and the five-step procedure from the README NEVER worked, for any user - not
+	// intermittently but structurally, by the very order of the check.
 	//
-	// Убирать защиту можно без риска: `D110Core::setButton()` - это голая атомарная запись в
-	// `wantButtons`, ей ничего не нужно от работающей машины, и `D110Core::factoryReset()`
-	// делает ровно то же самое внутри себя - защёлкивает Write/Copy ДО вызова `start()` - и
-	// это работает, им пользуется даже `plugin/nvram_recovery.cpp`. Обычный, незащёлкнутый
-	// клик по-прежнему безвреден на выключенном приборе: mouseUp снимает то же самое
-	// нажатие, и итог - ноль.
+	// Dropping the guard is risk-free: `D110Core::setButton()` is a bare atomic write into
+	// `wantButtons`, it needs nothing from a running machine, and `D110Core::factoryReset()`
+	// does exactly the same internally - latches Write/Copy BEFORE calling `start()` - and that
+	// works, even `plugin/nvram_recovery.cpp` relies on it. An ordinary, unlatched click is still
+	// harmless on a powered-off unit: mouseUp releases the same press, and the net result is zero.
 	const auto &b = kButtons[index];
 	int bit = 0;
 	while (bit < 7 && !((b.scanBit >> bit) & 1)) ++bit;
@@ -579,8 +578,9 @@ void D110Panel::mouseDown(const juce::MouseEvent &e)
 
 	const auto p = e.position;
 
-	// Щель карты памяти. Сама карта панели не принадлежит - она ездит по всему окну и живёт
-	// отдельным компонентом, - но щель нарисована на приборе, и попадание в неё ловит панель.
+	// The memory card slot. The card itself does not belong to the panel - it travels over the
+	// whole window and lives as a separate component - but the slot is drawn on the unit, and
+	// the panel is what hit-tests it.
 	// Compact mode splices this whole section out of the photo - see kCompactCardCutStart/End -
 	// so there is nothing here to hit at all.
 	if (!processor.getCompactPanelMode()
@@ -760,12 +760,13 @@ void D110Panel::showOptionsMenu()
 	m.addSeparator();
 	m.addItem(2, "Reverb", true, reverbOn);
 	m.addItem(3, "Super Mode (unofficial, extra polyphony)", true, superOn);
-	// Движок защиты от записи - он на самой карте, а не в приборе, поэтому и в меню он стоит
-	// отдельно от настроек эмулятора. Прошивка читает его как бит 0 порта состояния матрицы
-	// карты; см. docs/memory_card.md.
+	// The write-protect switch is on the card itself, not in the unit, which is why it sits in
+	// the menu apart from the emulator settings. The firmware reads it as bit 0 of the card
+	// matrix status port; see docs/memory_card.md.
 	m.addItem(4, "Memory card write protect", true, processor.getCore().cardWriteProtect());
 #if JucePlugin_Build_Standalone
 	m.addItem(5, "Retro Sequencer (D-20 style LCD+buttons)", true, processor.getSequencerRetroMode());
+	m.addItem(50, "Grid Sequencer (piano roll)", true, processor.getSequencerGridMode());
 #endif
 	// Github issue #3: the LA Reference (structures/envelopes chart, UTILITY tab) was only
 	// reachable by opening the editor drawer and navigating there. Repeated here so it's one
@@ -788,12 +789,11 @@ void D110Panel::showOptionsMenu()
 		m.addSubMenu("MIDI Channel (on-screen keyboard / forced remap target)", channelMenu, remapOn);
 		m.addItem(717, "MIDI Remap (force everything onto the channel above)", true, remapOn);
 	}
-	// Пункта «пусть ноты озвучивает прошивка» здесь нет намеренно. Это не настройка, а
-	// единственное поведение: ноты идут в прошивку, она применяет свои диапазоны клавиш,
-	// раскладку по партиям и распределение голосов, зажигает индикаторы в верхней строке
-	// и возвращает то, что действительно взяла. Выключение всего этого не давало ничего,
-	// кроме менее точного инструмента, и было временной мерой на время, пока ноты роняли
-	// панель, - в 0.9.6 это исправлено.
+	// There is deliberately no "let the firmware voice the notes" item here. It is not a setting
+	// but the only behaviour: notes go to the firmware, which applies its key ranges, part layout
+	// and voice allocation, lights the indicators on the top line and returns what it actually
+	// took. Turning all that off gave nothing but a less accurate instrument, and was a stopgap
+	// for as long as notes crashed the panel - fixed in 0.9.6.
 	m.addSeparator();
 
 	// The standalone window now uses the OS's own native title bar (Alan's request, see
@@ -921,6 +921,10 @@ void D110Panel::showOptionsMenu()
 				processor.setSequencerRetroMode(!processor.getSequencerRetroMode());
 				if (onSequencerModeChanged) onSequencerModeChanged();
 				break;
+			case 50:
+				processor.setSequencerGridMode(!processor.getSequencerGridMode());
+				if (onSequencerModeChanged) onSequencerModeChanged();
+				break;
 #endif
 			case 6:
 				// NOT getWidth(): this panel is drawn at native reference resolution and
@@ -948,7 +952,7 @@ void D110Panel::showOptionsMenu()
 }
 
 // ---------------------------------------------------------------------------
-// Расширенный редактор
+// Extended editor
 
 namespace {
 
@@ -966,27 +970,27 @@ inline juce::Colour kEdLabel() { return d110ui::palette().label; }
 inline juce::Colour kEdValue() { return d110ui::palette().value; }
 inline juce::Colour kEdDim() { return d110ui::palette().dim; }
 
-// Восемь голосовых партий и ритм - ровно те девять, для которых у прибора есть запись в
+// Eight voice parts and rhythm - exactly the nine for which the unit has a record in
 // Timbre Temporary.
 const char *partLabel(int p) {
 	static const char *kNames[] = { "1", "2", "3", "4", "5", "6", "7", "8", "R" };
 	return (p >= 0 && p < 9) ? kNames[p] : "?";
 }
 
-// Четыре группы тонов, как их РАЗЛОЖИЛ САМ ПРИБОР: группа партии 1 ставилась эксклюзивным
-// сообщением, и имя тона читалось с индикатора (plugin/editor_write_probe.cpp, раздел 5).
-//   0 -> AcouPiano1   пресетная группа A
-//   1 -> Fantasy      пресетная группа B
-//   2 -> имя, только что записанное в память тонов - то есть внутренняя память
-//   3 -> ClsdHiHat1   ударные
+// The four tone groups AS THE UNIT ITSELF LAID THEM OUT: part 1's group was set by exclusive
+// message and the tone name read off the display (plugin/editor_write_probe.cpp, section 5).
+//   0 -> AcouPiano1   preset group A
+//   1 -> Fantasy      preset group B
+//   2 -> the name just written into tone memory - i.e. internal memory
+//   3 -> ClsdHiHat1   rhythm
 const char *toneGroupLabel(int g) {
-	// Буквы - Roland'овские: на ламинированной карточке «Preset Tones» группы названы a, b и
-	// r, а четвёртая - внутренняя память, которую прибор заполняет только сам пользователь.
+	// The letters are Roland's: on the laminated "Preset Tones" card the groups are named a, b
+	// and r, and the fourth is internal memory, which only the user ever fills.
 	static const char *kNames[] = { "a PRESET", "b PRESET", "i INTERNAL", "r RHYTHM" };
 	return (g >= 0 && g < 4) ? kNames[g] : "?";
 }
 
-// Восемь типов ревербератора с той же карточки, плюс OFF девятым значением.
+// Eight reverb types from the same card, plus OFF as the ninth value.
 const char *reverbTypeLabel(int v) {
 	static const char *kNames[] = { "1 SMALL ROOM", "2 MEDIUM ROOM", "3 MEDIUM HALL",
 	                                "4 LARGE HALL", "5 PLATE", "6 DELAY 1", "7 DELAY 2",
@@ -994,10 +998,10 @@ const char *reverbTypeLabel(int v) {
 	return (v >= 0 && v < 8) ? kNames[v] : "OFF";
 }
 
-// Назначение на выходы. У прибора это MIX плюс шесть индивидуальных выходов - MULTI OUT 1-6
-// по блок-схеме сервисных заметок, - и байт идёт от 1 (MIX) до 7 (выход 6). Измерено на
-// самой странице Timbre Edit: три нажатия сдвинули байт 6 с 1 на 4, а экран показал «3»
-// (plugin/editor_write_probe.cpp, раздел 7).
+// Output assignment. On the unit this is MIX plus six individual outputs - MULTI OUT 1-6 per
+// the service notes' block diagram - and the byte runs from 1 (MIX) to 7 (output 6).
+// Measured on the Timbre Edit page itself: three presses moved byte 6 from 1 to 4, and the
+// screen showed "3" (plugin/editor_write_probe.cpp, section 7).
 juce::String outputAssignText(int v) {
 	return (v <= 1) ? juce::String("MIX") : juce::String(v - 1);
 }
@@ -1009,17 +1013,17 @@ void drawBox(juce::Graphics &g, juce::Rectangle<float> r, bool highlight) {
 	g.drawRoundedRectangle(r.reduced(0.5f), 3.0f, 1.0f);
 }
 
-// Панорама у Roland: 0 - вправо до упора, 7 - середина, 14 - влево до упора. Прибор пишет
-// её как расстояние и сторону - «3>» это три шага вправо (docs/factory_defaults.md).
+// Roland's pan: 0 - hard right, 7 - centre, 14 - hard left. The unit writes it as distance
+// and side - "3>" is three steps to the right (docs/factory_defaults.md).
 juce::String panText(int v) {
 	const int off = v - 7;
 	if (off == 0) return "C";
 	return (off < 0) ? (juce::String(-off) + ">") : ("<" + juce::String(off));
 }
 
-// Roland считает октавы так, что нота 0 - это C-1, а 127 - G9: именно это показывает
-// страница Key Range самого прибора (docs/factory_defaults.md). У JUCE это задаётся номером
-// октавы для среднего до, и он равен четырём, а не трём.
+// Roland counts octaves so that note 0 is C-1 and 127 is G9: that is exactly what the unit's
+// own Key Range page shows (docs/factory_defaults.md). In JUCE this is set by the octave
+// number of middle C, which is four, not three.
 juce::String noteName(int note) {
 	return juce::MidiMessage::getMidiNoteName(note, true, true, 4);
 }
@@ -1097,9 +1101,9 @@ D110EditorPane::D110EditorPane(D110AudioProcessor &p) : processor(p), soundbankB
 	// real child Component, unlike every other tab.
 	addChildComponent(soundbankBrowser);
 
-	// Поле ввода одно на весь редактор: любое имя набирается им же, просто в разных местах.
-	// Прибор принимает только печатные ASCII, поэтому набрать что-то другое здесь нельзя -
-	// это ограничение прибора, а не удобства.
+	// One entry field for the whole editor: every name is typed into this same one, just in
+	// different places. The unit accepts printable ASCII only, so nothing else can be typed here
+	// - that is the unit's limit, not a convenience.
 	addChildComponent(textEntry);
 	textEntry.setMultiLine(false);
 	textEntry.setReturnKeyStartsNewLine(false);
@@ -1122,8 +1126,8 @@ D110EditorPane::D110EditorPane(D110AudioProcessor &p) : processor(p), soundbankB
 		                           textEntry.getText()); break;
 		default: break;
 		}
-		// Надпись на индикатор посылается сколько угодно раз подряд, поэтому её поле
-		// остаётся открытым; имя набирается один раз и закрывается.
+		// A display message can be sent any number of times in a row, so its field stays open; a
+		// name is typed once and the field closes.
 		if (textEntryTarget != 2) {
 			textEntryTarget = 0;
 			textEntryButton = -1;
@@ -1165,9 +1169,9 @@ void D110EditorPane::refreshFromInstrument() {
 		if (ramValid) { ramValid = false; repaint(); }
 		return;
 	}
-	// Память перечитывается только когда она действительно менялась - счётчик поколений для
-	// того и заведён. Монитор - исключение: лента MIDI и занятость голосов интересны именно
-	// тем, как они меняются.
+	// Memory is re-read only when it actually changed - that is what the generation counter is
+	// for. The monitor is the exception: the MIDI log and voice activity are interesting
+	// precisely for how they change.
 	const uint64_t gen = processor.getCore().ramGeneration();
 	if (tab == Tab::Monitor) {
 		if (processor.getCore().getRam(ram.data())) { ramGen = gen; ramValid = true; reapplyPendingEdits(); }
@@ -1184,9 +1188,9 @@ void D110EditorPane::refreshFromInstrument() {
 
 void D110EditorPane::reapplyPendingEdits() {
 	if (pendingEdits.empty()) return;
-	// Дольше любой реально измеренной задержки моста (0-18 мс, note_latency_probe.cpp) с
-	// большим запасом, но не бесконечно: если прошивка так и не подтвердила байт за это
-	// время, доверять свежепрочитанному значению безопаснее, чем зависнуть на неверном.
+	// Longer than any bridge latency actually measured (0-18 ms, note_latency_probe.cpp) by a
+	// wide margin, but not infinite: if the firmware still has not confirmed the byte by then,
+	// trusting the freshly read value is safer than hanging on a wrong one.
 	constexpr juce::int64 kGraceMs = 400;
 	const juce::int64 now = juce::Time::getMillisecondCounter();
 	for (size_t i = 0; i < pendingEdits.size();) {
@@ -1202,7 +1206,7 @@ void D110EditorPane::reapplyPendingEdits() {
 	}
 }
 
-// --- разметка ---------------------------------------------------------------
+// --- layout -----------------------------------------------------------------
 
 void D110EditorPane::resized() { layout(); }
 
@@ -1228,7 +1232,7 @@ void D110EditorPane::layout() {
 	                          ? tabs.removeFromRight(juce::jmin(90.0f, tabs.getWidth()))
 	                          : juce::Rectangle<float>{};
 	area.removeFromTop(8.0f);
-	area.removeFromBottom(16.0f);   // полоса под пояснением внизу
+	area.removeFromBottom(16.0f);   // strip under the explanation at the bottom
 
 	switch (tab) {
 	case Tab::Parts:   layoutParts(area); break;
@@ -1243,10 +1247,10 @@ void D110EditorPane::layout() {
 		soundbankBrowser.setBounds(area.toNearestInt());
 		break;
 	case Tab::Utility: contentArea = area; layoutUtility(area); break;
-	default:           contentArea = area; break;   // монитор рисуется целиком
+	default:           contentArea = area; break;   // the monitor is painted as a whole
 	}
 
-	// Поле ввода принадлежит месту, а не редактору: со сменой вкладки оно исчезает.
+	// The entry field belongs to the place, not the editor: it disappears with a tab change.
 	if (textEntryTarget != 0 && textEntry.isVisible()) {
 		textEntryTarget = 0;
 		textEntryButton = -1;
@@ -1254,9 +1258,9 @@ void D110EditorPane::layout() {
 	}
 }
 
-// Timbre Temporary: то, чем прибор играет ПРЯМО СЕЙЧАС. Девять записей по шестнадцать байт,
-// одна на партию. Это тот самый блок, который переносится в звуковой движок, поэтому здесь
-// правится всё, что слышно, - и всё, что показывает страница PART SET на приборе.
+// Timbre Temporary: what the unit is playing RIGHT NOW. Nine records of sixteen bytes, one
+// per part. This is the very block carried into the sound engine, so everything audible is
+// edited here - and everything the PART SET page on the unit shows.
 void D110EditorPane::layoutParts(juce::Rectangle<float> area) {
 	// MIDI CH's field is a marker, not a Timbre Temporary offset: the channel isn't part of
 	// that record at all, it's the System Area's per-part channel array (RAM 0x2D94+13..21,
@@ -1298,9 +1302,9 @@ void D110EditorPane::layoutParts(juce::Rectangle<float> area) {
 		auto row = area.removeFromTop(rowHeight).reduced(0.0f, 2.0f);
 		labels.push_back({ colAt(0, row), partLabel(p), true });
 		for (int i = 1; i < kNumCols; ++i) {
-			// У ритм-партии тон не выбирается здесь: её звуки заданы по клавишам, на вкладке
-			// RHYTHM, и группа с номером в этой записи ни на что не влияют. Предлагать их
-			// значило бы предлагать крутить то, чего не слышно.
+			// The rhythm part's tone is not chosen here: its sounds are assigned per key, on the RHYTHM
+			// tab, and the group and number in this record affect nothing. Offering them would mean
+			// offering to turn something that cannot be heard.
 			if (p == 8 && (kCols[i].field == 0 || kCols[i].field == 1)) continue;
 			if (kCols[i].field == kMidiChMarker) {
 				// The array holds one channel per part IN ORDER, rhythm included last -
@@ -1315,11 +1319,11 @@ void D110EditorPane::layoutParts(juce::Rectangle<float> area) {
 	}
 }
 
-// Подписи - СОБСТВЕННЫЕ ИМЕНА ПРИБОРА, слово в слово с ламинированной карточки «Tone
-// Parameters» (столбец Display): WG Pitch Cors, P-ENV T1, TVF Freq, TVA-ENV Sus L и так далее.
-// Раньше здесь стояли термины MT-32 - «cutoff» вместо «frequency» и прочее, - и ящик говорил с
-// человеком не теми словами, что панель прибора. Порядок смещений та же карточка подтверждает
-// один в один. Static class data (used to be layoutTone()-local) rather than four separate
+// The captions are THE UNIT'S OWN NAMES, word for word from the laminated "Tone Parameters"
+// card (Display column): WG Pitch Cors, P-ENV T1, TVF Freq, TVA-ENV Sus L and so on. MT-32
+// terms used to stand here - "cutoff" instead of "frequency" and the like - and the drawer
+// spoke to the person in different words than the unit's panel. The same card confirms the
+// offset order one to one. Static class data (used to be layoutTone()-local) rather than four separate
 // copies: randomizeTone() below also walks the full 58-byte partial record, and a second,
 // hand-kept copy of every offset/range would drift the moment one of these four changed.
 const D110EditorPane::ToneParam D110EditorPane::kWg[] = {
@@ -1362,9 +1366,9 @@ const D110EditorPane::ToneParam D110EditorPane::kTva[] = {
 	{ "TVA-ENV SUS L",  57, 100 },
 };
 
-// Тон партии: та самая 246-байтная запись, которую прибор редактирует своими страницами
-// Edit. У D-110 тон - это до ЧЕТЫРЁХ партиалов, и «структура» задаёт, как они соединены
-// попарно: сумма или кольцевая модуляция.
+// The part's tone: the same 246-byte record the unit edits through its Edit pages. On the
+// D-110 a tone is up to FOUR partials, and the "structure" sets how they are paired:
+// sum or ring modulation.
 void D110EditorPane::layoutTone(juce::Rectangle<float> area) {
 	const float w = area.getWidth();
 
@@ -1375,8 +1379,8 @@ void D110EditorPane::layoutTone(juce::Rectangle<float> area) {
 			partBounds[(size_t)p] = row.removeFromLeft(28.0f);
 			row.removeFromLeft(4.0f);
 		}
-		// Имя рисуется в paint(), а не запоминается здесь: разметка считается при изменении
-		// размера, когда память прибора ещё может быть не прочитана.
+		// The name is drawn in paint(), not remembered here: layout is computed on resize, when the
+		// unit's memory may not have been read yet.
 		toneNameBounds = row.removeFromLeft(160.0f).reduced(10.0f, 0.0f);
 		labels.push_back({ row.reduced(12.0f, 0.0f),
 		                   "click the name to rename the tone this part is playing", false });
@@ -1423,8 +1427,8 @@ void D110EditorPane::layoutTone(juce::Rectangle<float> area) {
 		area.removeFromTop(10.0f);
 	}
 
-	// По строке на партиал: то, что слышно сразу. Полная запись партиала - 58 байт, и класть
-	// все на один экран значило бы сделать их нечитаемыми, поэтому подробности ниже.
+	// One row per partial: what is heard at once. A partial's full record is 58 bytes, and
+	// putting them all on one screen would make them unreadable, hence the details below.
 	struct Col { const char *head; int offset; int hi; float frac; };
 	static const Col kCols[] = {
 		{ "",           -1,   0, 0.00f },
@@ -1465,9 +1469,9 @@ void D110EditorPane::layoutTone(juce::Rectangle<float> area) {
 		}
 	}
 
-	// Подробности выбранного партиала: три огибающие и LFO - то, чем тон на самом деле и
-	// делается. Огибающие пятиступенчатые, и последний уровень - это уровень удержания,
-	// поэтому подписи именно такие, а не «1..5».
+	// Details of the selected partial: three envelopes and the LFO - what a tone is actually
+	// made of. The envelopes have five steps, and the last level is the sustain level, hence
+	// these captions rather than "1..5".
 	area.removeFromTop(8.0f);
 	labels.push_back({ area.removeFromTop(15.0f),
 	                   "PARTIAL " + juce::String(tonePartial + 1)
@@ -1499,8 +1503,8 @@ void D110EditorPane::layoutParamColumn(juce::Rectangle<float> column, int partia
 	}
 }
 
-// Установка ударных: одна строка на клавишу. Записей восемьдесят пять - столько на экран не
-// помещается, поэтому показывается окно, а список листается колесом мыши мимо полей.
+// Rhythm setup: one row per key. There are eighty-five records - more than fit on screen -
+// so a window is shown, and the list scrolls with the wheel when it is not over a field.
 void D110EditorPane::layoutRhythm(juce::Rectangle<float> area) {
 	auto head = area.removeFromTop(18.0f);
 	tableArea = area;
@@ -1526,8 +1530,8 @@ void D110EditorPane::layoutRhythm(juce::Rectangle<float> area) {
 		const int key = D110CoreType::kRhythmFirstKey + slot;
 		labels.push_back({ colAt(0, row),
 		                   juce::String(key) + "  " + noteName(key), true });
-		// Диапазон 0..127, а не MT-32-шные 0..94: заводская установка ударных D-110 держит
-		// значения до 0x67 = 103, что за пределом MT-32 - измерено по батарейному ОЗУ.
+		// Range 0..127, not the MT-32's 0..94: the D-110's factory rhythm setup holds values up to
+		// 0x67 = 103, beyond the MT-32's limit - measured from the battery-backed RAM.
 		cells.push_back({ colAt(1, row), Area::Rhythm, slot, 0, 0, 127 });
 		cells.push_back({ colAt(2, row), Area::Rhythm, slot, 1, 0, 100 });
 		cells.push_back({ colAt(3, row), Area::Rhythm, slot, 2, 0, 14 });
@@ -1535,9 +1539,9 @@ void D110EditorPane::layoutRhythm(juce::Rectangle<float> area) {
 	}
 }
 
-// Память патчей: 64 записи по 128 байт. Патч у D-110 - это ВЕСЬ прибор разом: имя,
-// ревербератор, резерв партиалов, карта каналов и назначение восьми партий. Щелчок по
-// номеру просит прошивку перейти на этот патч её собственными кнопками.
+// Patch memory: 64 records of 128 bytes. On the D-110 a patch is the WHOLE unit at once:
+// name, reverb, partial reserve, channel map and the assignment of the eight parts. Clicking
+// the number asks the firmware to go to that patch with its own buttons.
 void D110EditorPane::layoutPatches(juce::Rectangle<float> area) {
 	const float w = area.getWidth();
 
@@ -1593,12 +1597,12 @@ void D110EditorPane::layoutPatchesList(juce::Rectangle<float> area) {
 		const int patch = patchScroll + i;
 		if (patch >= D110CoreType::kNumPatches) break;
 		auto row = listArea.removeFromTop(rowHeight).reduced(0.0f, 2.0f);
-		// Номер - кнопка: по ней прибор переходит на этот патч. Подписан так же, как его
-		// показывает индикатор: банк 1-8 и номер 1-8.
+		// The number is a button: through it the unit goes to that patch. Labelled the way the
+		// display shows it: bank 1-8 and number 1-8.
 		buttons.push_back({ colAt(0, row),
 		                    "I-" + juce::String(patch / 8 + 1) + juce::String(patch % 8 + 1),
 		                    200 + patch });
-		buttons.push_back({ colAt(1, row), {}, 400 + patch });   // имя, набирается на месте
+		buttons.push_back({ colAt(1, row), {}, 400 + patch });   // name, typed in place
 		cells.push_back({ colAt(2, row), Area::Patches, patch, 10, 0, 8 });
 		cells.push_back({ colAt(3, row), Area::Patches, patch, 11, 0, 7 });
 		cells.push_back({ colAt(4, row), Area::Patches, patch, 12, 0, 7 });
@@ -1660,19 +1664,19 @@ void D110EditorPane::layoutPatchesParts(juce::Rectangle<float> area) {
 				cells.push_back({ pcolAt(i, row), Area::Patches, chosen, 22 + p, 0, kPCols[i].hi });
 				continue;
 			}
-			// Запись партии - те же двенадцать байт, что и в Timbre Temporary, начиная с
-			// 31-го байта патча: имя 10, ревербератор 3, резерв 9, каналы 9. Измерено
-			// сличением с заводским содержимым - панорама этих восьми записей совпала с
-			// заводским веером 4 10 6 8 2 12 0 14 байт в байт.
+			// A part record is the same twelve bytes as in Timbre Temporary, starting at byte 31 of the
+			// patch: name 10, reverb 3, reserve 9, channels 9. Measured by comparison with the factory
+			// contents - the pan of these eight records matched the factory fan 4 10 6 8 2 12 0 14 byte
+			// for byte.
 			cells.push_back({ pcolAt(i, row), Area::Patches, chosen,
 			                  31 + p * 12 + kPCols[i].field, 0, kPCols[i].hi });
 		}
 	}
 }
 
-// Память тембров: 128 записей по 8 байт. Тембр у D-110 - это НАЗНАЧЕНИЕ тона: какой тон
-// играть, с каким сдвигом, подстройкой, диапазоном колеса и реверберацией. Щелчок по номеру
-// посылает смену программы на канал выбранной партии - как с внешней клавиатуры.
+// Timbre memory: 128 records of 8 bytes. On the D-110 a timbre is an ASSIGNMENT of a tone:
+// which tone to play, with what shift, fine tune, bender range and reverb. Clicking the
+// number sends a Program Change on the selected part's channel - as from an external keyboard.
 void D110EditorPane::layoutTimbres(juce::Rectangle<float> area) {
 	const float w = area.getWidth();
 
@@ -1722,9 +1726,9 @@ void D110EditorPane::layoutTimbres(juce::Rectangle<float> area) {
 	}
 }
 
-// Память тонов: 64 ячейки по 256 байт, верхняя половина батарейного ОЗУ. Это те тона,
-// которые тембр называет группой INTERNAL. Тон целиком - 246 байт, поэтому он не правится
-// здесь по полю, а переносится целиком: из партии в ячейку и обратно.
+// Tone memory: 64 slots of 256 bytes, the upper half of the battery-backed RAM. These are the
+// tones a timbre calls the INTERNAL group. A whole tone is 246 bytes, so it is not edited
+// here field by field but carried whole: from a part into a slot and back.
 void D110EditorPane::layoutTones(juce::Rectangle<float> area) {
 	const float w = area.getWidth();
 
@@ -1771,9 +1775,9 @@ void D110EditorPane::layoutSystem(juce::Rectangle<float> area) {
 	const float labelH = 15.0f;
 	const float used = 3.0f * labelH + 2.0f * labelH * 0.85f;
 	const float boxH = juce::jlimit(26.0f, 44.0f, (area.getHeight() - used) / 4.2f);
-	// Промежуток ограничен сверху: на этой вкладке всего три блока, и на высоком окне
-	// оставшееся место растягивало их до края экрана, так что подпись блока оказывалась
-	// в полусотне точек от своих же полей.
+	// The gap is capped: this tab has only three blocks, and on a tall window the remaining
+	// space stretched them to the edge of the screen, leaving a block's caption some fifty
+	// points away from its own fields.
 	const float gap = juce::jlimit(10.0f, 40.0f, (area.getHeight() - used - 3.0f * boxH) / 3.0f);
 
 	{
@@ -1886,11 +1890,14 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 	labels.push_back({ area.removeFromTop(15.0f), "SEQUENCER", true });
 	{
 		auto row = area.removeFromTop(28.0f);
-		buttons.push_back({ row.removeFromLeft(150.0f), processor.getSequencerRetroMode() ? "RETRO" : "NORMAL", 13 });
+		buttons.push_back({ row.removeFromLeft(150.0f),
+		                    processor.getSequencerRetroMode() ? "RETRO"
+		                    : processor.getSequencerGridMode() ? "GRID" : "NORMAL", 13 });
 		labels.push_back({ row.reduced(12.0f, 0.0f),
-		                   "click to switch the sequencer drawer between the mouse-driven "
-		                   "grid and the D-20-style LCD+buttons view - same toggle as the "
-		                   "panel's own right-click Options menu", false });
+		                   "click to cycle the sequencer drawer between the mouse-driven "
+		                   "strip (NORMAL), the D-20-style LCD+buttons view (RETRO) and the "
+		                   "piano-roll grid editor (GRID) - same choice as the panel's own "
+		                   "right-click Options menu", false });
 	}
 	area.removeFromTop(18.0f);
 
@@ -1962,7 +1969,7 @@ void D110EditorPane::layoutUtility(juce::Rectangle<float> area) {
 	                   true });
 	{
 		auto row = area.removeFromTop(28.0f);
-		buttons.push_back({ row.removeFromLeft(w * 0.40f), {}, 3 });   // само поле ввода
+		buttons.push_back({ row.removeFromLeft(w * 0.40f), {}, 3 });   // the entry field itself
 		row.removeFromLeft(10.0f);
 		buttons.push_back({ row.removeFromLeft(100.0f), "SEND", 1 });
 		labels.push_back({ row.reduced(12.0f, 0.0f),
@@ -2300,7 +2307,7 @@ void showLaReferencePopup(int windowWidth) {
 }
 } // namespace
 
-// --- значения ---------------------------------------------------------------
+// --- values -----------------------------------------------------------------
 
 size_t D110EditorPane::addressOf(const Cell &c) const {
 	switch (c.area) {
@@ -2341,7 +2348,7 @@ void D110EditorPane::setValue(const Cell &c, int value) {
 	case Area::System:   processor.sendSystemParam(c.index, uint8_t(v)); break;
 	case Area::Timbres:  processor.sendTimbreMemoryParam(c.index, c.field, uint8_t(v)); break;
 	case Area::Patches:  processor.editPatchField(c.index, c.field, uint8_t(v)); break;
-	case Area::Tones:    break;   // тон целиком, а не по байту - см. вкладку TONES
+	case Area::Tones:    break;   // a tone is carried whole, not by byte - see the TONES tab
 	default:
 		processor.sendTimbreTempParam(c.index, c.field, uint8_t(v));
 		// Picking a tone (group or number, fields 0/1) here only ever writes those two
@@ -2356,13 +2363,13 @@ void D110EditorPane::setValue(const Cell &c, int value) {
 		// other tone, is no longer silently overridden.
 		break;
 	}
-	// Значение показывается сразу, не дожидаясь, пока прошивка его примет и таймер это
-	// увидит: иначе поле под курсором отставало бы на десятую долю секунды.
+	// The value is shown at once, without waiting for the firmware to accept it and the timer
+	// to notice: otherwise the field under the cursor would lag by a tenth of a second.
 	const size_t at = addressOf(c);
 	if (ramValid && at < ram.size()) ram[at] = uint8_t(v);
 
-	// Отмечено как непринятое - см. PendingEdit. Тот же адрес заменяет свою прежнюю запись
-	// (не копится), потому что важен только самый последний запрошенный шаг колеса.
+	// Marked as unconfirmed - see PendingEdit. The same address replaces its earlier entry
+	// (does not accumulate), because only the latest requested wheel step matters.
 	const juce::int64 now = juce::Time::getMillisecondCounter();
 	bool replaced = false;
 	for (auto &p : pendingEdits)
@@ -2458,10 +2465,10 @@ juce::String D110EditorPane::nameAt(size_t ramOffset) const {
 	return name.trimEnd();
 }
 
-// Имя тона по группе и номеру. Внутренние тона - из памяти самой прошивки, которая их и
-// хранит; пресетные и ударные живут в ПЗУ, и их имя спрашивается у звукового движка,
-// загрузившего то же самое ПЗУ. Спрашивается по одному разу: имена в ПЗУ не меняются, а
-// лезть в чужой поток на каждой перерисовке незачем.
+// A tone's name by group and number. Internal tones come from the firmware's own memory,
+// which stores them; presets and rhythm live in ROM, and their names are asked of the sound
+// engine that loaded the same ROM. Asked once each: ROM names never change, and there is no
+// reason to reach into another thread on every repaint.
 juce::String D110EditorPane::toneName(int group, int number) const {
 	if (group < 0 || group > 3 || number < 0 || number > 63) return {};
 	if (group == 2)
@@ -2471,8 +2478,8 @@ juce::String D110EditorPane::toneName(int group, int number) const {
 	if (romToneNameKnown[slot]) return romToneNames[slot];
 	if (!processor.engineIsOpen()) return {};
 
-	// Адрес в упакованном виде, как его ждёт readEngineMemory: SysEx 08 00 00 - это 0x020000,
-	// а запись банка тембров у движка занимает 256 байт.
+	// The address in packed form, as readEngineMemory expects it: SysEx 08 00 00 is 0x020000,
+	// and a timbre bank record in the engine takes 256 bytes.
 	uint8_t buf[D110CoreType::kNameChars] = {};
 	if (!processor.readEngineMemory(juce::uint32(0x020000 + slot * 256), D110CoreType::kNameChars,
 	                                buf))
@@ -2491,25 +2498,25 @@ juce::String D110EditorPane::textOf(const Cell &c) const {
 	const int v = valueOf(c);
 	if (v < 0) return "--";
 
-	// Поля партии одинаковы в трёх местах - во временной области, в памяти тембров и внутри
-	// патча, - потому что это одна и та же запись Roland. Значит и печатаются они одним
-	// куском кода, а не тремя расходящимися.
+	// The part fields are identical in three places - the temporary area, timbre memory and
+	// inside a patch - because it is one and the same Roland record. So they are printed by one
+	// piece of code, not three diverging ones.
 	auto partField = [&](int field) -> juce::String {
 		switch (field) {
 		case 0: return toneGroupLabel(v);
 		case 1: {
-			// Группа стоит в записи прямо перед номером - и во временной области, и в
-			// памяти тембров, и внутри патча, потому что это одна и та же запись Roland.
+			// The group sits in the record right before the number - in the temporary area, in timbre
+			// memory and inside a patch alike, because it is one and the same Roland record.
 			const size_t at = addressOf(c);
 			const int group = (at >= 1 && at - 1 < ram.size()) ? int(ram[at - 1]) : 0;
 			const juce::String name = toneName(group, v);
 			return juce::String(v + 1) + (name.isEmpty() ? juce::String() : "  " + name);
 		}
 		case 2: {
-			const int semis = v - 24;   // 0..48 это -24..+24 полутона
+			const int semis = v - 24;   // 0..48 is -24..+24 semitones
 			return (semis > 0 ? "+" : "") + juce::String(semis);
 		}
-		case 3: return juce::String(v - 50);          // подстройка, центы
+		case 3: return juce::String(v - 50);          // fine tune, cents
 		case 5: return "POLY " + juce::String(v + 1);
 		case 6: return outputAssignText(v);
 		case 9: return panText(v);
@@ -2518,12 +2525,12 @@ juce::String D110EditorPane::textOf(const Cell &c) const {
 		}
 	};
 
-	// Тон - запись Roland из общей части и четырёх партиалов по 58 байт. Величины в ней
-	// имеют собственные шкалы, и показывать их сырыми байтами значило бы заставлять читателя
-	// держать эти шкалы в голове.
+	// A tone is a Roland record of a common part and four 58-byte partials. The values in it
+	// have scales of their own, and showing them as raw bytes would make the reader keep those
+	// scales in their head.
 	if (c.area == Area::ToneTemp) {
-		if (c.field == 10 || c.field == 11) return juce::String(v + 1);   // структуры с единицы
-		if (c.field == 12) {                                             // маска партиалов
+		if (c.field == 10 || c.field == 11) return juce::String(v + 1);   // structures count from one
+		if (c.field == 12) {                                             // partial mask
 			juce::String mask;
 			for (int i = 0; i < 4; ++i) mask += ((v >> i) & 1) ? juce::String(i + 1) : "-";
 			return mask;
@@ -2531,18 +2538,18 @@ juce::String D110EditorPane::textOf(const Cell &c) const {
 		if (c.field == 13) return v ? "NO SUSTAIN" : "NORMAL";
 		if (c.field < 14) return juce::String(v);
 		switch ((c.field - 14) % 58) {
-		case 0: {   // высота партиала: 0..96 это C1..C9
+		case 0: {   // partial pitch: 0..96 is C1..C9
 			static const char *kNote[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G",
 			                               "G#", "A", "A#", "B" };
 			return juce::String(kNote[v % 12]) + juce::String(1 + v / 12);
 		}
-		case 1: return juce::String(v - 50);            // подстройка, центы
-		case 3: return v ? "ON" : "OFF";                // колесо высоты тона
+		case 1: return juce::String(v - 50);            // fine tune, cents
+		case 3: return v ? "ON" : "OFF";                // pitch bender
 		case 4: {
 			static const char *kWave[] = { "SQU/1", "SAW/1", "SQU/2", "SAW/2" };
 			return kWave[juce::jlimit(0, 3, v)];
 		}
-		case 5: {   // номер образца PCM - имя из ПЗУ, банк решает соседнее поле WAVEFORM
+		case 5: {   // PCM sample number - name from ROM, the bank is decided by the neighbouring WAVEFORM field
 			const int n = juce::jlimit(0, 127, v);
 			// A customized slot's real audio no longer matches the factory name at all - show
 			// the source file's own name (falling back to a plain "custom" marker for an old
@@ -2555,8 +2562,8 @@ juce::String D110EditorPane::textOf(const Cell &c) const {
 			const bool bank2 = (waveAt < ram.size()) && ((ram[waveAt] & 2) != 0);
 			return juce::String(v + 1) + "  " + (bank2 ? kPcmBank2Names[n] : kPcmBank1Names[n]);
 		}
-		case 7: return juce::String(v - 7);             // чувствительность ширины импульса
-		case 15: case 16: case 17: case 18: case 19:    // уровни огибающей высоты, -50..+50
+		case 7: return juce::String(v - 7);             // pulse width sensitivity
+		case 15: case 16: case 17: case 18: case 19:    // pitch envelope levels, -50..+50
 			return juce::String(v - 50);
 		case 27: return juce::String(v - 7);            // TVF bias level
 		case 44: case 46: return juce::String(-v);      // TVA bias levels, 0..-12
@@ -2569,15 +2576,15 @@ juce::String D110EditorPane::textOf(const Cell &c) const {
 	case Area::Timbres:    return partField(c.field);
 	case Area::Patches:
 		switch (c.field) {
-		// Три шкалы ревербератора у прибора РАЗНЫЕ, и это снято с его собственного экрана:
-		// Type идёт 1..8 и затем OFF, Time 1..8, а Level 0..7 (docs/factory_defaults.md).
-		// Заводской патч хранит 04 04 04 и показывает 5, 5, 4.
+		// The unit's three reverb scales are DIFFERENT, and this is taken from its own screen: Type
+		// runs 1..8 then OFF, Time 1..8, and Level 0..7 (docs/factory_defaults.md). The factory
+		// patch stores 04 04 04 and shows 5, 5, 4.
 		case 10: return reverbTypeLabel(v);
 		case 11: return juce::String(v + 1);
 		case 12: return juce::String(v);
 		default:
-			// Всё, что начиная с 31-го байта, - это записи партий: тот же разбор, но
-			// смещение внутри записи считается от её начала.
+			// Everything from byte 31 on is part records: the same parsing, but the offset within the
+			// record counts from its start.
 			if (c.field >= 31) return partField((c.field - 31) % 12);
 			// The 9-byte channel-map block, offset 22-30 - same 0-15/"OFF" encoding as the
 			// LIVE System-area copy (see the Area::System case's own >= 13 branch).
@@ -2587,13 +2594,12 @@ juce::String D110EditorPane::textOf(const Cell &c) const {
 	case Area::Rhythm:
 		switch (c.field) {
 		case 0: {
-			// 0..63 - тембры внутренней памяти, 64..127 - звуки ударных. Заводская установка
-			// держит здесь значения до 103, поэтому предел именно 127, а не MT-32-шные 94.
+			// 0..63 - internal memory timbres, 64..127 - rhythm sounds. The factory setup holds values
+			// up to 103 here, hence the limit is 127, not the MT-32's 94.
 			if (v < 64) return "TIMBRE " + juce::String(v + 1);
 			const juce::String name = toneName(3, v - 64);
-			// Незанятая клавиша указывает на пустое место банка ударных, и оно так и
-			// называется - "OFF". Печатать рядом с ним ещё и номер значило бы делать вид,
-			// будто там что-то есть.
+			// An unassigned key points at an empty place in the rhythm bank, and that is what it is
+			// called - "OFF". Printing a number next to it would pretend there is something there.
 			if (name == "OFF") return "OFF";
 			return "RHY " + juce::String(v - 63) + (name.isEmpty() ? juce::String()
 			                                                       : "  " + name);
@@ -2605,25 +2611,24 @@ juce::String D110EditorPane::textOf(const Cell &c) const {
 	case Area::System:
 		switch (c.index) {
 		case 0: {
-			// Общая подстройка. Шкала СНЯТА С ИНДИКАТОРА ПРИБОРА, а не взята из руководства:
-			// документированное Roland отображение 0-127 -> 432.1-457.6 Гц дало бы для
-			// заводского байта 74 около 447, тогда как прибор показывает 442. Развёрнутая по
-			// шести значениям (plugin/editor_write_probe.cpp, раздел 6), его собственная
-			// шкала ложится на 440 Гц при байте 64 и примерно 0.2 Гц на шаг: 64 -> "440" и
-			// 74 -> "442" совпадают точно, у остальных четырёх на экране есть дробная часть,
-			// и пишет её прибор собственным знаком из ОЗУ знакогенератора - прочитать её
-			// нечем.
+			// Master tune. The scale is TAKEN FROM THE UNIT'S DISPLAY, not from the manual: Roland's
+			// documented mapping 0-127 -> 432.1-457.6 Hz would give about 447 for the factory byte 74,
+			// whereas the unit shows 442. Expanded over six values (plugin/editor_write_probe.cpp,
+			// section 6), its own scale lands on 440 Hz at byte 64 with about 0.2 Hz per step: 64 ->
+			// "440" and 74 -> "442" match exactly, the other four have a fractional part on the screen,
+			// and the unit writes it with its own character from the character-generator RAM - there
+			// is nothing to read it with.
 			//
-			// Отсюда и тильда: число получено этой шкалой и на краях может разойтись с
-			// экраном прибора на герц. Байт стоит рядом, потому что правится именно он - и
-			// именно он НЕ переносится в звуковой движок, чей строй считается иначе
+			// Hence the tilde: the number comes from this scale and at the edges may differ from the
+			// unit's screen by a hertz. The byte sits next to it because the byte is what gets edited -
+			// and it is exactly what is NOT carried to the sound engine, whose tuning is computed differently
 			// (docs/sysex_address_map.md).
 			const double hz = 440.0 + double(v - 64) * 0.2;
 			return juce::String(v) + "   ~" + juce::String(hz, 1) + " Hz";
 		}
 		case 1: return reverbTypeLabel(v);
-		case 2: return juce::String(v + 1);   // время 1..8
-		case 3: return juce::String(v);       // уровень 0..7, и он один такой
+		case 2: return juce::String(v + 1);   // time 1..8
+		case 3: return juce::String(v);       // level 0..7, the one exception
 		default:
 			if (c.index >= 13) return (v > 15) ? juce::String("OFF") : juce::String(v + 1);
 			return juce::String(v);
@@ -2632,7 +2637,7 @@ juce::String D110EditorPane::textOf(const Cell &c) const {
 	}
 }
 
-// --- рисование --------------------------------------------------------------
+// --- painting ---------------------------------------------------------------
 
 bool D110EditorPane::isPartialMuteCell(const Cell &c) const {
 	return c.area == Area::ToneTemp && c.field == 12;
@@ -2721,8 +2726,8 @@ void D110EditorPane::paint(juce::Graphics &g) {
 		return;
 	}
 
-	// Выбор партии: на этих вкладках партия - не параметр прибора, а то, ЧЬЮ запись мы
-	// смотрим, поэтому она сделана рядом маленьких кнопок, а не полем со значением.
+	// Part selection: on these tabs the part is not a unit parameter but WHOSE record we are
+	// looking at, so it is a row of small buttons rather than a field with a value.
 	if (tab == Tab::Tone || tab == Tab::Timbres || tab == Tab::Tones) {
 		for (int p = 0; p < 8; ++p) {
 			const bool active = (p == part);
@@ -2772,11 +2777,11 @@ void D110EditorPane::paint(juce::Graphics &g) {
 		g.drawText(l.text, l.bounds, l.just);
 	}
 
-	// Кнопки рисуются как поля, только подписью по центру. Ячейки памяти тонов и имена
-	// патчей - тоже кнопки, но подписываются они содержимым.
+	// Buttons are painted like fields, only with the caption centred. Tone memory slots and
+	// patch names are buttons too, but they are captioned by their contents.
 	for (const Button &b : buttons) {
 		if (textEntry.isVisible() && b.id == textEntryButton) continue;
-		if (b.id >= 100 && b.id < 200) {                    // ячейка памяти тонов
+		if (b.id >= 100 && b.id < 200) {                    // tone memory slot
 			const int slot = b.id - 100;
 			const bool chosen = (slot == toneSlot);
 			drawBox(g, b.bounds, chosen);
@@ -2799,7 +2804,7 @@ void D110EditorPane::paint(juce::Graphics &g) {
 			g.drawText(b.text, b.bounds, juce::Justification::centred);
 			continue;
 		}
-		if (b.id >= 400 && b.id < 500) {                    // имя патча
+		if (b.id >= 400 && b.id < 500) {                    // patch name
 			const int patch = b.id - 400;
 			drawBox(g, b.bounds, false);
 			g.setColour(kEdValue());
@@ -2809,8 +2814,8 @@ void D110EditorPane::paint(juce::Graphics &g) {
 			           b.bounds.reduced(6.0f, 0.0f), juce::Justification::centredLeft);
 			continue;
 		}
-		// Патч, который прибор играет сейчас, отмечен - иначе список из 64 одинаковых
-		// кнопок не говорит, где ты находишься.
+		// The patch the unit is playing now is marked - otherwise a list of 64 identical buttons
+		// does not say where you are.
 		const bool current = (b.id >= 200 && b.id < 300)
 		                   && ramValid
 		                   && int(ram[(size_t)D110CoreType::kRamPatchNumber]) == b.id - 200;
@@ -2845,8 +2850,8 @@ void D110EditorPane::paint(juce::Graphics &g) {
 		g.fillRoundedRectangle(utilityScrollThumb.reduced(1.0f), 3.0f);
 	}
 
-	// Одна строка о том, чем этот ящик является, чтобы он не читался как отдельный «микшер
-	// плагина», живущий своей жизнью.
+	// One line about what this drawer is, so it does not read as a separate "plugin mixer"
+	// living a life of its own.
 	g.setColour(kEdDim());
 	g.setFont(juce::FontOptions(10.0f * scale));
 	juce::String footer;
@@ -2893,10 +2898,10 @@ void D110EditorPane::paint(juce::Graphics &g) {
 	g.drawText(footer, getLocalBounds().reduced(16, 6), juce::Justification::bottomLeft);
 }
 
-// Монитор. Показывает три вещи, которых больше нигде не видно: занятость голосов LA32,
-// клавиши, которые прошивка считает нажатыми, и то, что действительно приходит по MIDI.
-// Всё это читается из памяти самой прошивки, а не из звукового движка, - то есть отвечает
-// на вопрос «что об этом думает прибор», а не «что услышал эмулятор».
+// Monitor. Shows three things visible nowhere else: LA32 voice occupancy, the keys the
+// firmware considers held, and what actually arrives over MIDI. All of it is read from the
+// firmware's own memory, not from the sound engine - i.e. it answers "what does the unit
+// think about this", not "what did the emulator hear".
 void D110EditorPane::paintMonitor(juce::Graphics &g, juce::Rectangle<float> area) {
 	const float scale = fontScale();
 	const juce::Font labelFont(juce::FontOptions(11.0f * scale, juce::Font::bold));
@@ -2933,12 +2938,11 @@ void D110EditorPane::paintMonitor(juce::Graphics &g, juce::Rectangle<float> area
 	           area.removeFromTop(18.0f), juce::Justification::centredLeft);
 	area.removeFromTop(8.0f);
 
-	// Какие партии звучат. Спрашивается у ЗВУКОВОГО ДВИЖКА, а не вычитывается из таблиц
-	// контекстов прошивки, и вот почему: контекст, который прошивка бросила, в снимке памяти
-	// выглядит точно так же, как звучащий, - нота на месте, бит освобождения не выставлен, -
-	// потому что прошивка помечает контексты своими ЗАПИСЯМИ, а не состоянием. Первая версия
-	// этой панели читала таблицы напрямую и показывала на ритм-партии четырнадцать нажатых
-	// клавиш там, где не звучало ни одной.
+	// Which parts are sounding. Asked of the SOUND ENGINE rather than read from the firmware's
+	// context tables, and here is why: a context the firmware abandoned looks exactly like a
+	// sounding one in a memory snapshot - note in place, release bit not set - because the
+	// firmware marks contexts by its WRITES, not by state. The first version of this pane read
+	// the tables directly and showed fourteen held keys on the rhythm part where none sounded.
 	const uint32_t engineParts = processor.enginePartStates();
 	g.setColour(kEdLabel());
 	g.setFont(labelFont);
@@ -2958,8 +2962,8 @@ void D110EditorPane::paintMonitor(juce::Graphics &g, juce::Rectangle<float> area
 	}
 	area.removeFromTop(8.0f);
 
-	// Мост в цифрах. Ноль потерянных сообщений - это условие, при котором всё показанное
-	// выше вообще что-то значит, поэтому счётчики стоят рядом, а не прячутся в журнале.
+	// The bridge in numbers. Zero lost messages is the condition under which anything shown
+	// above means anything at all, so the counters sit right here instead of hiding in a log.
 	g.setColour(kEdLabel());
 	g.setFont(labelFont);
 	g.drawText("THE BRIDGE", area.removeFromTop(16.0f), juce::Justification::centredLeft);
@@ -3068,7 +3072,10 @@ void D110EditorPane::buttonPressed(int id) {
 	}
 #if JucePlugin_Build_Standalone
 	if (id == 13) {
-		processor.setSequencerRetroMode(!processor.getSequencerRetroMode());
+		// NORMAL -> RETRO -> GRID -> NORMAL
+		if (processor.getSequencerRetroMode()) processor.setSequencerGridMode(true); // also clears retro
+		else if (processor.getSequencerGridMode()) processor.setSequencerGridMode(false);
+		else processor.setSequencerRetroMode(true);
 		if (onSequencerModeChanged) onSequencerModeChanged();
 		layout();
 		repaint();
@@ -3093,8 +3100,8 @@ void D110EditorPane::buttonPressed(int id) {
 	}
 #endif
 	if (id == 16) {
-		// Асинхронный диалог, поэтому объект должен пережить вызов - тот же приём, что и у
-		// остальных FileChooser в этом файле.
+		// Asynchronous dialog, so the object must outlive the call - the same trick as the other
+		// FileChoosers in this file.
 		const auto startDir = D110AudioProcessor::getCustomRomFolder().isNotEmpty()
 		                           ? juce::File(D110AudioProcessor::getCustomRomFolder())
 		                           : D110AudioProcessor::getAutoRomFolder();
@@ -3140,8 +3147,8 @@ void D110EditorPane::buttonPressed(int id) {
 		return;
 	}
 	if (id == 2) {
-		// Диалог асинхронный, поэтому объект обязан пережить вызов; он и живёт в поле панели
-		// прибора, у которой уже есть такой же выбор в меню правой кнопки.
+		// The dialog is asynchronous, so the object must outlive the call; it lives in a field of
+		// the unit's panel, which already has the same chooser in its right-click menu.
 		auto onPicked = [this](const juce::File &file) {
 			if (file == juce::File()) return;
 			processor.setLastDialogDir(file.getParentDirectory());
@@ -3254,9 +3261,8 @@ void D110EditorPane::buttonPressed(int id) {
 	if (id == 23) { randomizeTone(false); return; }   // DEGRADE
 	if (id == 24) { randomizeTone(true); return; }    // RANDOM
 	if (id >= 100 && id < 200) {
-		// Щелчок по ячейке не просто выделяет её, а СТАВИТ тон в выбранную партию - иначе
-		// перебирать шестьдесят четыре тона на слух пришлось бы через кнопку, по два
-		// движения на каждый.
+		// Clicking a slot does not just select it, it PUTS the tone into the selected part -
+		// otherwise auditioning sixty-four tones would go through a button, two moves each.
 		toneSlot = id - 100;
 		processor.auditionTone(part, toneSlot);
 		layout();
@@ -3264,9 +3270,9 @@ void D110EditorPane::buttonPressed(int id) {
 		return;
 	}
 	if (id >= 200 && id < 300) {
-		// Щелчок по номеру патча запоминает его как показанный на под-вкладке PARTS OF
-		// PATCH и просит прибор на него перейти - но не переключает саму под-вкладку,
-		// чтобы не сбивать пользователя, листающего ALL PATCHES.
+		// Clicking a patch number remembers it as the one shown on the PARTS OF PATCH sub-tab and
+		// asks the unit to go to it - but does not switch the sub-tab itself, so as not to throw
+		// off a user browsing ALL PATCHES.
 		patchSlot = id - 200;
 		processor.selectPatch(id - 200);
 		layout();
@@ -3274,7 +3280,7 @@ void D110EditorPane::buttonPressed(int id) {
 		return;
 	}
 	if (id >= 400 && id < 500) {
-		// Имя патча набирается на своём месте.
+		// The patch name is typed in place.
 		for (const Button &b : buttons) {
 			if (b.id != id) continue;
 			patchSlot = id - 400;
@@ -3295,7 +3301,7 @@ void D110EditorPane::buttonPressed(int id) {
 	}
 }
 
-// --- мышь -------------------------------------------------------------------
+// --- mouse ------------------------------------------------------------------
 
 int D110EditorPane::cellAt(juce::Point<float> p) const {
 	for (size_t i = 0; i < cells.size(); ++i)
@@ -3303,13 +3309,13 @@ int D110EditorPane::cellAt(juce::Point<float> p) const {
 	return -1;
 }
 
-// Список всех тонов сразу, по правому клику - см. вызов в mouseDown(). Группа и номер идут
-// парой в одном же нажатии пункта меню: разводить их на два отдельных шага (сначала группа,
-// потом номер) значило бы на мгновение отправить прибору несуществующую пару, как это уже
-// было измерено и задокументировано для переноса группы/номера патча. Общий код для живой
-// области партии (Parts, groupField=0, пишет через sendTimbreTempParam) и записи патча
-// (PARTS OF PATCH внутри Patches, groupField=31+12*p, пишет через editPatchField) - у обеих
-// та же пара байт группа+номер, разнится только куда её слать и с каким смещением записи.
+// The list of all tones at once, on right-click - see the call in mouseDown(). Group and
+// number go as a pair in the same menu item press: splitting them into two separate steps
+// (group first, then number) would momentarily send the unit a non-existent pair, as already
+// measured and documented for carrying a patch's group/number. Shared code for the live part
+// area (Parts, groupField=0, writes through sendTimbreTempParam) and the patch record (PARTS
+// OF PATCH inside Patches, groupField=31+12*p, writes through editPatchField) - both have the
+// same group+number byte pair, only where to send it and the record offset differ.
 void D110EditorPane::showToneListMenu(Area area, int index, int groupField) {
 	juce::PopupMenu menu;
 	for (int group = 0; group < 4; ++group) {
@@ -3322,7 +3328,7 @@ void D110EditorPane::showToneListMenu(Area area, int index, int groupField) {
 	}
 	menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
 		[this, area, index, groupField](int result) {
-			if (result <= 0) return; // отменено
+			if (result <= 0) return; // cancelled
 			const int id = result - 1;
 			const int group = id / 64, number = id % 64;
 			// Through setValue(), not a direct processor.send*Param() call, so this updates the
@@ -3336,9 +3342,9 @@ void D110EditorPane::showToneListMenu(Area area, int index, int groupField) {
 		});
 }
 
-// Правый клик по DRUM SOUND на вкладке Rhythm - тот же приём, но поле не пара группа+номер,
-// а один байт 0..127: 0..63 - тембры внутренней памяти (TIMBRE), 64..127 - звуки ударных
-// (RHY), см. textOf() Area::Rhythm case 0.
+// Right-click on DRUM SOUND on the Rhythm tab - the same trick, but the field is not a
+// group+number pair but a single byte 0..127: 0..63 - internal memory timbres (TIMBRE),
+// 64..127 - rhythm sounds (RHY), see textOf() Area::Rhythm case 0.
 void D110EditorPane::showRhythmSoundMenu(int slot) {
 	juce::PopupMenu menu;
 	juce::PopupMenu timbreSub;
@@ -3353,15 +3359,15 @@ void D110EditorPane::showRhythmSoundMenu(int slot) {
 
 	menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
 		[this, slot](int result) {
-			if (result <= 0) return; // отменено
+			if (result <= 0) return; // cancelled
 			processor.sendRhythmParam(slot, 0, uint8_t(result - 1));
 			repaint();
 		});
 }
 
-// Правый клик по PCM - список всех 128 образцов ПЗУ выбранного банка по имени. Банк решает
-// соседнее поле WAVEFORM (тот же байт, что читает textOf()'s Area::ToneTemp case 5), поэтому
-// список читает его тем же способом, а не спрашивает заново.
+// Right-click on PCM - the list of all 128 ROM samples of the selected bank by name. The
+// bank is decided by the neighbouring WAVEFORM field (the same byte textOf()'s
+// Area::ToneTemp case 5 reads), so the list reads it the same way rather than asking again.
 void D110EditorPane::showPcmWaveMenu(const Cell &pcmCell) {
 	const size_t waveAt = addressOf(pcmCell) - 1;
 	const bool bank2 = (waveAt < ram.size()) && ((ram[waveAt] & 2) != 0);
@@ -3425,7 +3431,7 @@ void D110EditorPane::showPcmWaveMenu(const Cell &pcmCell) {
 
 	menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(),
 		[this, pcmCell, currentWave, libraryFiles](int result) {
-			if (result <= 0) return; // отменено
+			if (result <= 0) return; // cancelled
 			if (result <= 128) {
 				setValue(pcmCell, result - 1);
 			} else if (result == kLoadFromFileId) {
@@ -3502,11 +3508,12 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 		}
 	}
 
-	// Правый клик по группе/номеру тона открывает список всех тонов сразу, вместо того чтобы
-	// перебирать их колесом по одному. Только TONE GROUP/TONE - у остальных полей нет
-	// естественного «имени» на каждое значение, список был бы бессмыслен. Работает и на живой
-	// области партии (Parts), и на записи патча (PARTS OF PATCH внутри Patches), и на DRUM
-	// SOUND ритм-секции (Rhythm) - три разных поля со своим адресом, но один и тот же приём.
+	// Right-click on a tone's group/number opens the list of all tones at once, instead of
+	// stepping through them with the wheel one at a time. Only TONE GROUP/TONE - the other
+	// fields have no natural "name" per value, a list would be meaningless. Works on the live
+	// part area (Parts), on the patch record (PARTS OF PATCH inside Patches) and on the rhythm
+	// section's DRUM SOUND (Rhythm) - three different fields with their own addresses, but one
+	// and the same trick.
 	if (e.mods.isPopupMenu()) {
 		if (tab == Tab::Utility && romFolderBounds.contains(p)) {
 			D110AudioProcessor::setCustomRomFolder({});
@@ -3575,8 +3582,8 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 				return;
 			}
 			if (tab == Tab::Patches && c.area == Area::Patches) {
-				// Запись партии внутри патча начинается на 31-м байте, по 12 байт на партию
-				// (см. layoutPatches()); группа стоит первым байтом записи, номер - вторым.
+				// A part record inside a patch starts at byte 31, 12 bytes per part (see layoutPatches());
+				// the group is the record's first byte, the number the second.
 				const int off = c.field - 31;
 				if (off >= 0 && off < 8 * 12 && (off % 12 == 0 || off % 12 == 1)) {
 					showToneListMenu(c.area, c.index, c.field - (off % 12));
@@ -3611,8 +3618,8 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 			repaint();
 			return;
 		}
-		// Щелчок по имени тона открывает его для набора прямо на месте. Имя настоящее -
-		// прибор показывает его на своём индикаторе.
+		// Clicking a tone name opens it for typing right in place. The name is real - the unit
+		// shows it on its display.
 		if (toneNameBounds.contains(p)) {
 			textEntryTarget = 1;
 			textEntry.setText(nameAt(size_t(D110CoreType::kRamToneTemp)
@@ -3623,11 +3630,11 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 			return;
 		}
 	}
-	// На вкладке патчей попадание в строку - это и есть выбор патча: прибор переходит на
-	// него, готовый к показу на под-вкладке PARTS OF PATCH при переходе туда вручную.
-	// Ловится по всей строке, а не по одному номеру, потому что перебирать патчи на слух
-	// надо мышью, а не прицеливаясь в кнопку. Сама под-вкладка ALL PATCHES не переключается -
-	// иначе пролистывание патчей мышью выбрасывало бы из списка на каждом клике.
+	// On the patches tab, hitting a row IS selecting the patch: the unit goes to it, ready to be
+	// shown on the PARTS OF PATCH sub-tab when you switch there by hand. Caught across the whole
+	// row, not just the number, because auditioning patches should be done with the mouse, not
+	// by aiming at a button. The ALL PATCHES sub-tab itself does not switch - otherwise browsing
+	// patches with the mouse would throw you out of the list on every click.
 	if (tab == Tab::Patches && patchesSubTab == PatchesSubTab::AllPatches
 	    && tableArea.contains(p) && rowHeight > 0.0f) {
 		const int row = int((p.y - tableArea.getY()) / rowHeight);
@@ -3637,8 +3644,8 @@ void D110EditorPane::mouseDown(const juce::MouseEvent &e) {
 			processor.selectPatch(patch);
 			layout();
 			repaint();
-			// Значение под курсором всё равно остаётся правимым: выбор патча и правка его
-			// поля - разные вещи, и обе делаются одним и тем же щелчком по одной строке.
+			// The value under the cursor stays editable all the same: selecting a patch and editing its
+			// field are different things, and both are done with the same click on the same row.
 		}
 	}
 
@@ -3689,8 +3696,8 @@ void D110EditorPane::mouseDrag(const juce::MouseEvent &e) {
 		return;
 	}
 	if (dragging < 0 || dragStartValue < 0) return;
-	// Четыре точки на шаг: достаточно мелко для громкости 0..100 и достаточно крупно, чтобы
-	// поле из двух положений не прыгало от дрожания руки.
+	// Four points per step: fine enough for a 0..100 volume and coarse enough that a two-position
+	// field does not jump from a trembling hand.
 	const int steps = int((dragStartY - e.position.y) / 4.0f);
 	setValue(cells[(size_t)dragging], dragStartValue + steps);
 }
@@ -3725,8 +3732,8 @@ void D110EditorPane::mouseWheelMove(const juce::MouseEvent &e, const juce::Mouse
 		setValue(cells[(size_t)i], v + (w.deltaY > 0 ? 1 : -1));
 		return;
 	}
-	// Колесо мимо полей листает длинные списки: клавиш ударных восемьдесят пять, тембров сто
-	// двадцать восемь, патчей шестьдесят четыре, а на экран помещается меньше.
+	// The wheel off the fields scrolls the long lists: eighty-five rhythm keys, a hundred and
+	// twenty-eight timbres, sixty-four patches, and fewer fit on screen.
 	if (tab == Tab::Rhythm) rhythmScroll += (w.deltaY > 0 ? -3 : 3);
 	else if (tab == Tab::Timbres) timbreScroll += (w.deltaY > 0 ? -3 : 3);
 	else if (tab == Tab::Patches && patchesSubTab == PatchesSubTab::AllPatches) patchScroll += (w.deltaY > 0 ? -3 : 3);
@@ -3783,22 +3790,22 @@ bool D110EditorPane::keyPressed(const juce::KeyPress &key) {
 }
 
 // ---------------------------------------------------------------------------
-// Карта памяти
+// Memory card
 
 D110MemoryCard::D110MemoryCard(D110AudioProcessor &p) : processor(p) {
 	cardImage = juce::ImageCache::getFromMemory(BinaryData::memory_card_m256d_png,
 	                                            BinaryData::memory_card_m256d_pngSize);
-	// Окно можно закрыть и открыть заново, а карта всё это время остаётся там, где её
-	// оставили: положение берётся у прибора, а не с нуля.
+	// The window can be closed and reopened while the card stays wherever it was left: the
+	// position is taken from the unit, not from scratch.
 	travel = target = processor.getCore().cardInserted() ? 0.0f : 1.0f;
 	setInterceptsMouseClicks(false, false);
 	startTimerHz(60);
 }
 
-// Левый верхний угол карты в опорных точках панели. Путь от гнезда до места на ящике -
-// прямая, и положение на нём это смесь двух концов: так закон движения остаётся тем же,
-// каким его сняли раскадровкой (plugin/panel_render.cpp), и при этом карта может лежать
-// где угодно, куда её утащили мышью.
+// The card's top-left corner in panel reference points. The path from the socket to its
+// place on the drawer is a straight line, and the position along it is a blend of the two
+// ends: the motion law stays the one captured from the storyboard (plugin/panel_render.cpp),
+// while the card can still lie wherever the mouse dragged it.
 juce::Point<float> D110MemoryCard::position() const {
 	return { kCardX + (rest.x - kCardX) * travel,
 	         kCardSeatedY + (rest.y - kCardSeatedY) * travel };
@@ -3810,9 +3817,9 @@ void D110MemoryCard::setGeometry(float panelScale, float totalRefHeight) {
 	updateBounds();
 }
 
-// Компонент занимает ровно то, что от карты ВИДНО. Верх обрезан по кромке щели: карта, стоящая
-// в гнезде, торчит из него на восемнадцать точек, и всё, что выше, - это уже прибор, поверх
-// которого карте лезть незачем.
+// The component covers exactly what is VISIBLE of the card. The top is cut at the edge of
+// the slot: a seated card sticks out of it by eighteen points, and everything above that is
+// the unit, over which the card has no business climbing.
 void D110MemoryCard::updateBounds() {
 	const auto p = position();
 	const float visibleTop = juce::jmax(p.y, kCardClipTop);
@@ -3824,9 +3831,9 @@ void D110MemoryCard::updateBounds() {
 	setVisible(true);
 	setBounds(juce::Rectangle<float>(p.x * scale, visibleTop * scale,
 	                                 kCardWidth * scale, visibleH * scale).toNearestInt());
-	// Мышь карта перехватывает только когда она вправду лежит на ящике. Пока она в гнезде
-	// или ещё едет, щелчок обязан достаться щели на панели - иначе карту нельзя было бы
-	// вставить обратно тем же движением, каким её вынули.
+	// The card intercepts the mouse only when it is really lying on the drawer. While it is in
+	// the socket or still travelling, a click must go to the slot on the panel - otherwise the
+	// card could not be put back with the same gesture that took it out.
 	setInterceptsMouseClicks(travel > 0.999f, false);
 }
 
@@ -3835,29 +3842,29 @@ void D110MemoryCard::paint(juce::Graphics &g) {
 
 	const auto p = position();
 	const float visibleTop = juce::jmax(p.y, kCardClipTop);
-	// Картинка рисуется целиком, но со сдвигом вверх на срезанную часть: обрезает её граница
-	// самого компонента.
+	// The picture is drawn whole, but shifted up by the clipped part: the component's own
+	// bounds crop it.
 	g.setImageResamplingQuality(juce::Graphics::highResamplingQuality);
 	g.drawImage(cardImage,
 	            juce::Rectangle<float>(0.0f, (p.y - visibleTop) * scale,
 	                                   kCardWidth * scale, kCardHeight * scale),
 	            juce::RectanglePlacement::stretchToFit);
 
-	// То, что видно НАД полом проёма, - это не наклейка, а ТОРЕЦ карты: чёрная пластиковая
-	// стенка её корпуса. Картинка же - вид на карту плашмя, и её верхние строки кремовые,
-	// поэтому вставленная карта отсвечивала в щели белым, чего у настоящей быть не может.
-	// Полоса в проёме закрашивается цветом корпуса, а не затемняется наполовину.
+	// What is visible ABOVE the floor of the opening is not the label but the EDGE of the card:
+	// the black plastic wall of its shell. The picture, though, is a flat view of the card, and
+	// its top rows are cream, so a seated card glinted white in the slot, which a real one never
+	// could. The strip in the opening is painted the shell colour, not half-darkened.
 	if (visibleTop >= kSlotBottom) return;
 	const float edgeH = (kSlotBottom - visibleTop) * scale;
 	g.setColour(juce::Colour(0xff121214));
 	g.fillRect(juce::Rectangle<float>(0.0f, 0.0f, float(getWidth()), edgeH));
-	// Тонкая светлая грань по самому верху - ребро корпуса ловит свет, и без неё торец
-	// сливается с чернотой щели в сплошное пятно.
+	// A thin light edge along the very top - the shell's rim catches the light, and without it
+	// the end blends into the blackness of the slot as one solid blot.
 	g.setColour(juce::Colour(0x40ffffff));
 	g.fillRect(juce::Rectangle<float>(0.0f, 0.0f, float(getWidth()),
 	                                  juce::jmax(1.0f, scale)));
-	// И тень, которую проём бросает на карту сразу под собой: без неё карта выходит из щели
-	// по резкой линии, будто нарисована поверх панели.
+	// And the shadow the opening casts on the card right below it: without it the card leaves
+	// the slot along a sharp line, as if painted over the panel.
 	const float shadeH = 14.0f * scale;
 	g.setGradientFill(juce::ColourGradient(
 		juce::Colours::black.withAlpha(kSlotShadeAlpha), 0.0f, edgeH,
@@ -3868,13 +3875,13 @@ void D110MemoryCard::paint(juce::Graphics &g) {
 void D110MemoryCard::toggle() {
 	if (target > 0.5f) { insert(); return; }
 
-	// Извлечение. Контакты размыкаются, как только карта тронулась из гнезда, а замыкаются
-	// лишь когда она села до конца (см. timerCallback). Прошивка узнаёт карту, ПИША в неё,
-	// так что «наполовину вставленная» карта для неё не отличается от вставленной, и делать
-	// вид, будто отличается, было бы враньём о железе.
+	// Ejection. The contacts break as soon as the card starts moving out of the socket, and
+	// close only when it is fully seated (see timerCallback). The firmware recognises a card by
+	// WRITING to it, so a "half-inserted" card is no different to it from an inserted one, and
+	// pretending otherwise would be lying about the hardware.
 	target = 1.0f;
 	processor.getCore().setCardInserted(false);
-	// Ящик открывается сам: карте надо куда-то лечь, а на закрытом ящике места нет.
+	// The drawer opens by itself: the card needs somewhere to lie, and on a closed drawer there is no room.
 	if (onEjectNeedsDrawer) onEjectNeedsDrawer();
 }
 
@@ -3886,22 +3893,22 @@ void D110MemoryCard::insert() {
 void D110MemoryCard::mouseDown(const juce::MouseEvent &e) {
 	if (travel < 0.999f) return;
 	dragging = true;
-	// Запоминается место хвата, а не центр: карта не должна прыгать под курсор.
+	// The grab point is remembered, not the centre: the card must not jump under the cursor.
 	dragGrab = { float(e.x) / scale, float(e.y) / scale };
 	setMouseCursor(juce::MouseCursor::DraggingHandCursor);
 }
 
 void D110MemoryCard::mouseDrag(const juce::MouseEvent &e) {
 	if (!dragging) return;
-	// Точка мыши в опорных точках окна: событие приходит в координатах компонента, а он сам
-	// ездит, поэтому к ним прибавляется его собственное положение.
+	// The mouse point in window reference points: the event arrives in component coordinates,
+	// and the component itself moves, so its own position is added to them.
 	const float x = (float(getX()) + float(e.x)) / scale - dragGrab.x;
 	const float y = (float(getY()) + float(e.y)) / scale - dragGrab.y;
-	// Карта не залезает на прибор и не уходит за край окна: она остаётся целиком видимой в
-	// пределах ящика, ради которого всё это и делалось.
-	// Восемь точек запаса снизу: без них карту можно было положить ровно по нижнему краю
-	// окна, и последняя строчка её надписи оказывалась срезана - выглядело это не как
-	// «положили к краю», а как «карта не поместилась».
+	// The card neither climbs onto the unit nor leaves the window: it stays fully visible within
+	// the drawer, which is what all of this was for.
+	// Eight points of margin at the bottom: without them the card could be laid flush with the
+	// window's bottom edge, and the last line of its label ended up cut off - it looked not like
+	// "laid at the edge" but like "the card did not fit".
 	constexpr float kMargin = 8.0f;
 	const float top = float(D110Panel::kRefH) + D110AudioProcessorEditor::kHandleRefH;
 	rest = { juce::jlimit(0.0f, float(D110Panel::kRefW) - kCardWidth, x),
@@ -3916,26 +3923,26 @@ void D110MemoryCard::mouseUp(const juce::MouseEvent &) {
 }
 
 void D110MemoryCard::timerCallback() {
-	// Картинка следует за прибором, а не наоборот. Окно можно открыть уже после того, как
-	// проект восстановил вынутую карту, и тогда рисовать её в гнезде было бы враньём. Сверка
-	// делается только на покое, чтобы не спорить с идущим ходом.
+	// The picture follows the unit, not the other way round. The window may be opened after the
+	// project has already restored an ejected card, and drawing it seated then would be a lie.
+	// The check is only done at rest, so as not to argue with a move in progress.
 	if (travel == target) {
 		const float shouldBe = processor.getCore().cardInserted() ? 0.0f : 1.0f;
 		if (target != shouldBe) target = shouldBe;
 	}
 	if (travel == target) return;
 
-	// Ход занимает около девяти десятых секунды при 60 кадрах в секунду. Скорость зависит от
-	// того, насколько карта далека от ОБОИХ упоров, поэтому она трогается мягко, разгоняется
-	// к середине и мягко подходит к упору. Прежний закон считал только оставшееся расстояние:
-	// карта срывалась с места на полной скорости и первую треть пути была неразличима, а
-	// замедлялась там, где смотреть уже не на что.
+	// The travel takes about nine tenths of a second at 60 frames per second. The speed depends
+	// on how far the card is from BOTH stops, so it starts gently, speeds up towards the middle
+	// and eases into the stop. The previous law counted only the remaining distance: the card
+	// tore off at full speed and was a blur for the first third of the path, then slowed where
+	// there was nothing left to watch.
 	const float dir = target > travel ? 1.0f : -1.0f;
-	const float fromEnd = juce::jmin(travel, 1.0f - travel);   // ноль у любого упора
+	const float fromEnd = juce::jmin(travel, 1.0f - travel);   // zero at either stop
 	travel += dir * kCardStep * (0.30f + 1.40f * fromEnd);
 	if (dir * (travel - target) > 0.0f) {
 		travel = target;
-		// Карта села в разъём - только теперь она есть для прошивки.
+		// The card has seated in the connector - only now does it exist for the firmware.
 		if (travel == 0.0f) processor.getCore().setCardInserted(true);
 	}
 	updateBounds();
@@ -3949,7 +3956,7 @@ void D110MemoryCard::timerCallback() {
 
 D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 	: juce::AudioProcessorEditor(&p), processor(p), panel(p), editorPane(p), card(p), keyboard(p),
-	  sequencerPanel(p), sequencerRetroPanel(p)
+	  sequencerPanel(p), sequencerRetroPanel(p), sequencerGridPanel(p)
 {
 	// Synced here, not just read lazily by whichever drawer paints first: a project loaded
 	// with the light theme should look right the moment this editor appears, including on
@@ -3976,13 +3983,15 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 #if JucePlugin_Build_Standalone
 	addAndMakeVisible(sequencerPanel);
 	addChildComponent(sequencerRetroPanel); // shown instead of sequencerPanel in retro mode - see resized()
+	addChildComponent(sequencerGridPanel);  // ... or this one in grid mode
 #endif
-	// Карта добавляется последней и потому лежит поверх обоих - и прибора, и ящика.
+	// The card is added last and so lies on top of both - the unit and the drawer.
 	addAndMakeVisible(card);
 
 #if JucePlugin_Build_Standalone
-	sequencerPanel.setVisible(!processor.getSequencerRetroMode());
+	sequencerPanel.setVisible(!processor.getSequencerRetroMode() && !processor.getSequencerGridMode());
 	sequencerRetroPanel.setVisible(processor.getSequencerRetroMode());
+	sequencerGridPanel.setVisible(processor.getSequencerGridMode());
 #endif
 	// Nothing to show in compact mode - the slot itself is spliced out of the panel photo.
 	card.setVisible(!processor.getCompactPanelMode());
@@ -3990,10 +3999,12 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 	panel.onCardSlotClicked = [this] { card.toggle(); };
 #if JucePlugin_Build_Standalone
 	auto refreshSequencerMode = [this] {
-		sequencerPanel.setVisible(!processor.getSequencerRetroMode());
+		sequencerPanel.setVisible(!processor.getSequencerRetroMode() && !processor.getSequencerGridMode());
 		sequencerRetroPanel.setVisible(processor.getSequencerRetroMode());
+		sequencerGridPanel.setVisible(processor.getSequencerGridMode());
 		sequencerPanel.repaint();
 		sequencerRetroPanel.repaint();
+		sequencerGridPanel.repaint();
 	};
 	panel.onSequencerModeChanged = refreshSequencerMode;
 	editorPane.onSequencerModeChanged = refreshSequencerMode;
@@ -4024,8 +4035,8 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 		repaint();
 	};
 
-	// Ящик закрыт при открытии окна: плагин - это прибор, а редактор к нему добавлен, и до
-	// тех пор, пока его не попросили, он не занимает места.
+	// The drawer is closed when the window opens: the plugin is the unit, the editor is an
+	// addition to it, and until asked for it takes no space.
 	constrainer.setFixedAspectRatio(double(D110Panel::currentRefW(processor.getCompactPanelMode())) / double(totalRefHeight()));
 	constrainer.setSizeLimits(900, 100, D110Panel::currentRefW(processor.getCompactPanelMode()) * 2, 4000);
 	setConstrainer(&constrainer);
@@ -4049,6 +4060,7 @@ D110AudioProcessorEditor::D110AudioProcessorEditor(D110AudioProcessor &p)
 		keyboard.repaint();
 		sequencerPanel.repaint();
 		sequencerRetroPanel.repaint();
+		sequencerGridPanel.repaint();
 		repaint();
 	};
 
@@ -4144,8 +4156,8 @@ void D110AudioProcessorEditor::applySize() {
 	setSize(getWidth(), int(totalRefHeight() * s + 0.5f));
 }
 
-// Полоса-ручка: во всю ширину, сразу под фотографией. Полная ширина затем, чтобы она
-// читалась ящиком, который выдвигают, а не кнопкой.
+// The handle strip: full width, right under the photograph. Full width so that it reads as
+// a drawer being pulled out, not as a button.
 juce::Rectangle<float> D110AudioProcessorEditor::handleBand() const {
 	const float s = float(getWidth()) / float(D110Panel::currentRefW(processor.getCompactPanelMode()));
 	return { 0.0f, float(D110Panel::kRefH) * s, float(getWidth()), kHandleRefH * s };
@@ -4281,9 +4293,10 @@ void D110AudioProcessorEditor::mouseDown(const juce::MouseEvent &e)
 	if (handleBand().contains(e.position)) {
 		expansionTarget = (expansionTarget > 0.5f) ? 0.0f : 1.0f;
 		expansion = expansionTarget;
-		// Ящик закрывают - карте негде лежать, и она возвращается в гнездо. Оставить её висеть
-		// за нижним краем окна значило бы потерять её из виду, не сказав об этом; а «не даём
-		// закрыть ящик, пока карта снаружи» - это запрет там, где хватает движения.
+		// The drawer is being closed - the card has nowhere to lie and returns to its socket.
+		// Leaving it hanging past the window's bottom edge would lose it from view without saying
+		// so; and "refuse to close the drawer while the card is out" is a prohibition where a
+		// movement is enough.
 		if (expansionTarget < 0.5f && card.isOut()) card.insert();
 		applySize();
 		return;
@@ -4477,15 +4490,15 @@ void D110AudioProcessorEditor::resized()
 	panel.setTransform(juce::AffineTransform::scale(s));
 	panel.setDisplayScale(s);
 
-	// Ящик занимает всё, что ниже прибора и полосы-ручки его ручки, и ровно до начала
-	// собственной полосы-ручки клавиатуры. Он рисуется целиком и обрезается собственными
-	// границами - это и создаёт впечатление, что он выезжает из-под прибора.
+	// The drawer takes everything below the unit and its handle strip, right down to the start
+	// of the keyboard's own handle strip. It is painted whole and cropped by its own bounds -
+	// that is what creates the impression of it sliding out from under the unit.
 	const int paneTop = int((float(D110Panel::kRefH) + kHandleRefH) * s + 0.5f);
 	const int paneH = int(expansion * editorPaneRefH * s + 0.5f);
 	editorPane.setBounds(0, paneTop, getWidth(), juce::jmax(0, paneH));
 
-	// Клавиатура - тот же приём, второй раз подряд: своя полоса-ручка сразу под ящиком
-	// (открытым или нет), сама - под ней, обрезанная собственными границами.
+	// The keyboard is the same trick a second time: its own handle strip right under the drawer
+	// (open or not), itself below that, cropped by its own bounds.
 	const int kbTop = paneTop + paneH + int(kKeyboardHandleRefH * s + 0.5f);
 	const int kbH = int(keyboardExpansion * keyboardPaneRefH * s + 0.5f);
 	keyboard.setBounds(0, kbTop, getWidth(), juce::jmax(0, kbH));
@@ -4493,14 +4506,15 @@ void D110AudioProcessorEditor::resized()
 	// Third time: sequencer's own handle band right below the keyboard, drawer under that.
 	const int seqTop = kbTop + kbH + int(kSequencerHandleRefH * s + 0.5f);
 	const int seqH = int(sequencerExpansion * sequencerPaneRefH * s + 0.5f);
-	// Same bounds either way (D110SequencerRetroPanel::kRefH matches) - only the one
-	// processor.getSequencerRetroMode() picked is actually visible, see the constructor
+	// Same bounds for all three views (D110SequencerRetroPanel::kRefH matches) - only the one
+	// processor.getSequencerRetroMode()/getSequencerGridMode() picked is actually visible, see the constructor
 	// and panel.onSequencerModeChanged.
 	sequencerPanel.setBounds(0, seqTop, getWidth(), juce::jmax(0, seqH));
 	sequencerRetroPanel.setBounds(0, seqTop, getWidth(), juce::jmax(0, seqH));
+	sequencerGridPanel.setBounds(0, seqTop, getWidth(), juce::jmax(0, seqH));
 
-	// Карта живёт в тех же опорных точках, что и панель, поэтому ей нужен только масштаб и
-	// то, докуда сейчас доходит окно: по ним она сама поставит себе границы. Nothing to
+	// The card lives in the same reference points as the panel, so it only needs the scale and
+	// how far the window currently reaches: from those it sets its own bounds. Nothing to
 	// position in compact mode - the slot itself is spliced out of the photo, and the card
 	// stays hidden (see the constructor and onCompactPanelModeChanged).
 	if (!processor.getCompactPanelMode()) card.setGeometry(s, totalRefHeight());

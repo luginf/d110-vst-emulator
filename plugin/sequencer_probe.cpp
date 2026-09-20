@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <vector>
 
 using d110seq::D110SequencerEngine;
@@ -1910,6 +1911,100 @@ void testExtraTracks() {
 
 } // namespace
 
+// ---- Grid editor primitives (addNote/updateNoteEvent) and their playback-safety ----
+// D110SequencerGridPanel's piano-roll edits: add, move/resize/revelocity, delete - checked
+// through the same eventsInBarRange() the panel reads with, and through real renderInto()
+// output, including the case that matters most for editing while the transport runs: a note
+// deleted/shortened/moved while it is sounding must still get its note-off.
+void testGridEditing() {
+	std::printf("-- grid editing (addNote/updateNoteEvent) --\n");
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+
+		// Two back-to-back same-pitch 16ths on a 0.25-beat grid: the first one's off and the
+		// second one's on share a timestamp, and the off must come first or the retrigger
+		// would be cut immediately.
+		const double g = 0.25;
+		const int a = engine.addNote(0, 0 * g, 1 * g, 60, 100);
+		const int b = engine.addNote(0, 1 * g, 2 * g, 60, 90);
+		check(a >= 0 && b >= 0, "addNote returns a valid index");
+		auto ev = engine.eventsInBarRange(0, 1, 1);
+		check(ev.size() == 2, "two notes read back through eventsInBarRange");
+		check(ev.size() == 2 && ev[0].beatInBar == 0.0 && ev[0].durationBeats == g && ev[1].beatInBar == g
+		          && ev[1].durationBeats == g,
+		      "positions and durations round-trip exactly");
+		engine.gotoBar(1);
+		engine.play();
+		const auto out = renderBlock(engine, 48000, 48000.0); // 1s = 2 beats at 120 bpm
+		// Expected stream: on, off, on, off - never on, on, off, off.
+		std::vector<bool> stream;
+		for (const auto &e : out)
+			if (e.message.isNoteOn() || e.message.isNoteOff()) stream.push_back(e.message.isNoteOn());
+		check(stream == std::vector<bool>({true, false, true, false}),
+		      "back-to-back same-pitch notes: off sorts before the next on");
+
+		check(engine.addNote(0, 1.0, 1.0, 60, 100) == -1, "addNote rejects a zero-length note");
+		check(engine.addNote(0, -1.0, 1.0, 60, 100) == -1, "addNote rejects a negative start");
+	}
+	{
+		D110SequencerEngine engine;
+		engine.setChannelSource(defaultChannelForTrack);
+		const int idx = engine.addNote(2, 1.0, 1.5, 64, 80);
+		const int moved = engine.updateNoteEvent(2, idx, 2.0, 3.0, 67, 111);
+		const auto ev = engine.eventsInBarRange(2, 1, 1);
+		check(moved >= 0 && ev.size() == 1, "updateNoteEvent keeps exactly one note");
+		check(ev.size() == 1 && ev[0].beatInBar == 2.0 && ev[0].durationBeats == 1.0 && ev[0].note == 67
+		          && ev[0].velocity == 111,
+		      "updateNoteEvent: start, length, pitch and velocity all applied at once");
+		check(engine.updateNoteEvent(2, moved, 5.0, 4.0, 60, 100) == -1
+		          && engine.eventsInBarRange(2, 1, 1).size() == 1,
+		      "updateNoteEvent with end <= start is refused and leaves the note alone");
+		// Moving past the bar boundary lands in the next bar, matched pair intact.
+		const int next = engine.updateNoteEvent(2, moved, 4.5, 5.0, 67, 111);
+		check(next >= 0 && engine.eventsInBarRange(2, 1, 1).empty() && engine.eventsInBarRange(2, 2, 2).size() == 1,
+		      "moving a note across the bar line lands it in the next bar");
+		// Channel comes from the track's own mapping, not from anything the caller passes.
+		const auto ch = engine.eventsInBarRange(2, 2, 2);
+		check(ch.size() == 1, "note is where the move put it");
+	}
+	{
+		// Stuck-note guard: edit a note WHILE it sounds.
+		auto countOffs = [](const std::vector<CapturedEvent> &out, int note) {
+			int n = 0;
+			for (const auto &e : out)
+				if (e.message.isNoteOff() && e.message.getNoteNumber() == note) ++n;
+			return n;
+		};
+		auto sounding = [&](std::function<void(D110SequencerEngine &, int)> edit, const char *what, bool expectOff) {
+			D110SequencerEngine engine;
+			engine.setChannelSource(defaultChannelForTrack);
+			const int idx = engine.addNote(0, 0.0, 4.0, 60, 100);
+			engine.gotoBar(1);
+			engine.play();
+			auto first = renderBlock(engine, 24000, 48000.0); // 0.5s = 1 beat: note now sounding
+			bool on = false;
+			for (const auto &e : first) on = on || (e.message.isNoteOn() && e.message.getNoteNumber() == 60);
+			edit(engine, idx);
+			auto second = renderBlock(engine, 24000, 48000.0);
+			auto third = renderBlock(engine, 96000, 48000.0);
+			const int offs = countOffs(second, 60) + countOffs(third, 60);
+			check(on && (offs >= 1) == expectOff, what);
+		};
+		sounding([](D110SequencerEngine &e, int i) { e.deleteNoteEvent(0, i); }, "delete while sounding: note-off still sent",
+		         true);
+		sounding([](D110SequencerEngine &e, int i) { e.updateNoteEvent(0, i, 0.0, 4.0, 62, 100); },
+		         "repitch while sounding: old pitch gets its note-off", true);
+		sounding([](D110SequencerEngine &e, int i) { e.updateNoteEvent(0, i, 2.0, 3.0, 60, 100); },
+		         "moved ahead of the playhead while sounding: note-off still sent", true);
+		sounding([](D110SequencerEngine &e, int i) { e.updateNoteEvent(0, i, 0.0, 0.5, 60, 100); },
+		         "shortened behind the playhead while sounding: note-off still sent", true);
+		// Control: an edit that keeps it sounding must not add a spurious extra off beyond its own.
+		sounding([](D110SequencerEngine &e, int i) { e.updateNoteEvent(0, i, 0.0, 3.0, 60, 90); },
+		         "resized but still ahead of the playhead: its own note-off fires normally", true);
+	}
+}
+
 int main() {
 	std::setvbuf(stdout, nullptr, _IONBF, 0);
 
@@ -1944,6 +2039,7 @@ int main() {
 	testUndo();
 	testEventList();
 	testExtraTracks();
+	testGridEditing();
 
 	if (failures == 0) {
 		std::printf("\nALL PASSED\n");

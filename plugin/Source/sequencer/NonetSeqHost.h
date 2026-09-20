@@ -114,6 +114,9 @@ public:
 	// queue a real MIDI In port's handleIncomingMidiMessage() feeds, so they thru to MIDI
 	// Out and get captured while recording by the same path a real controller would use.
 	void injectTestNote(int channel, int note, float velocity, bool on) override;
+	void auditionTrackNote(int track, int note, int velocity, bool on) override {
+		injectTestNote(engine.channelForTrack(track), note, static_cast<float>(velocity) / 127.0f, on);
+	}
 	int getKeyboardMidiChannel() const override { return keyboardMidiChannel; }
 	void setKeyboardMidiChannel(int channel) override { keyboardMidiChannel = juce::jlimit(1, 16, channel); }
 	bool getMidiRemap() const override { return midiRemap; }
@@ -138,7 +141,17 @@ public:
 	// Same D-20-style retro sequencer view toggle as the D-110 plugin's
 	// D110AudioProcessor::getSequencerRetroMode() - see D110SequencerRetroPanel.h.
 	bool getSequencerRetroMode() const { return sequencerRetroMode; }
-	void setSequencerRetroMode(bool retro) { sequencerRetroMode = retro; }
+	void setSequencerRetroMode(bool retro) {
+		sequencerRetroMode = retro;
+		if (retro) sequencerGridMode = false; // the three sequencer views are mutually exclusive
+	}
+	// The piano-roll/grid editor view (D110SequencerGridPanel) - the third view alongside
+	// normal and retro, exclusive with retro (see setSequencerRetroMode()).
+	bool getSequencerGridMode() const { return sequencerGridMode; }
+	void setSequencerGridMode(bool grid) {
+		sequencerGridMode = grid;
+		if (grid) sequencerRetroMode = false;
+	}
 
 	// See D110SequencerHost::getRetroKeyBindings()'s own comment - just storage, the panel
 	// owns the encode/decode. Persisted the same way uiThemeLight is.
@@ -268,6 +281,7 @@ private:
 
 	bool uiThemeLight = false;
 	bool sequencerRetroMode = false;
+	bool sequencerGridMode = false;
 	juce::String retroKeyBindings;
 	bool retroLcdCompactMode = false;
 

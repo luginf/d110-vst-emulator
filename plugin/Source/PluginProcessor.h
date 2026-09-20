@@ -312,6 +312,9 @@ public:
 	// by the identical route a real keyboard would - nothing here talks to the synth directly.
 	// Safe to call from the message thread; the collector is its own lock.
 	void injectTestNote(int channel, int note, float velocity, bool on) override;
+	void auditionTrackNote(int track, int note, int velocity, bool on) override {
+		injectTestNote(sequencerEngine.channelForTrack(track), note, static_cast<float>(velocity) / 127.0f, on);
+	}
 
 	// Same queue, same feed point, but for an arbitrary already-channelised MIDI message
 	// (program change, CC, pitch bend - not just notes) - what a MIDI file player needs that
@@ -371,7 +374,17 @@ public:
 	// LCD+9-button retro view - see D110SequencerRetroPanel.h. Toggled from D110Panel's
 	// Options menu, persisted the same way uiThemeLight is.
 	bool getSequencerRetroMode() const { return sequencerRetroMode; }
-	void setSequencerRetroMode(bool retro) { sequencerRetroMode = retro; }
+	void setSequencerRetroMode(bool retro) {
+		sequencerRetroMode = retro;
+		if (retro) sequencerGridMode = false; // the three sequencer views are mutually exclusive
+	}
+	// The piano-roll/grid editor view (D110SequencerGridPanel) - the third view alongside
+	// normal and retro, exclusive with retro (see setSequencerRetroMode()).
+	bool getSequencerGridMode() const { return sequencerGridMode; }
+	void setSequencerGridMode(bool grid) {
+		sequencerGridMode = grid;
+		if (grid) sequencerRetroMode = false;
+	}
 
 	// See D110SequencerHost::getRetroKeyBindings()'s own comment - just storage, the panel
 	// owns the encode/decode. Persisted the same way uiThemeLight is.
@@ -682,19 +695,19 @@ public:
 	// method's own .cpp comment for the full story (including an intermediate, reverted
 	// attempt at live-replaying these too, same day).
 	void applyLoadedTrackSetup(int track, std::vector<juce::MidiMessage> setup);
-	// Имена - те же десять знаков, что показывает индикатор: только печатные ASCII, добито
-	// пробелами. Прибор других не знает, и в эксклюзивном сообщении байт выше 0x7F невозможен.
+	// Names are the same ten characters the display shows: printable ASCII only, padded with
+	// spaces. The unit knows no others, and a byte above 0x7F is impossible in an exclusive message.
 	void sendName(juce::uint32 sysexAddress, int offset, const juce::String &name);
-	// Надпись на индикаторе прибора - штатная команда Roland по адресу 0x200000.
+	// A message on the unit's display - Roland's standard command at address 0x200000.
 	void sendDisplayMessage(const juce::String &text);
 	// The exact same byte-for-byte SysEx that sendDisplayMessage() sends, as a space-separated
 	// hex string ("41 10 16 12 ...") - for right-click on Send, to copy to the clipboard and
 	// paste into another program (e.g. MuSE). Doesn't need core.isRunning().
 	static juce::String displayMessageSysexHex(const juce::String &text);
 
-	// Смена тембра партии - обычная смена программы на её собственном MIDI-канале, как с
-	// внешней клавиатуры. Канал берётся из карты прошивки, а не считается по формуле:
-	// заводская раскладка «партия N на канале N+1» изменяема, и формула промахнулась бы.
+	// Changing a part's timbre is an ordinary Program Change on its own MIDI channel, as from an
+	// external keyboard. The channel is taken from the firmware's map, not computed by formula:
+	// the factory layout "part N on channel N+1" can be changed, and a formula would miss.
 	void selectTimbreForPart(int part, int timbre);
 	// Same live-channel lookup selectTimbreForPart() does internally (System Area, chanAssign -
 	// the factory "Part N -> channel N+1" formula is changeable, so this reads the map rather
@@ -704,34 +717,35 @@ public:
 	// juce::MidiMessage convention), or -1 if the part is off (no channel assigned) or the
 	// firmware isn't running.
 	int liveChannelForPart(int part) const;
-	// Переход на патч НАЖАТИЯМИ САМОЙ ПАНЕЛИ: Patch, затем Bank+ и Number+ столько раз,
-	// сколько нужно. Патч выбирает прошивка - она при этом раскладывает его по временным
-	// областям, пишет своё на индикатор и поднимает зеркало, - а не мы за неё.
+	// Switching to a patch by PRESSING THE PANEL'S OWN BUTTONS: Patch, then Bank+ and Number+ as
+	// many times as needed. The firmware selects the patch - unpacking it into the temporary
+	// areas, writing its own text on the display and raising the mirror - rather than us doing
+	// it on its behalf.
 	//
-	// Bank+ двигает номер на 8, Number+ на 1 (измерено editor_write_probe), поэтому до
-	// любого из 64 патчей не больше четырнадцати нажатий.
+	// Bank+ moves the number by 8, Number+ by 1 (measured by editor_write_probe), so any of the
+	// 64 patches is at most fourteen presses away.
 	void selectPatch(int patch);
 	bool isSelectingPatch() const { return patchSteps > 0; }
-	// Номер патча, который прибор играет сейчас (0..63), или -1, если память ещё не читалась.
+	// Number of the patch the unit is playing right now (0..63), or -1 if memory has not been read yet.
 	int currentPatchNumber() const;
 
-	// Правка поля ХРАНИМОГО патча, слышная сразу - если правится тот патч, который прибор
-	// сейчас и играет.
+	// Editing a field of a STORED patch, audible at once - if the patch being edited is the one
+	// the unit is currently playing.
 	//
-	// На приборе это две разные вещи: играет он из временных областей, а память патча -
-	// только слепок, который туда попадает при выборе патча. Поэтому правка одной лишь
-	// памяти беззвучна, и редактор, который делает вид, будто это не так, врёт дважды: он
-	// молчит там, где ждёшь звука, и меняет то, чего не слышно. Здесь пишутся ОБЕ копии,
-	// когда речь о текущем патче, и только память - когда о любом другом.
+	// On the unit these are two different things: it plays from the temporary areas, and patch
+	// memory is only a snapshot that lands there when a patch is selected. So editing memory
+	// alone is silent, and an editor pretending otherwise lies twice: it is mute where you expect
+	// sound, and it changes what cannot be heard. Here BOTH copies are written when the current
+	// patch is concerned, and only memory for any other.
 	void editPatchField(int patch, int field, juce::uint8 value);
 
-	// Прослушать тон из памяти: его 246 байт уходят во временную область партии, и партия
-	// начинает играть им немедленно. Это ровно то, что делает «Recall», просто без кнопки.
+	// Audition a tone from memory: its 246 bytes go into the part's temporary area, and the part
+	// starts playing it immediately. This is exactly what "Recall" does, just without the button.
 	void auditionTone(int part, int slot);
-	// И обратно: тон, которым партия играет сейчас, кладётся в ячейку памяти.
+	// And the reverse: the tone the part is playing now is stored into a memory slot.
 	void storeToneFromPart(int part, int slot);
 
-	// Лента принятых сообщений для вкладки MONITOR - кольцо на 64 записи, без блокировок.
+	// Log of received messages for the MONITOR tab - a lock-free ring of 64 entries.
 	struct MidiLogEntry {
 		juce::uint8 status = 0, data1 = 0, data2 = 0;
 		juce::uint16 size = 0;
@@ -749,20 +763,19 @@ private:
 	void forwardMidiToFirmware(const juce::MidiMessage &message);
 
 public:
-	// Доходят ли note on/off до платы управления. Всегда да; выключение осталось только
-	// для испытательных стендов и в интерфейс не выведено.
+	// Whether note on/off reach the control board. Always yes; turning it off remains only for
+	// test rigs and is not exposed in the UI.
 	//
-	// Включено - это и есть поведение прибора: прошивка применяет свои диапазоны клавиш,
-	// раскладку по партиям и распределение голосов, зажигает индикаторы в верхней строке
-	// ЖКИ и сообщает обратно, какую ноту на какой партии она действительно взяла; только
-	// после этого нота попадает в звуковой движок.
+	// Enabled IS the unit's behaviour: the firmware applies its own key ranges, part layout and
+	// voice allocation, lights the indicators on the top line of the LCD and reports back which
+	// note it actually took on which part; only then does the note reach the sound engine.
 	//
-	// Выключение когда-то было обходным путём: MAME не эмулирует LA32 ни для одной машины
-	// Roland LA, и, дойдя до распределения голосов, прошивка переставала опрашивать
-	// переднюю панель - звук шёл, а кнопки и экран умирали. Это чинит
-	// D110Core::StuckPolicy::La32Stub, безусловно включаемый в setPoweredOn(); подробности
-	// в docs/la32_interface.md. Стенды, которым нужна прошивка без нот
-	// (plugin/longrun_test.cpp, plugin/hang_probe.cpp), пользуются этим сеттером напрямую.
+	// Turning it off was once a workaround: MAME emulates the LA32 for none of Roland's LA
+	// machines, and on reaching voice allocation the firmware stopped scanning the front panel -
+	// sound came out, but buttons and display died. D110Core::StuckPolicy::La32Stub, enabled
+	// unconditionally in setPoweredOn(), fixes that; details in docs/la32_interface.md. Rigs that
+	// need the firmware without notes (plugin/longrun_test.cpp, plugin/hang_probe.cpp) use this
+	// setter directly.
 	void setForwardNotesToFirmware(bool shouldForward) { forwardNotes = shouldForward; }
 	bool getForwardNotesToFirmware() const { return forwardNotes; }
 
@@ -785,17 +798,17 @@ public:
 	void engineReadMemory(uint32_t sysexAddr, uint32_t len, uint8_t *out) const {
 		if (synth) synth->readMemory(sysexAddr, len, out);
 	}
-	// Пишет в память движка так же, как это делает мост, но без прошивки за спиной -
-	// только для диагностики. Прочитанное значение само по себе не доказывает, что путь
-	// чтения работает; доказывает записанное известное значение, прочитанное обратно, -
-	// ради этого контрольного прогона метод и существует. Правило потоков то же, что у
-	// playNoteOnPartForTest: собственный поток теста, и больше в синтезатор никто не пишет.
+	// Writes into the engine's memory the same way the bridge does, but with no firmware behind
+	// it - diagnostics only. A value read back does not by itself prove the read path works; a
+	// known value written and read back does - that check run is the whole reason this method
+	// exists. Same threading rule as playNoteOnPartForTest: the test's own thread, and nobody
+	// else writing to the synth.
 	void engineWriteSysexForTest(const uint8_t *data, int len) {
 		if (synth) synth->playSysex(data, static_cast<MT32Emu::Bit32u>(len));
 	}
-	// Открылся ли звуковой движок вообще. Любое показание вида "в движке нули" обязано
-	// сначала исключить это: readMemory() на закрытом синтезаторе возвращается, не тронув
-	// буфер, и это читается как данные, если буфер и так был обнулён.
+	// Whether the sound engine opened at all. Any reading of the form "the engine holds zeros"
+	// must rule this out first: readMemory() on a closed synth returns without touching the
+	// buffer, and that reads as data if the buffer was zeroed to begin with.
 	bool engineIsOpen() const { return synth != nullptr; }
 	uint32_t enginePartStates() const { return synth ? synth->getPartStates() : 0u; }
 	uint32_t enginePartialCount() const { return synth ? synth->getPartialCount() : 0u; }
@@ -880,6 +893,14 @@ private:
 
 	double currentSampleRate = 44100.0;
 	std::vector<float> interleavedScratch;
+	// Audio-thread scratch storage for processBlock(), pre-sized in prepareToPlay() so the
+	// per-block MIDI merging/remapping and queue draining never allocate - see the
+	// comments at each use site in processBlock().
+	juce::MidiBuffer midiRemapScratch, portMidiScratch, sequencerOutScratch;
+	std::vector<d110seq::D110SequencerEngine::MetronomeClick> sequencerClicks;
+	std::vector<std::vector<MT32Emu::Bit8u>> pendingImportsToSendScratch;
+	std::vector<MT32Emu::Bit32u> pendingShortMessagesToSendScratch;
+	std::vector<juce::uint8> pendingPanicBytesToSendScratch;
 
 	std::atomic<float> *masterVolumeParam = nullptr;
 	std::atomic<float> *reverbEnabledParam = nullptr;
@@ -1000,6 +1021,7 @@ private:
 	d110bank::Favorites soundbankFavorites;
 	// See getSequencerRetroMode()/setSequencerRetroMode() above.
 	bool sequencerRetroMode = false;
+	bool sequencerGridMode = false;
 	bool compactPanelMode = false;
 	juce::String retroKeyBindings;
 	bool retroLcdCompactMode = false;
@@ -1099,18 +1121,18 @@ private:
 	std::atomic<int> selectedPartIndex{0};
 	std::array<int, 8> currentProgramPerPart{};
 
-	// --- переход на патч кнопками панели --------------------------------------
-	// Очередь кнопок, которые осталось нажать, и фаза текущего нажатия (0 - опустить,
-	// 1 - отпустить). Живёт на таймере сообщений: между нажатиями обязано пройти
-	// эмулируемое время, иначе матрица опроса просто не увидит вторую половину.
+	// --- switching patches with the panel buttons --------------------------------
+	// Queue of buttons still to press, and the phase of the current press (0 - down,
+	// 1 - up). Lives on the message timer: emulated time must pass between presses,
+	// otherwise the scan matrix simply never sees the second half.
 	void timerCallback() override;
 	std::vector<int> patchQueue;
 	int patchSteps = 0;
 	int patchPhase = 0;
 
-	// --- лента принятых сообщений ---------------------------------------------
-	// Кольцо фиксированного размера, один писатель (аудиопоток) и один читатель (интерфейс),
-	// поэтому без блокировок: писатель кладёт запись и только потом двигает счётчик.
+	// --- log of received messages -------------------------------------------------
+	// Fixed-size ring, one writer (the audio thread) and one reader (the UI), hence no
+	// locks: the writer stores the entry and only then advances the counter.
 	static constexpr juce::uint32 kMidiLogSize = 64;
 	void logIncomingMidi(const juce::MidiMessage &message);
 	std::array<MidiLogEntry, kMidiLogSize> midiLog{};
