@@ -174,6 +174,12 @@ D-110 channel map (Part 1-8 -> channels 2-9, Rhythm -> 10), so a real D-110 on f
 just works from this app's MIDI Out. Unlike the plugin, this app also thrus MIDI In straight to
 MIDI Out, since there's no internal synth to hear what you're playing while you record.
 
+**Extracted into its own repository 2026-09-22** -
+[github.com/luginf/nonet-sequencer](https://github.com/luginf/nonet-sequencer). Used to be a
+build target of this repo purely because that's where the code originated; the D-110 plugin
+above keeps its own copy of the same engine/panel (`D110Sequencer*`) for its in-plugin drawer,
+unaffected by the split. See that repo's own README for build instructions.
+
 Underneath the transport is the same on-screen test keyboard the plugin has - a two-octave mouse
 piano plus optional PC keyboard input, right-click for MIDI routing (a fixed channel, or MIDI
 Remap off to broadcast to all 16 at once).
@@ -211,8 +217,10 @@ Sequencer has no firmware to restore this into.
 
 A second, complete UI for everything above - a small text LCD plus 9 hardware-style buttons
 (STOP/PLAY/REC, a D-pad, ENTER, BACK) instead of the mouse-driven grid. It replaces the
-sequencer drawer entirely when switched on. Toggle it from Options (panel right-click in the
-D-110 plugin; OPTIONS dialog in Nonet Sequencer; hamburger menu on Android). The D-pad also
+sequencer drawer entirely when switched on. Pick it in the **Sequencer > Classic / Retro / Grid**
+submenu (panel right-click in the D-110 plugin; right-click on the toolbar or window in Nonet
+Sequencer, or its OPTIONS > Sequencer view row; Options in the hamburger menu on Android - the
+JV-880 emulator offers the very same submenu, see `sequencer/SequencerViewMenu.h`). The D-pad also
 works from a real keyboard once the panel has focus, with fully customizable key bindings
 (OPTIONS > KEY BINDINGS).
 
@@ -226,8 +234,8 @@ jumps to HOME's top row once there's nothing left to pop.
 A third view of the same drawer, for entering and correcting notes by mouse instead of playing
 them: one track and one bar at a time, pitches down the side (the piano-key column plays the
 note when clicked), steps across (16 per bar in 4/4 at the default 1/16 grid), and a velocity
-lane underneath. Switch to it from the same place as Retro mode (Options in the D-110 plugin,
-OPTIONS in Nonet Sequencer); the three views are mutually exclusive. It shows the same song as
+lane underneath. Switch to it from the same **Sequencer** submenu as Retro mode; the three views
+are mutually exclusive. It shows the same song as
 the other two: edits appear there and the other way round.
 
 - **Transport row**: STOP/PLAY/REC, tempo, time signature, METRO, PRECOUNT, LOOP and the bar

@@ -91,8 +91,9 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../munt/mt32emu" "${CMAKE_CURRENT_
 # The front panel IS the reference photograph - see docs/panel_reference_notes.md.
 # app_icon.png (see its own docs/app_icon.svg comment) rides along in the same binary-data
 # target purely for convenience - it's the app's window/taskbar icon on platforms JUCE's own
-# ICON_BIG/ICON_SMALL CMake args don't cover (Linux - see Nonet-Seq's own setIcon() call,
-# NonetSeqMain.cpp), not anything panel-related.
+# ICON_BIG/ICON_SMALL CMake args don't cover (Linux), not anything panel-related. (Nonet
+# Sequencer, formerly built from this repo too, has its own copy of this icon and its own
+# binary-data target - see github.com/luginf/nonet-sequencer, extracted 2026-09-22.)
 juce_add_binary_data(D110PanelData
     SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../docs/panel_reference.png"
             "${CMAKE_CURRENT_SOURCE_DIR}/../docs/panel_reference_compact.png"
@@ -2261,39 +2262,14 @@ target_include_directories(d110_sequencer_stray_channel_probe PRIVATE "${CMAKE_C
 target_compile_definitions(d110_sequencer_stray_channel_probe PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)
 target_link_libraries(d110_sequencer_stray_channel_probe PRIVATE juce::juce_audio_basics juce::juce_core)
 
-# Nonet Sequencer, the independent sequencer app: D110SequencerPanel/Engine plus a bare
-# window and direct system MIDI In/Out, no firmware/ROMs/plugin wrapper at all - see
-# Source/sequencer/NonetSeqHost.h and docs/sequencer.md's "MIDI Out" section. Standalone
-# only, deliberately - see release-artifacts' own deploy step, there is no VST3/plugin-
-# format target for this one. Target name matches the binary Alan asked for (Nonet-Seq).
-add_executable(Nonet-Seq
-    Source/sequencer/NonetSeqMain.cpp
-    Source/sequencer/NonetSeqHost.cpp
-    Source/sequencer/D110SequencerEngine.cpp
-    Source/sequencer/D110SequencerSongsFile.cpp
-    Source/sequencer/D110SequencerPanel.cpp
-    Source/sequencer/D110SequencerRetroPanel.cpp
-    Source/sequencer/D110SequencerGridPanel.cpp
-    Source/DotMatrixFont.cpp
-    Source/D110Keyboard.cpp
-    Source/UiTheme.cpp)
-target_include_directories(Nonet-Seq PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_compile_definitions(Nonet-Seq PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)
-target_link_libraries(Nonet-Seq PRIVATE juce::juce_gui_extra juce::juce_audio_devices juce::juce_audio_basics
-    juce::juce_audio_utils D110PanelData)
-
-# D110KeyboardHost::isNoteActive() (the on-screen keyboard's "remote activity" LEDs) against
-# NonetSeqHost - no GUI, but still needs juce_events' message loop (see the probe's own
-# comment) for NonetSeqHost's juce::Timer fallback path.
-add_executable(d110_keyboard_activity_probe keyboard_activity_probe.cpp
-    Source/sequencer/NonetSeqHost.cpp
-    Source/sequencer/D110SequencerEngine.cpp
-    Source/sequencer/D110SequencerSongsFile.cpp)
-target_include_directories(d110_keyboard_activity_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_compile_definitions(d110_keyboard_activity_probe PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0
-    JUCE_MODAL_LOOPS_PERMITTED=1)
-target_link_libraries(d110_keyboard_activity_probe PRIVATE
-    juce::juce_audio_devices juce::juce_audio_basics juce::juce_events juce::juce_core)
+# Nonet Sequencer, the independent standalone sequencer app that used to be built from this
+# repo (D110SequencerPanel/Engine plus a bare window and direct system MIDI In/Out, no
+# firmware/ROMs/plugin wrapper at all), was extracted into its own repository 2026-09-22 -
+# see github.com/luginf/nonet-sequencer (renamed there to drop the D110* prefix: Sequencer
+# Engine/Panel/Keyboard instead of D110Sequencer*/D110Keyboard). NonetSeqMain.cpp and
+# NonetSeqHost.h/.cpp, and the "Nonet-Seq"/"d110_keyboard_activity_probe" targets that built
+# from them, no longer live here - this repo keeps only its OWN in-plugin sequencer drawer
+# (D110SequencerPanel/Engine/RetroPanel/GridPanel below), unaffected by that split.
 
 # --- D-50 (d50/) ------------------------------------------------------------
 # Michi71's PicoFaceD5 engine (github.com/Michi71/PicoVintageSynthCollection),

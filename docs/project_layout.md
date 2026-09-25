@@ -15,25 +15,30 @@
 - `plugin/Source/D110Keyboard.h/.cpp` - the on-screen test keyboard (mouse piano + tracker-
   style PC keyboard input, MIDI channel/remap routing via right-click), extracted out of
   `PluginEditor.*` so it can be reused outside the plugin. Talks to its owner only through
-  `plugin/Source/D110KeyboardHost.h` (note injection + its own persisted config); both
-  `D110AudioProcessor` and `NonetSeqHost` (below) implement it. Keys light up both instantly
+  `plugin/Source/D110KeyboardHost.h` (note injection + its own persisted config);
+  `D110AudioProcessor` implements it for the plugin. Keys light up both instantly
   when struck locally and, polled at ~30Hz, for any note reaching the app another way
   (external MIDI In, sequencer playback, a DAW host track) via `D110KeyboardHost::isNoteActive()`.
-  `plugin/keyboard_activity_probe.cpp` is its headless test, against `NonetSeqHost`.
 - `plugin/Source/sequencer/` - the D-20-style multitrack sequencer (`D110SequencerEngine` +
   `D110SequencerPanel`), a third foldable drawer alongside the editor and test keyboard. See
   [`sequencer.md`](sequencer.md). `plugin/sequencer_probe.cpp` and
   `plugin/sequencer_state_probe.cpp` are its headless tests (engine timing/quantize/step-
   recording/undo/file-I/O, and the state-save round trip, respectively). `D110SequencerHost`
   is the whole interface the panel needs from whatever embeds it (12 methods); `D110AudioProcessor`
-  implements it for the plugin, and `NonetSeqHost` + `NonetSeqMain.cpp` implement/wrap it (and
-  `D110KeyboardHost`, for its own embedded `D110Keyboard`) for `Nonet-Seq` - **Nonet
-  Sequencer**, the sequencer on its own, no firmware/ROMs/plugin wrapper, named apart from
-  the D-110 on purpose, see
-  [`sequencer.md`](sequencer.md#nonet-sequencer---the-independent-app).
+  implements it for the plugin.
   `D110SequencerSongsFile.h/.cpp` (de)serializes the 4 song slots to/from XML, shared by the
-  plugin's own project state and both standalone-song-file paths (the plugin's `.midiseq`
-  export/import and this app's own settings file).
+  plugin's own project state and its `.midiseq` export/import.
+
+  **Nonet Sequencer** - the same engine/panel, standalone (no firmware/ROMs/plugin wrapper),
+  used to be built from this repo too (`NonetSeqHost` + `NonetSeqMain.cpp` implementing/
+  wrapping `D110SequencerHost` and `D110KeyboardHost`, target `Nonet-Seq`) - extracted into
+  its own repository 2026-09-22, see [github.com/luginf/nonet-sequencer](https://github.com/luginf/nonet-sequencer)
+  (there renamed to drop the `D110*` prefix: `SequencerEngine`/`SequencerPanel`/`Keyboard`
+  instead of `D110SequencerEngine`/`D110SequencerPanel`/`D110Keyboard`). This repo's own
+  `D110Sequencer*`/`D110Keyboard*` files, and the D-110 plugin's in-plugin drawer they power,
+  are unaffected by that split - only `NonetSeqHost.h/.cpp`, `NonetSeqMain.cpp`,
+  `keyboard_activity_probe.cpp` and the `Nonet-Seq`/`d110_keyboard_activity_probe` CMake
+  targets moved.
 - `plugin/mame.cmake` - the MAME library/include/define lists and how the subset was built.
 - `docs/` - the measured panel geometry and the SysEx address map, both derived by profiling
   rather than by eye. Every number in the code is justified there.

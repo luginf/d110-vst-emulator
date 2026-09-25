@@ -765,8 +765,12 @@ void D110Panel::showOptionsMenu()
 	// matrix status port; see docs/memory_card.md.
 	m.addItem(4, "Memory card write protect", true, processor.getCore().cardWriteProtect());
 #if JucePlugin_Build_Standalone
-	m.addItem(5, "Retro Sequencer (D-20 style LCD+buttons)", true, processor.getSequencerRetroMode());
-	m.addItem(50, "Grid Sequencer (piano roll)", true, processor.getSequencerGridMode());
+	// "Sequencer > Classic / Retro / Grid" - the same submenu the standalone Nonet Sequencer
+	// and the JV-880 emulator offer on right-click (sequencer/SequencerViewMenu.h).
+	seqview::addSubmenu(m, seqview::current(processor), [this](seqview::View v) {
+		seqview::apply(processor, v);
+		if (onSequencerModeChanged) onSequencerModeChanged();
+	});
 #endif
 	// Github issue #3: the LA Reference (structures/envelopes chart, UTILITY tab) was only
 	// reachable by opening the editor drawer and navigating there. Repeated here so it's one
@@ -917,14 +921,6 @@ void D110Panel::showOptionsMenu()
 				processor.getCore().setCardWriteProtect(!processor.getCore().cardWriteProtect());
 				break;
 #if JucePlugin_Build_Standalone
-			case 5:
-				processor.setSequencerRetroMode(!processor.getSequencerRetroMode());
-				if (onSequencerModeChanged) onSequencerModeChanged();
-				break;
-			case 50:
-				processor.setSequencerGridMode(!processor.getSequencerGridMode());
-				if (onSequencerModeChanged) onSequencerModeChanged();
-				break;
 #endif
 			case 6:
 				// NOT getWidth(): this panel is drawn at native reference resolution and

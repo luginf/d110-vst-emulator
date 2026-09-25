@@ -7,6 +7,7 @@
 #include "sequencer/D110SequencerGridPanel.h"
 #include "sequencer/D110SequencerPanel.h"
 #include "sequencer/D110SequencerRetroPanel.h"
+#include "sequencer/SequencerViewMenu.h"
 
 #include <array>
 #include <vector>

@@ -25,6 +25,7 @@
 #include "Source/sequencer/D110SequencerGridPanel.h"
 #include "Source/sequencer/D110SequencerPanel.h"
 #include "Source/sequencer/D110SequencerRetroPanel.h"
+#include "Source/sequencer/SequencerViewMenu.h"
 
 // Soundbanks view's own test-note button (Alan's request, 2026-08-30: no on-screen keyboard is
 // visible there - see resized()'s own comment on showingSoundbanks - so there was no way to
@@ -548,13 +549,12 @@ private:
 		options.addItem("1 Octave", true, keyboard.getNumOctaves() == 1, [this] { keyboard.setNumOctaves(1); });
 		options.addItem("2 Octaves", true, keyboard.getNumOctaves() == 2, [this] { keyboard.setNumOctaves(2); });
 		options.addSeparator();
-		// Grid is the default (matches the desktop editor's own default) - this is the one
-		// Alan asked to keep reachable first, 2026-08-22, with retro kept as a fallback rather
-		// than the primary view that same request had originally put it as.
-		options.addItem("Piano Roll Sequencer (grid editor)", true, processor.getSequencerGridMode(),
-		                 [this] { toggleSequencerPianoRollMode(); });
-		options.addItem("Retro Sequencer (D-pad style)", true, processor.getSequencerRetroMode(),
-		                 [this] { toggleSequencerRetroMode(); });
+		// "Sequencer > Classic / Retro / Grid" - the same submenu every front end of the family
+		// offers on right-click (sequencer/SequencerViewMenu.h).
+		seqview::addSubmenu(options, seqview::current(processor), [this](seqview::View v) {
+			seqview::apply(processor, v);
+			if (showingSequencer) resized();
+		});
 		options.addSeparator();
 		// Alan's request, 2026-08-28. System resolves against the OS dark-mode setting right
 		// away and keeps following it live (see UiTheme.h's setThemeMode() comment) - no restart
@@ -613,17 +613,8 @@ private:
 		applyThemeMode();
 	}
 
-	// The three views are mutually exclusive (see D110AudioProcessor::setSequencerRetroMode()).
-	void toggleSequencerPianoRollMode() {
-		processor.setSequencerGridMode(!processor.getSequencerGridMode());
-		if (showingSequencer) resized();
-	}
-
-	void toggleSequencerRetroMode() {
-		processor.setSequencerRetroMode(!processor.getSequencerRetroMode());
-		if (showingSequencer) resized();
-	}
-
+	// The three views are mutually exclusive (see D110AudioProcessor::setSequencerRetroMode()) -
+	// picked from the "Sequencer" submenu in buildAppMenu()'s Options.
 	void toggleSequencerView() {
 		showingSequencer = !showingSequencer;
 		if (showingSequencer) showingSoundbanks = false;

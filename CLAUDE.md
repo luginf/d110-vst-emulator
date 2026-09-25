@@ -177,3 +177,30 @@ Default (native only, no MAME needed):
 cd plugin && cmake -B build -S . && cmake --build build --config Release
 ```
 Full requirements, MAME-backend opt-in build, and ROM setup: see `README.md`.
+
+## Nonet Sequencer extracted to its own repository (2026-09-22)
+
+Alan asked to separate the independent Nonet Sequencer app from this repo, keeping this
+repo's own in-plugin sequencer integration (D110Sequencer*/D110Keyboard*) untouched. Done:
+
+- New repo, own history (not a subtree split - a plain copy plus one commit, Alan's choice):
+  [github.com/luginf/nonet-sequencer](https://github.com/luginf/nonet-sequencer), local clone
+  `~/src/nonet-sequencer`. Not pushed yet as of this note - only committed locally, Alan wants
+  to look at it first.
+- Files copied and renamed to drop the `D110*` prefix (Alan's choice - nothing in that repo
+  depends on this project anymore): `D110SequencerEngine/Panel/RetroPanel/GridPanel/Host/
+  SongsFile` -> `Sequencer*`, `D110Keyboard(Host)` -> `Keyboard(Host)`, namespace `d110seq` ->
+  `nonetseq`. `SequencerViewMenu.h` and `UiTheme`/`DotMatrixFont` were already neutral, kept
+  as-is. Verified: builds clean (CMake FetchContent, JUCE 8.0.15, reused this repo's own
+  `plugin/build/_deps/juce-src` as `FETCHCONTENT_SOURCE_DIR_JUCE` to skip the clone), and runs
+  in an isolated Xvfb (window shows, right-click "Sequencer >" menu works, screenshot taken).
+- **This repo**: removed `plugin/Source/sequencer/NonetSeqMain.cpp`, `NonetSeqHost.h/.cpp`,
+  `plugin/keyboard_activity_probe.cpp`, and the `Nonet-Seq`/`d110_keyboard_activity_probe`
+  CMake targets (the probe depended on `NonetSeqHost.cpp`, so it went with it - no equivalent
+  re-created here, the file is small enough that a similar probe could live in the new repo if
+  ever needed). `docs/project_layout.md` and `docs/sequencer.md` updated to point at the new
+  repo. Rebuilt `D110EmulatorNative_Standalone` after the `CMakeLists.txt` edit to confirm no
+  regression - succeeds.
+- **Not yet done** (pending Alan's go-ahead): `git push` the new repo, and committing this
+  repo's own working-tree changes (the file removals above, plus the still-uncommitted
+  retro-sequencer/unified-menu work from the previous session).
